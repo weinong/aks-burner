@@ -1,8 +1,9 @@
 using '../../infra/aks/main.bicep'
 
 param clusterName = 'akskataperf'
-param userNodeCount = 3
-param userNodeVmSize = 'Standard_D8s_v5'
+param kubernetesVersion = '1.36'
+param userNodeCount = 1
+param userNodeVmSize = 'Standard_D16as_v5'
 param userNodeLabels = {
   'perf.azure.com/node-role': 'workload'
 }
