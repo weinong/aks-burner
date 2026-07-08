@@ -4,7 +4,7 @@ global:
 jobs:
   - name: startup-smoke
     jobType: create
-    namespace: kata-disk-perf
+    namespace: kata-perf
     namespacedIterations: true
     objects:
       - objectTemplate: templates/pod.yml

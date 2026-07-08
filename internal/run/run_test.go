@@ -43,12 +43,12 @@ func TestRenderWorkloadSkipsPrometheusEndpointWhenEmpty(t *testing.T) {
 
 func TestRunDirNameIncludesNanoseconds(t *testing.T) {
 	base := time.Date(2026, 7, 8, 1, 2, 3, 4, time.UTC)
-	first := runDirName("kata-disk-perf", "smoke", base)
-	second := runDirName("kata-disk-perf", "smoke", base.Add(time.Nanosecond))
+	first := runDirName("kata-perf", "smoke", base)
+	second := runDirName("kata-perf", "smoke", base.Add(time.Nanosecond))
 	if first == second {
 		t.Fatalf("runDirName returned duplicate names for distinct nanoseconds: %q", first)
 	}
-	if !strings.Contains(first, "kata-disk-perf_smoke") {
+	if !strings.Contains(first, "kata-perf_smoke") {
 		t.Fatalf("runDirName() = %q, want suite and mode suffix", first)
 	}
 }
@@ -117,11 +117,11 @@ func TestNodeSelectorArgsSortsLabels(t *testing.T) {
 func TestWriteMetadataWritesSafeRunMetadata(t *testing.T) {
 	runDir := t.TempDir()
 	err := WriteMetadata(runDir, Metadata{
-		Suite:         "kata-disk-perf",
+		Suite:         "kata-perf",
 		Mode:          "smoke",
 		Timestamp:     "2026-07-08T00:00:00Z",
-		ResourceGroup: "rg-aks-burner-kata-disk-perf",
-		ClusterName:   "akskdisktest",
+		ResourceGroup: "rg-aks-burner-kata-perf",
+		ClusterName:   "akskataperf",
 		Images:        map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"},
 	})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestWriteMetadataWritesSafeRunMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"suite: kata-disk-perf", "mode: smoke", "clusterName: akskdisktest", "pause:"} {
+	for _, want := range []string{"suite: kata-perf", "mode: smoke", "clusterName: akskataperf", "pause:"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("metadata missing %q: %s", want, text)
 		}

@@ -9,11 +9,11 @@ import (
 
 func TestListSuites(t *testing.T) {
 	root := t.TempDir()
-	suiteDir := filepath.Join(root, "suites", "kata-disk-perf")
+	suiteDir := filepath.Join(root, "suites", "kata-perf")
 	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte("name: kata-disk-perf\ndescription: Disk perf suite\ntests:\n  - write-iops\n")
+	data := []byte("name: kata-perf\ndescription: Kata perf suite\ntests:\n  - write-iops\n")
 	if err := os.WriteFile(filepath.Join(suiteDir, "suite.yml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestListSuites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(suites) != 1 || suites[0].Name != "kata-disk-perf" || suites[0].Tests[0] != "write-iops" {
+	if len(suites) != 1 || suites[0].Name != "kata-perf" || suites[0].Tests[0] != "write-iops" {
 		t.Fatalf("unexpected suites: %#v", suites)
 	}
 }
@@ -36,22 +36,22 @@ func TestLoadRejectsUnsafeSuiteName(t *testing.T) {
 
 func TestLoadRejectsUnsafeDeclaredSuiteName(t *testing.T) {
 	root := t.TempDir()
-	suiteDir := filepath.Join(root, "suites", "kata-disk-perf")
+	suiteDir := filepath.Join(root, "suites", "kata-perf")
 	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte("name: ../outside\ndescription: Disk perf suite\ntests:\n  - write-iops\n")
+	data := []byte("name: ../outside\ndescription: Kata perf suite\ntests:\n  - write-iops\n")
 	if err := os.WriteFile(filepath.Join(suiteDir, "suite.yml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Load(root, "kata-disk-perf")
+	_, err := Load(root, "kata-perf")
 	if err == nil || !strings.Contains(err.Error(), "invalid suite name") {
 		t.Fatalf("Load() error = %v, want invalid declared suite name", err)
 	}
 }
 
 func TestValidName(t *testing.T) {
-	valid := []string{"kata-disk-perf", "a", "a1-b2"}
+	valid := []string{"kata-perf", "a", "a1-b2"}
 	for _, name := range valid {
 		if !ValidName(name) {
 			t.Fatalf("ValidName(%q) = false, want true", name)

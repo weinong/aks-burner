@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: kata-disk-perf-{{.Iteration}}-{{.Replica}}
+  name: kata-perf-{{.Iteration}}-{{.Replica}}
   labels:
-    app: kata-disk-perf
+    app: kata-perf
 spec:
   nodeSelector:
     perf.azure.com/node-role: workload

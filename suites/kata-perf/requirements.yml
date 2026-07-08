@@ -1,10 +1,10 @@
-suite: kata-disk-perf
+suite: kata-perf
 requires:
   infrastructure:
     provider: aks
     bicep:
       template: infra/aks/main.bicep
-      parameters: suites/kata-disk-perf/infra.bicepparam
+      parameters: suites/kata-perf/infra.bicepparam
   kubernetes:
     minVersion: "1.30"
   nodeSelectors:

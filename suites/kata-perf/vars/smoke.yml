@@ -1,11 +1,11 @@
-iterations: 500
-iterationsPerNamespace: 50
-qps: 50
-burst: 50
+iterations: 20
+iterationsPerNamespace: 20
+qps: 20
+burst: 20
 cleanup: true
 waitWhenFinished: true
 preLoadImages: true
 templateVars:
-  app: kata-disk-perf
+  app: kata-perf
 imageVars:
   image: pause

@@ -6,7 +6,7 @@ func TestProvisionCommands(t *testing.T) {
 	opts := ProvisionOptions{
 		ResourceGroup:  "rg-aks-burner-test",
 		Location:       "westus2",
-		ParametersFile: "suites/kata-disk-perf/infra.bicepparam",
+		ParametersFile: "suites/kata-perf/infra.bicepparam",
 		ClusterName:    "akstest",
 	}
 	commands := ProvisionCommands(opts)

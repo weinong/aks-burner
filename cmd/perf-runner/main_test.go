@@ -34,18 +34,18 @@ func TestShouldWaitPrometheusRolloutOnlyWhenInstalledByRunner(t *testing.T) {
 }
 
 func TestValidateDestroyTargetRequiresDefaultResourceGroup(t *testing.T) {
-	err := validateDestroyTarget("kata-disk-perf", "rg-not-owned", false)
-	if err == nil || !strings.Contains(err.Error(), "rg-aks-burner-kata-disk-perf") {
+	err := validateDestroyTarget("kata-perf", "rg-not-owned", false)
+	if err == nil || !strings.Contains(err.Error(), "rg-aks-burner-kata-perf") {
 		t.Fatalf("validateDestroyTarget() error = %v, want default resource group error", err)
 	}
-	if err := validateDestroyTarget("kata-disk-perf", "rg-not-owned", true); err != nil {
+	if err := validateDestroyTarget("kata-perf", "rg-not-owned", true); err != nil {
 		t.Fatalf("validateDestroyTarget() with override returned error: %v", err)
 	}
 }
 
 func TestResolveSuitePathRejectsOutsideSuite(t *testing.T) {
 	root := t.TempDir()
-	_, err := resolveSuitePath(root, "kata-disk-perf", "../outside.bicepparam")
+	_, err := resolveSuitePath(root, "kata-perf", "../outside.bicepparam")
 	if err == nil || !strings.Contains(err.Error(), "outside suite directory") {
 		t.Fatalf("resolveSuitePath() error = %v, want outside suite directory", err)
 	}
@@ -53,11 +53,11 @@ func TestResolveSuitePathRejectsOutsideSuite(t *testing.T) {
 
 func TestResolveSuitePathAcceptsRepoRelativeSuitePath(t *testing.T) {
 	root := t.TempDir()
-	got, err := resolveSuitePath(root, "kata-disk-perf", "suites/kata-disk-perf/infra.bicepparam")
+	got, err := resolveSuitePath(root, "kata-perf", "suites/kata-perf/infra.bicepparam")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(root, "suites", "kata-disk-perf", "infra.bicepparam")
+	want := filepath.Join(root, "suites", "kata-perf", "infra.bicepparam")
 	if got != want {
 		t.Fatalf("resolveSuitePath() = %q, want %q", got, want)
 	}
