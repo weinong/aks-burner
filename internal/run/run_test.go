@@ -25,6 +25,19 @@ func TestRenderWorkloadInjectsPrometheusEndpoint(t *testing.T) {
 	}
 }
 
+func TestRenderWorkloadSkipsPrometheusEndpointWhenEmpty(t *testing.T) {
+	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
+	mode := Mode{Iterations: 20, IterationsPerNamespace: 20, QPS: 20, Burst: 20, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, TemplateVars: map[string]any{"app": "test"}, ImageVars: map[string]string{"image": "pause"}}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rendered["metricsEndpoints"]; ok {
+		t.Fatalf("metrics endpoint injected for empty prometheus endpoint: %#v", rendered["metricsEndpoints"])
+	}
+}
+
 func TestCopyRenderAssetsCopiesTemplatesAndMetrics(t *testing.T) {
 	suiteDir := t.TempDir()
 	runDir := t.TempDir()

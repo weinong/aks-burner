@@ -28,14 +28,16 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 	global := ensureMap(rendered, "global")
 	global["gc"] = mode.Cleanup
 	global["waitWhenFinished"] = mode.WaitWhenFinished
-	rendered["metricsEndpoints"] = []any{map[string]any{
-		"endpoint": prometheusEndpoint,
-		"metrics":  []any{"metrics.yml"},
-		"indexer": map[string]any{
-			"type":             "local",
-			"metricsDirectory": "raw/metrics",
-		},
-	}}
+	if prometheusEndpoint != "" {
+		rendered["metricsEndpoints"] = []any{map[string]any{
+			"endpoint": prometheusEndpoint,
+			"metrics":  []any{"metrics.yml"},
+			"indexer": map[string]any{
+				"type":             "local",
+				"metricsDirectory": "raw/metrics",
+			},
+		}}
+	}
 	jobs, _ := rendered["jobs"].([]any)
 	for _, item := range jobs {
 		job, ok := item.(map[string]any)
