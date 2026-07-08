@@ -29,6 +29,10 @@ func PortForwardArgs(cfg Config) []string {
 	return []string{"kubectl", "-n", cfg.Namespace, "port-forward", "service/" + cfg.ServiceName, fmt.Sprintf("%d:%d", cfg.LocalPort, cfg.ServicePort)}
 }
 
+func RolloutStatusArgs(cfg Config) []string {
+	return []string{"kubectl", "rollout", "status", "deployment/prometheus", "-n", cfg.Namespace, "--timeout=2m"}
+}
+
 func RenderManifest(manifest string, image string) string {
 	return strings.ReplaceAll(manifest, "{{PROMETHEUS_IMAGE}}", image)
 }
@@ -41,6 +45,14 @@ func Install(ctx context.Context, manifestPath string, image string) error {
 	rendered := RenderManifest(string(manifest), image)
 	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(rendered)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func WaitRollout(ctx context.Context, cfg Config) error {
+	args := RolloutStatusArgs(cfg)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

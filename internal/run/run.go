@@ -1,10 +1,14 @@
 package run
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +25,33 @@ type Mode struct {
 	PreLoadImages          bool              `yaml:"preLoadImages"`
 	TemplateVars           map[string]any    `yaml:"templateVars"`
 	ImageVars              map[string]string `yaml:"imageVars"`
+}
+
+type Requirements struct {
+	Kubernetes    KubernetesRequirements    `yaml:"kubernetes"`
+	NodeSelectors []NodeSelectorRequirement `yaml:"nodeSelectors"`
+}
+
+type KubernetesRequirements struct {
+	MinVersion string `yaml:"minVersion"`
+}
+
+type NodeSelectorRequirement struct {
+	Name     string            `yaml:"name"`
+	Required bool              `yaml:"required"`
+	MinNodes int               `yaml:"minNodes"`
+	Labels   map[string]string `yaml:"labels"`
+}
+
+type KubectlRunner func(ctx context.Context, args ...string) ([]byte, error)
+
+type Metadata struct {
+	Suite         string            `yaml:"suite"`
+	Mode          string            `yaml:"mode"`
+	Timestamp     string            `yaml:"timestamp"`
+	ResourceGroup string            `yaml:"resourceGroup"`
+	ClusterName   string            `yaml:"clusterName"`
+	Images        map[string]string `yaml:"images"`
 }
 
 func RenderWorkload(workload map[string]any, mode Mode, images map[string]string, prometheusEndpoint string) (map[string]any, error) {
@@ -97,6 +128,67 @@ func ExecuteKubeBurner(workloadPath string, logPath string) error {
 	return cmd.Run()
 }
 
+func ValidateRequirements(ctx context.Context, req Requirements, runner KubectlRunner) error {
+	if req.Kubernetes.MinVersion != "" {
+		data, err := runner(ctx, "version", "-o", "json")
+		if err != nil {
+			return err
+		}
+		var version struct {
+			ServerVersion struct {
+				GitVersion string `json:"gitVersion"`
+			} `json:"serverVersion"`
+		}
+		if err := json.Unmarshal(data, &version); err != nil {
+			return err
+		}
+		if compareVersions(version.ServerVersion.GitVersion, req.Kubernetes.MinVersion) < 0 {
+			return fmt.Errorf("Kubernetes version %s is below required %s", version.ServerVersion.GitVersion, req.Kubernetes.MinVersion)
+		}
+	}
+	for _, selector := range req.NodeSelectors {
+		if !selector.Required || selector.MinNodes == 0 {
+			continue
+		}
+		data, err := runner(ctx, NodeSelectorArgs(selector.Labels)...)
+		if err != nil {
+			return err
+		}
+		if countLines(string(data)) < selector.MinNodes {
+			return fmt.Errorf("node selector %s requires %d matching nodes", selector.Name, selector.MinNodes)
+		}
+	}
+	return nil
+}
+
+func KubectlOutput(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "kubectl", args...).Output()
+}
+
+func NodeSelectorArgs(labels map[string]string) []string {
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+labels[key])
+	}
+	return []string{"get", "nodes", "-l", strings.Join(parts, ","), "-o", "name"}
+}
+
+func WriteMetadata(runDir string, metadata Metadata) error {
+	if err := os.MkdirAll(filepath.Join(runDir, "metadata"), 0o755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(runDir, "metadata", "run.yml"), data, 0o644)
+}
+
 func CopyRenderAssets(suiteDir string, runDir string) error {
 	if err := copyDir(filepath.Join(suiteDir, "templates"), filepath.Join(runDir, "rendered", "templates")); err != nil {
 		return err
@@ -158,4 +250,41 @@ func cloneMap(input map[string]any) map[string]any {
 		panic(fmt.Sprintf("unmarshal clone: %v", err))
 	}
 	return output
+}
+
+func countLines(text string) int {
+	count := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func compareVersions(actual string, minimum string) int {
+	actualParts := versionParts(actual)
+	minimumParts := versionParts(minimum)
+	for i := 0; i < 3; i++ {
+		if actualParts[i] > minimumParts[i] {
+			return 1
+		}
+		if actualParts[i] < minimumParts[i] {
+			return -1
+		}
+	}
+	return 0
+}
+
+func versionParts(version string) [3]int {
+	version = strings.TrimPrefix(version, "v")
+	version = strings.Split(version, "+")[0]
+	version = strings.Split(version, "-")[0]
+	pieces := strings.Split(version, ".")
+	var parts [3]int
+	for i := 0; i < len(pieces) && i < 3; i++ {
+		value, _ := strconv.Atoi(pieces[i])
+		parts[i] = value
+	}
+	return parts
 }

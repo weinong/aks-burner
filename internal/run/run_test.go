@@ -1,8 +1,10 @@
 package run
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +60,73 @@ func TestCopyRenderAssetsCopiesTemplatesAndMetrics(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(runDir, "rendered", "metrics.yml")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateRequirementsFailsWhenKubernetesVersionTooLow(t *testing.T) {
+	req := Requirements{Kubernetes: KubernetesRequirements{MinVersion: "1.30"}}
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"serverVersion":{"gitVersion":"v1.29.9"}}`), nil
+	}
+	err := ValidateRequirements(context.Background(), req, runner)
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes version") {
+		t.Fatalf("ValidateRequirements() error = %v, want Kubernetes version error", err)
+	}
+}
+
+func TestValidateRequirementsFailsWhenRequiredNodeSelectorHasTooFewNodes(t *testing.T) {
+	req := Requirements{NodeSelectors: []NodeSelectorRequirement{{Name: "workload", Required: true, MinNodes: 2, Labels: map[string]string{"perf.azure.com/node-role": "workload"}}}}
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) >= 2 && args[0] == "get" && args[1] == "nodes" {
+			return []byte("node/node-1\n"), nil
+		}
+		return []byte(`{"serverVersion":{"gitVersion":"v1.30.1"}}`), nil
+	}
+	err := ValidateRequirements(context.Background(), req, runner)
+	if err == nil || !strings.Contains(err.Error(), "node selector workload") {
+		t.Fatalf("ValidateRequirements() error = %v, want node selector error", err)
+	}
+}
+
+func TestNodeSelectorArgsSortsLabels(t *testing.T) {
+	args := NodeSelectorArgs(map[string]string{"z": "last", "a": "first"})
+	want := []string{"get", "nodes", "-l", "a=first,z=last", "-o", "name"}
+	if len(args) != len(want) {
+		t.Fatalf("len = %d, want %d: %#v", len(args), len(want), args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
+func TestWriteMetadataWritesSafeRunMetadata(t *testing.T) {
+	runDir := t.TempDir()
+	err := WriteMetadata(runDir, Metadata{
+		Suite:         "kata-disk-perf",
+		Mode:          "smoke",
+		Timestamp:     "2026-07-08T00:00:00Z",
+		ResourceGroup: "rg-aks-burner-kata-disk-perf",
+		ClusterName:   "akskdisktest",
+		Images:        map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "metadata", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"suite: kata-disk-perf", "mode: smoke", "clusterName: akskdisktest", "pause:"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metadata missing %q: %s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"kubeconfig", "bearer", "token", "Authorization"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("metadata contains forbidden auth material %q: %s", forbidden, text)
+		}
 	}
 }

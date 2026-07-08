@@ -23,3 +23,5 @@ TEST_SUITE=kata-disk-perf make destroy
 ```
 
 `provision` creates the Azure resource group and AKS cluster declared by the suite requirements. `run-suite` installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group asynchronously.
+
+`destroy` only deletes the default resource group name `rg-aks-burner-<suite>`. To delete a deliberately overridden suite resource group, call `perf-runner destroy` directly with `--allow-non-default-resource-group`.

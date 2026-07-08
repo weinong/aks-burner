@@ -29,6 +29,19 @@ func TestPortForwardArgs(t *testing.T) {
 	}
 }
 
+func TestRolloutStatusArgs(t *testing.T) {
+	args := RolloutStatusArgs(Config{Namespace: "perf-monitoring"})
+	want := []string{"kubectl", "rollout", "status", "deployment/prometheus", "-n", "perf-monitoring", "--timeout=2m"}
+	if len(args) != len(want) {
+		t.Fatalf("args length = %d, want %d: %#v", len(args), len(want), args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
 func TestRenderManifestReplacesPrometheusImage(t *testing.T) {
 	manifest := "image: {{PROMETHEUS_IMAGE}}\n"
 	rendered := RenderManifest(manifest, "mcr.microsoft.com/oss/v2/prometheus/prometheus:v3.11.3")

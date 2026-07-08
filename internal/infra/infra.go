@@ -17,7 +17,7 @@ func ProvisionCommands(opts ProvisionOptions) [][]string {
 	return [][]string{
 		{"az", "group", "create", "--name", opts.ResourceGroup, "--location", opts.Location},
 		{"az", "deployment", "group", "create", "--resource-group", opts.ResourceGroup, "--parameters", opts.ParametersFile, "location=" + opts.Location},
-		{"az", "aks", "get-credentials", "--resource-group", opts.ResourceGroup, "--name", opts.ClusterName, "--overwrite-existing"},
+		GetCredentialsCommand(opts.ResourceGroup, opts.ClusterName),
 	}
 }
 
@@ -39,6 +39,18 @@ func DestroyCommand(resourceGroup string) []string {
 
 func Destroy(ctx context.Context, resourceGroup string) error {
 	args := DestroyCommand(resourceGroup)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func GetCredentialsCommand(resourceGroup string, clusterName string) []string {
+	return []string{"az", "aks", "get-credentials", "--resource-group", resourceGroup, "--name", clusterName, "--overwrite-existing"}
+}
+
+func GetCredentials(ctx context.Context, resourceGroup string, clusterName string) error {
+	args := GetCredentialsCommand(resourceGroup, clusterName)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

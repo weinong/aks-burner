@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/Azure/aks-burner/internal/config"
 	"github.com/Azure/aks-burner/internal/infra"
@@ -45,11 +47,22 @@ func destroy(args []string) error {
 	fs := flag.NewFlagSet("destroy", flag.ContinueOnError)
 	suiteName := fs.String("suite", "", "suite name")
 	resourceGroup := fs.String("resource-group", "", "Azure resource group")
+	allowNonDefaultResourceGroup := fs.Bool("allow-non-default-resource-group", false, "allow deleting a resource group outside the default suite naming convention")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *suiteName == "" || *resourceGroup == "" {
-		return fmt.Errorf("usage: perf-runner destroy --suite SUITE --resource-group RG")
+		return fmt.Errorf("usage: perf-runner destroy --suite SUITE --resource-group RG [--allow-non-default-resource-group]")
+	}
+	root, err := repo.Root(".")
+	if err != nil {
+		return err
+	}
+	if _, err := suite.Load(root, *suiteName); err != nil {
+		return err
+	}
+	if err := validateDestroyTarget(*suiteName, *resourceGroup, *allowNonDefaultResourceGroup); err != nil {
+		return err
 	}
 	return infra.Destroy(context.Background(), *resourceGroup)
 }
@@ -69,13 +82,26 @@ func runSuite(args []string) error {
 	if err != nil {
 		return err
 	}
-	_ = resourceGroup
-	reqPath := filepath.Join(root, "suites", *suiteName, "requirements.yml")
+	if !suite.ValidName(*suiteName) || !suite.ValidName(*modeName) {
+		return fmt.Errorf("invalid suite or mode name")
+	}
+	reqPath, err := resolveSuitePath(root, *suiteName, "requirements.yml")
+	if err != nil {
+		return err
+	}
 	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), reqPath); err != nil {
 		return err
 	}
 	var req struct {
 		Requires struct {
+			Infrastructure struct {
+				Bicep struct {
+					Template   string `yaml:"template"`
+					Parameters string `yaml:"parameters"`
+				} `yaml:"bicep"`
+			} `yaml:"infrastructure"`
+			Kubernetes    runpkg.KubernetesRequirements    `yaml:"kubernetes"`
+			NodeSelectors []runpkg.NodeSelectorRequirement `yaml:"nodeSelectors"`
 			Observability struct {
 				Prometheus prometheus.Config `yaml:"prometheus"`
 			} `yaml:"observability"`
@@ -84,12 +110,29 @@ func runSuite(args []string) error {
 	if err := config.LoadYAML(reqPath, &req); err != nil {
 		return err
 	}
+	parametersPath, err := resolveSuitePath(root, *suiteName, req.Requires.Infrastructure.Bicep.Parameters)
+	if err != nil {
+		return err
+	}
+	if _, err := resolveRepoPath(root, req.Requires.Infrastructure.Bicep.Template); err != nil {
+		return err
+	}
+	clusterName, err := readBicepParamString(parametersPath, "clusterName")
+	if err != nil {
+		return err
+	}
 	images, err := config.LoadImages(filepath.Join(root, "config", "images.yml"))
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if err := infra.GetCredentials(ctx, *resourceGroup, clusterName); err != nil {
+		return err
+	}
+	if err := runpkg.ValidateRequirements(ctx, runpkg.Requirements{Kubernetes: req.Requires.Kubernetes, NodeSelectors: req.Requires.NodeSelectors}, runpkg.KubectlOutput); err != nil {
+		return err
+	}
 	if req.Requires.Observability.Prometheus.Required && req.Requires.Observability.Prometheus.Install {
 		prometheusImage, err := config.ResolveImage(images, req.Requires.Observability.Prometheus.ImageKey)
 		if err != nil {
@@ -101,6 +144,9 @@ func runSuite(args []string) error {
 	}
 	prometheusURL := ""
 	if req.Requires.Observability.Prometheus.Required {
+		if err := prometheus.WaitRollout(ctx, req.Requires.Observability.Prometheus); err != nil {
+			return err
+		}
 		portForwardCtx, portForwardCancel := context.WithCancel(ctx)
 		cmd, endpoint, err := prometheus.PortForward(portForwardCtx, req.Requires.Observability.Prometheus)
 		if err != nil {
@@ -114,11 +160,18 @@ func runSuite(args []string) error {
 		prometheusURL = endpoint
 	}
 	var workload map[string]any
-	if err := config.LoadYAML(filepath.Join(root, "suites", *suiteName, "workload.yml"), &workload); err != nil {
+	workloadFile, err := resolveSuitePath(root, *suiteName, "workload.yml")
+	if err != nil {
+		return err
+	}
+	if err := config.LoadYAML(workloadFile, &workload); err != nil {
 		return err
 	}
 	var mode runpkg.Mode
-	modePath := filepath.Join(root, "suites", *suiteName, "vars", *modeName+".yml")
+	modePath, err := resolveSuitePath(root, *suiteName, filepath.Join("vars", *modeName+".yml"))
+	if err != nil {
+		return err
+	}
 	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), modePath); err != nil {
 		return err
 	}
@@ -127,6 +180,9 @@ func runSuite(args []string) error {
 	}
 	runDir, err := runpkg.CreateRunDir(*suiteName, *modeName)
 	if err != nil {
+		return err
+	}
+	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: time.Now().UTC().Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images}); err != nil {
 		return err
 	}
 	suiteDir := filepath.Join(root, "suites", *suiteName)
@@ -159,6 +215,9 @@ func provision(args []string) error {
 	if err != nil {
 		return err
 	}
+	if !suite.ValidName(*suiteName) {
+		return fmt.Errorf("invalid suite name %q", *suiteName)
+	}
 	var req struct {
 		Requires struct {
 			Infrastructure struct {
@@ -169,14 +228,23 @@ func provision(args []string) error {
 			} `yaml:"infrastructure"`
 		} `yaml:"requires"`
 	}
-	reqPath := filepath.Join(root, "suites", *suiteName, "requirements.yml")
+	reqPath, err := resolveSuitePath(root, *suiteName, "requirements.yml")
+	if err != nil {
+		return err
+	}
 	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), reqPath); err != nil {
 		return err
 	}
 	if err := config.LoadYAML(reqPath, &req); err != nil {
 		return err
 	}
-	parametersPath := filepath.Join(root, req.Requires.Infrastructure.Bicep.Parameters)
+	parametersPath, err := resolveSuitePath(root, *suiteName, req.Requires.Infrastructure.Bicep.Parameters)
+	if err != nil {
+		return err
+	}
+	if _, err := resolveRepoPath(root, req.Requires.Infrastructure.Bicep.Template); err != nil {
+		return err
+	}
 	clusterName, err := readBicepParamString(parametersPath, "clusterName")
 	if err != nil {
 		return err
@@ -187,6 +255,62 @@ func provision(args []string) error {
 		ParametersFile: parametersPath,
 		ClusterName:    clusterName,
 	})
+}
+
+func validateDestroyTarget(suiteName string, resourceGroup string, allowNonDefaultResourceGroup bool) error {
+	defaultResourceGroup := defaultResourceGroup(suiteName)
+	if resourceGroup != defaultResourceGroup && !allowNonDefaultResourceGroup {
+		return fmt.Errorf("refusing to delete resource group %q for suite %q; expected %q or pass --allow-non-default-resource-group", resourceGroup, suiteName, defaultResourceGroup)
+	}
+	return nil
+}
+
+func defaultResourceGroup(suiteName string) string {
+	return "rg-aks-burner-" + suiteName
+}
+
+func resolveSuitePath(root string, suiteName string, value string) (string, error) {
+	if !suite.ValidName(suiteName) {
+		return "", fmt.Errorf("invalid suite name %q", suiteName)
+	}
+	suiteDir := filepath.Join(root, "suites", suiteName)
+	cleanValue := filepath.Clean(value)
+	var resolved string
+	if filepath.IsAbs(cleanValue) {
+		resolved = cleanValue
+	} else if strings.HasPrefix(filepath.ToSlash(cleanValue), "suites/") {
+		resolved = filepath.Join(root, cleanValue)
+	} else {
+		resolved = filepath.Join(suiteDir, cleanValue)
+	}
+	resolved = filepath.Clean(resolved)
+	if !pathInside(suiteDir, resolved) {
+		return "", fmt.Errorf("path %q resolves outside suite directory %q", value, suiteDir)
+	}
+	return resolved, nil
+}
+
+func resolveRepoPath(root string, value string) (string, error) {
+	cleanValue := filepath.Clean(value)
+	resolved := cleanValue
+	if !filepath.IsAbs(cleanValue) {
+		resolved = filepath.Join(root, cleanValue)
+	}
+	resolved = filepath.Clean(resolved)
+	if !pathInsideOrEqual(root, resolved) {
+		return "", fmt.Errorf("path %q resolves outside repo %q", value, root)
+	}
+	return resolved, nil
+}
+
+func pathInside(base string, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
+}
+
+func pathInsideOrEqual(base string, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	return err == nil && (rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)))
 }
 
 func readBicepParamString(path string, name string) (string, error) {

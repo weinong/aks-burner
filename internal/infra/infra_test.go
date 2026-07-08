@@ -25,3 +25,16 @@ func TestProvisionCommands(t *testing.T) {
 		t.Fatalf("unexpected credentials command: %#v", commands[2])
 	}
 }
+
+func TestGetCredentialsCommand(t *testing.T) {
+	cmd := GetCredentialsCommand("rg-aks-burner-test", "akstest")
+	want := []string{"az", "aks", "get-credentials", "--resource-group", "rg-aks-burner-test", "--name", "akstest", "--overwrite-existing"}
+	if len(cmd) != len(want) {
+		t.Fatalf("len = %d, want %d", len(cmd), len(want))
+	}
+	for i := range want {
+		if cmd[i] != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, cmd[i], want[i])
+		}
+	}
+}
