@@ -34,3 +34,29 @@ Fix: Added `run.WriteMetadata` and call it from `run-suite` to write `metadata/r
 ## Notes
 
 - Preserved unrelated untracked file `kube-burner-test-suite-proposal.md`; it was not modified, staged, or removed.
+
+## Final Re-Review Fixes
+
+### Finding 1: `run-suite` waited for rollout when Prometheus was not installed by the runner
+
+Fix: `run-suite` now waits for Prometheus deployment rollout only when Prometheus is both required and installed by this runner (`required && install`). Suites with `install: false` still port-forward to the configured service and rely on `prometheus.WaitReady`.
+
+Tests:
+
+- `go test ./cmd/perf-runner`: PASS
+- `go test ./cmd/perf-runner ./internal/run`: PASS
+- `go test ./...`: PASS
+- `make build`: PASS
+- `make list-suites`: PASS, output included `kata-disk-perf`
+
+### Finding 2: Run directory names could collide within the same second
+
+Fix: `internal/run.CreateRunDir` now creates run directories with RFC3339Nano timestamps and atomically creates the run root before child directories, making names collision-resistant while keeping deterministic naming covered by `runDirName` tests.
+
+Tests:
+
+- `go test ./internal/run`: PASS
+- `go test ./cmd/perf-runner ./internal/run`: PASS
+- `go test ./...`: PASS
+- `make build`: PASS
+- `make list-suites`: PASS, output included `kata-disk-perf`

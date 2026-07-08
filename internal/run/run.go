@@ -105,14 +105,25 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 }
 
 func CreateRunDir(suiteName string, mode string) (string, error) {
-	safeSuite := strings.ReplaceAll(suiteName, "/", "_")
-	dir := filepath.Join("results", time.Now().UTC().Format("2006-01-02T15-04-05Z")+"_"+safeSuite+"_"+mode)
+	if err := os.MkdirAll("results", 0o755); err != nil {
+		return "", err
+	}
+	dir := filepath.Join("results", runDirName(suiteName, mode, time.Now().UTC()))
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return "", err
+	}
 	for _, child := range []string{"metadata", "rendered", "logs", "raw", "summary"} {
 		if err := os.MkdirAll(filepath.Join(dir, child), 0o755); err != nil {
 			return "", err
 		}
 	}
 	return dir, nil
+}
+
+func runDirName(suiteName string, mode string, timestamp time.Time) string {
+	safeSuite := strings.ReplaceAll(suiteName, "/", "_")
+	safeTimestamp := strings.ReplaceAll(timestamp.UTC().Format(time.RFC3339Nano), ":", "-")
+	return safeTimestamp + "_" + safeSuite + "_" + mode
 }
 
 func ExecuteKubeBurner(workloadPath string, logPath string) error {

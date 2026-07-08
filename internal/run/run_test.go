@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRenderWorkloadInjectsPrometheusEndpoint(t *testing.T) {
@@ -37,6 +38,18 @@ func TestRenderWorkloadSkipsPrometheusEndpointWhenEmpty(t *testing.T) {
 	}
 	if _, ok := rendered["metricsEndpoints"]; ok {
 		t.Fatalf("metrics endpoint injected for empty prometheus endpoint: %#v", rendered["metricsEndpoints"])
+	}
+}
+
+func TestRunDirNameIncludesNanoseconds(t *testing.T) {
+	base := time.Date(2026, 7, 8, 1, 2, 3, 4, time.UTC)
+	first := runDirName("kata-disk-perf", "smoke", base)
+	second := runDirName("kata-disk-perf", "smoke", base.Add(time.Nanosecond))
+	if first == second {
+		t.Fatalf("runDirName returned duplicate names for distinct nanoseconds: %q", first)
+	}
+	if !strings.Contains(first, "kata-disk-perf_smoke") {
+		t.Fatalf("runDirName() = %q, want suite and mode suffix", first)
 	}
 }
 

@@ -13,6 +13,26 @@ func TestRunDispatchesRunSuite(t *testing.T) {
 	}
 }
 
+func TestShouldWaitPrometheusRolloutOnlyWhenInstalledByRunner(t *testing.T) {
+	cases := []struct {
+		name     string
+		required bool
+		install  bool
+		want     bool
+	}{
+		{name: "required and installed", required: true, install: true, want: true},
+		{name: "required existing service", required: true, install: false, want: false},
+		{name: "not required", required: false, install: true, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldWaitPrometheusRollout(tc.required, tc.install); got != tc.want {
+				t.Fatalf("shouldWaitPrometheusRollout(%v, %v) = %v, want %v", tc.required, tc.install, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateDestroyTargetRequiresDefaultResourceGroup(t *testing.T) {
 	err := validateDestroyTarget("kata-disk-perf", "rg-not-owned", false)
 	if err == nil || !strings.Contains(err.Error(), "rg-aks-burner-kata-disk-perf") {

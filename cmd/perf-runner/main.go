@@ -144,8 +144,10 @@ func runSuite(args []string) error {
 	}
 	prometheusURL := ""
 	if req.Requires.Observability.Prometheus.Required {
-		if err := prometheus.WaitRollout(ctx, req.Requires.Observability.Prometheus); err != nil {
-			return err
+		if shouldWaitPrometheusRollout(req.Requires.Observability.Prometheus.Required, req.Requires.Observability.Prometheus.Install) {
+			if err := prometheus.WaitRollout(ctx, req.Requires.Observability.Prometheus); err != nil {
+				return err
+			}
 		}
 		portForwardCtx, portForwardCancel := context.WithCancel(ctx)
 		cmd, endpoint, err := prometheus.PortForward(portForwardCtx, req.Requires.Observability.Prometheus)
@@ -198,6 +200,10 @@ func runSuite(args []string) error {
 		return err
 	}
 	return runpkg.ExecuteKubeBurner(workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"))
+}
+
+func shouldWaitPrometheusRollout(required bool, install bool) bool {
+	return required && install
 }
 
 func provision(args []string) error {
