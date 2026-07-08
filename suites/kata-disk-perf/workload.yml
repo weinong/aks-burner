@@ -1,0 +1,12 @@
+global:
+  measurements:
+    - name: podLatency
+jobs:
+  - name: startup-smoke
+    jobType: create
+    namespace: kata-disk-perf
+    namespacedIterations: true
+    objects:
+      - objectTemplate: templates/pod.yml
+        replicas: 1
+        inputVars: {}

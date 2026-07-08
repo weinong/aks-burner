@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kata-disk-perf-{{.Iteration}}-{{.Replica}}
+  labels:
+    app: kata-disk-perf
+spec:
+  nodeSelector:
+    perf.azure.com/node-role: workload
+  restartPolicy: Never
+  containers:
+    - name: pause
+      image: {{.image}}
+      imagePullPolicy: IfNotPresent

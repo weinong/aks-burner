@@ -1,0 +1,4 @@
+name: kata-disk-perf
+description: Example suite for validating kube-burner framework provisioning, Prometheus setup, and suite execution.
+tests:
+  - startup-smoke

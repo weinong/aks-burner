@@ -1,0 +1,27 @@
+suite: kata-disk-perf
+requires:
+  infrastructure:
+    provider: aks
+    bicep:
+      template: infra/aks/main.bicep
+      parameters: suites/kata-disk-perf/infra.bicepparam
+  kubernetes:
+    minVersion: "1.30"
+  nodeSelectors:
+    - name: workload
+      required: true
+      minNodes: 3
+      labels:
+        perf.azure.com/node-role: workload
+  observability:
+    prometheus:
+      required: true
+      install: true
+      namespace: perf-monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+      requiredMetrics:
+        - container_cpu_usage_seconds_total
+        - container_memory_working_set_bytes
