@@ -57,7 +57,24 @@ func PortForward(ctx context.Context, cfg Config) (*exec.Cmd, string, error) {
 	return cmd, EndpointURL(cfg), nil
 }
 
+func StopPortForward(cancel context.CancelFunc, cmd *exec.Cmd) error {
+	cancel()
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if err := cmd.Wait(); err != nil && cmd.ProcessState == nil {
+		return err
+	}
+	return nil
+}
+
 func WaitReady(ctx context.Context, endpoint string) error {
+	return WaitReadyWithTimeout(ctx, endpoint, 2*time.Minute)
+}
+
+func WaitReadyWithTimeout(ctx context.Context, endpoint string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	client := http.Client{Timeout: 2 * time.Second}
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()

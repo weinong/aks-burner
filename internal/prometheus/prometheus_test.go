@@ -1,6 +1,12 @@
 package prometheus
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"os/exec"
+	"testing"
+	"time"
+)
 
 func TestEndpointURL(t *testing.T) {
 	cfg := Config{LocalPort: 9090}
@@ -28,5 +34,30 @@ func TestRenderManifestReplacesPrometheusImage(t *testing.T) {
 	rendered := RenderManifest(manifest, "mcr.microsoft.com/oss/v2/prometheus/prometheus:v3.11.3")
 	if rendered != "image: mcr.microsoft.com/oss/v2/prometheus/prometheus:v3.11.3\n" {
 		t.Fatalf("unexpected manifest: %q", rendered)
+	}
+}
+
+func TestWaitReadyWithTimeoutReturnsDeadline(t *testing.T) {
+	start := time.Now()
+	err := WaitReadyWithTimeout(context.Background(), "http://127.0.0.1:1", 10*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitReadyWithTimeout() error = %v, want deadline exceeded", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("WaitReadyWithTimeout() did not return promptly")
+	}
+}
+
+func TestStopPortForwardCancelsAndWaits(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "sleep", "10")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := StopPortForward(cancel, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if cmd.ProcessState == nil {
+		t.Fatalf("StopPortForward() did not wait for process")
 	}
 }
