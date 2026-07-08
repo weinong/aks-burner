@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["environment", "provider", "resourceGroup", "clusterName"],
+  "properties": {
+    "environment": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "enum": ["aks"] },
+    "resourceGroup": { "type": "string", "minLength": 1 },
+    "clusterName": { "type": "string", "minLength": 1 }
+  }
+}

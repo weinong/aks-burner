@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["iterations", "iterationsPerNamespace", "qps", "burst", "cleanup", "waitWhenFinished", "preLoadImages", "templateVars", "imageVars"],
+  "properties": {
+    "iterations": { "type": "integer", "minimum": 1 },
+    "iterationsPerNamespace": { "type": "integer", "minimum": 1 },
+    "qps": { "type": "integer", "minimum": 1 },
+    "burst": { "type": "integer", "minimum": 1 },
+    "cleanup": { "type": "boolean" },
+    "waitWhenFinished": { "type": "boolean" },
+    "preLoadImages": { "type": "boolean" },
+    "templateVars": { "type": "object", "additionalProperties": true },
+    "imageVars": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    }
+  }
+}

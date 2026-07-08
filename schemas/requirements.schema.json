@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["suite", "requires"],
+  "properties": {
+    "suite": { "type": "string", "minLength": 1 },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["infrastructure", "kubernetes", "observability"],
+      "properties": {
+        "infrastructure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "bicep"],
+          "properties": {
+            "provider": { "type": "string", "enum": ["aks"] },
+            "bicep": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["template", "parameters"],
+              "properties": {
+                "template": { "type": "string", "minLength": 1 },
+                "parameters": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        "kubernetes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minVersion"],
+          "properties": {
+            "minVersion": { "type": "string", "pattern": "^v?[0-9]+\\.[0-9]+(\\.[0-9]+)?$" }
+          }
+        },
+        "nodeSelectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "required", "minNodes", "labels"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "required": { "type": "boolean" },
+              "minNodes": { "type": "integer", "minimum": 0 },
+              "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+            }
+          }
+        },
+        "observability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["prometheus"],
+          "properties": {
+            "prometheus": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["required", "install", "namespace", "imageKey", "serviceName", "servicePort", "localPort"],
+              "properties": {
+                "required": { "type": "boolean" },
+                "install": { "type": "boolean" },
+                "namespace": { "type": "string", "minLength": 1 },
+                "imageKey": { "type": "string", "minLength": 1 },
+                "serviceName": { "type": "string", "minLength": 1 },
+                "servicePort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "localPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "requiredMetrics": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

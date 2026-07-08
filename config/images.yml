@@ -1,0 +1,3 @@
+images:
+  pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2
+  prometheus: mcr.microsoft.com/oss/v2/prometheus/prometheus:v3.11.3
