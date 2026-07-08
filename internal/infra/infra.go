@@ -32,3 +32,15 @@ func Provision(ctx context.Context, opts ProvisionOptions) error {
 	}
 	return nil
 }
+
+func DestroyCommand(resourceGroup string) []string {
+	return []string{"az", "group", "delete", "--name", resourceGroup, "--yes", "--no-wait"}
+}
+
+func Destroy(ctx context.Context, resourceGroup string) error {
+	args := DestroyCommand(resourceGroup)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

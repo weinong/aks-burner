@@ -34,9 +34,24 @@ func run(args []string) error {
 		return provision(args[1:])
 	case "run-suite":
 		return runSuite(args[1:])
+	case "destroy":
+		return destroy(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func destroy(args []string) error {
+	fs := flag.NewFlagSet("destroy", flag.ContinueOnError)
+	suiteName := fs.String("suite", "", "suite name")
+	resourceGroup := fs.String("resource-group", "", "Azure resource group")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *suiteName == "" || *resourceGroup == "" {
+		return fmt.Errorf("usage: perf-runner destroy --suite SUITE --resource-group RG")
+	}
+	return infra.Destroy(context.Background(), *resourceGroup)
 }
 
 func runSuite(args []string) error {
