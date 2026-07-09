@@ -6,6 +6,8 @@ This repository organizes kube-burner performance test suites and can provision 
 
 ```bash
 make list-suites
+TEST_SUITE=my-suite make add-suite
+make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
 TEST_SUITE=kata-perf make destroy
@@ -13,10 +15,14 @@ TEST_SUITE=kata-perf make destroy
 
 `TEST_MODE` defaults to `smoke`. `RESOURCE_GROUP` defaults to `rg-aks-burner-$(TEST_SUITE)`. `AZURE_LOCATION` defaults to `westus2`.
 
+`TEST_SUITE=my-suite make add-suite` creates a complete dummy suite under `suites/my-suite/` using defaults. `make add-suite-guided` prompts for the suite name, description, cluster name, Kubernetes version, node settings, Prometheus, and smoke/full sizes.
+
 ## Suite Lifecycle
 
 ```bash
 make list-suites
+TEST_SUITE=my-suite make add-suite
+make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
 TEST_SUITE=kata-perf make destroy
