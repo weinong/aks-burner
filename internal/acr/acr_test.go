@@ -1,12 +1,23 @@
 package acr
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("AKS_BURNER_ACR_TEST_HELPER") == "1" {
+		if err := os.WriteFile(os.Getenv("AKS_BURNER_ACR_TEST_RECORD"), []byte(mustGetwd()), 0o644); err != nil {
+			panic(err)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestRunTagIsDockerSafeAndImmutable(t *testing.T) {
 	timestamp := time.Date(2026, 7, 9, 1, 2, 3, 4, time.UTC)
@@ -54,12 +65,12 @@ func TestBuildCommandsConstructsDeterministicAcrBuild(t *testing.T) {
 		"--registry", "acrakskataperf",
 		"--resource-group", "rg-aks-burner-kata-perf",
 		"--image", "kata-perf/pause:kata-perf-smoke-20260709T010203Z",
-		"--file", "Dockerfile",
+		"--file", filepath.Join("images", "pause", "Dockerfile"),
 		"--platform", "linux/amd64",
 		"--timeout", "1800",
 		"--build-arg", "A_ARG=first",
 		"--build-arg", "Z_ARG=last",
-		contextDir,
+		filepath.Join("images", "pause"),
 	}
 	if len(commands) != 1 {
 		t.Fatalf("len(commands) = %d, want 1", len(commands))
@@ -70,6 +81,88 @@ func TestBuildCommandsConstructsDeterministicAcrBuild(t *testing.T) {
 	}
 	if built[0].Key != "kata-pause" || built[0].Image != "acrakskataperf.azurecr.io/kata-perf/pause:kata-perf-smoke-20260709T010203Z" {
 		t.Fatalf("built image = %#v", built[0])
+	}
+}
+
+func TestBuildCommandsUsesSuiteRelativeContextForAcrUpload(t *testing.T) {
+	suiteDir := t.TempDir()
+	contextDir := filepath.Join(suiteDir, "images", "pause")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	commands, _, err := BuildCommands(BuildOptions{
+		SuiteDir:       suiteDir,
+		RegistryName:   "acrtest",
+		RegistryServer: "acrtest.azurecr.io",
+		Tag:            "run-1",
+		Builds:         []ImageBuild{{Key: "image", Repository: "kata/pause", Context: "images/pause", Dockerfile: "Dockerfile"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := commands[0][len(commands[0])-1], filepath.Join("images", "pause"); got != want {
+		t.Fatalf("acr build context argument = %q, want suite-relative %q", got, want)
+	}
+}
+
+func TestBuildCommandsUsesSuiteRelativeDockerfileForAcrBuild(t *testing.T) {
+	suiteDir := t.TempDir()
+	contextDir := filepath.Join(suiteDir, "images", "pause")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	commands, _, err := BuildCommands(BuildOptions{
+		SuiteDir:       suiteDir,
+		RegistryName:   "acrtest",
+		RegistryServer: "acrtest.azurecr.io",
+		Tag:            "run-1",
+		Builds:         []ImageBuild{{Key: "image", Repository: "kata/pause", Context: "images/pause", Dockerfile: "Dockerfile"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := valueAfter(commands[0], "--file"), filepath.Join("images", "pause", "Dockerfile"); got != want {
+		t.Fatalf("acr build dockerfile argument = %q, want suite-relative %q", got, want)
+	}
+}
+
+func TestBuildRunsAcrCommandFromSuiteDir(t *testing.T) {
+	suiteDir := t.TempDir()
+	contextDir := filepath.Join(suiteDir, "images", "pause")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(t.TempDir(), "cwd")
+	t.Setenv("PATH", fakeAzDir(t))
+	t.Setenv("AKS_BURNER_ACR_TEST_RECORD", recordPath)
+
+	_, _, err := Build(context.Background(), BuildOptions{
+		SuiteDir:       suiteDir,
+		RegistryName:   "acrtest",
+		RegistryServer: "acrtest.azurecr.io",
+		Tag:            "run-1",
+		Builds:         []ImageBuild{{Key: "image", Repository: "kata/pause", Context: "images/pause", Dockerfile: "Dockerfile"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != suiteDir {
+		t.Fatalf("az acr build cwd = %q, want suite dir %q", got, suiteDir)
 	}
 }
 
@@ -220,4 +313,32 @@ func assertStringSlice(t *testing.T, got []string, want []string) {
 			t.Fatalf("arg[%d] = %q, want %q\ngot:  %#v\nwant: %#v", i, got[i], want[i], got, want)
 		}
 	}
+}
+
+func valueAfter(args []string, key string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == key {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func fakeAzDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "az")
+	content := "#!/bin/sh\nAKS_BURNER_ACR_TEST_HELPER=1 '" + strings.ReplaceAll(os.Args[0], "'", "'\\''") + "'\n"
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func mustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	return wd
 }

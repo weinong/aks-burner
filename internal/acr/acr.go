@@ -97,7 +97,8 @@ func BuildCommands(opts BuildOptions) ([][]string, []BuiltImage, error) {
 		if opts.ResourceGroup != "" {
 			args = append(args, "--resource-group", opts.ResourceGroup)
 		}
-		args = append(args, "--image", imageName, "--file", dockerfile)
+		dockerfileArg := filepath.Join(filepath.Clean(build.Context), dockerfile)
+		args = append(args, "--image", imageName, "--file", dockerfileArg)
 		if build.Platform != "" {
 			args = append(args, "--platform", build.Platform)
 		}
@@ -107,7 +108,7 @@ func BuildCommands(opts BuildOptions) ([][]string, []BuiltImage, error) {
 		for _, key := range sortedKeys(build.BuildArgs) {
 			args = append(args, "--build-arg", key+"="+build.BuildArgs[key])
 		}
-		args = append(args, contextPath)
+		args = append(args, filepath.Clean(build.Context))
 		commands = append(commands, args)
 		built = append(built, BuiltImage{
 			Key:        build.Key,
@@ -128,6 +129,7 @@ func Build(ctx context.Context, opts BuildOptions) ([]BuiltImage, map[string]str
 	}
 	for i, args := range commands {
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Dir = opts.SuiteDir
 		var logFile *os.File
 		if opts.LogsDir != "" {
 			if err := os.MkdirAll(opts.LogsDir, 0o755); err != nil {
