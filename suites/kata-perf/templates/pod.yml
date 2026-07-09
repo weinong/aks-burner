@@ -5,8 +5,10 @@ metadata:
   labels:
     app: kata-perf
 spec:
+  runtimeClassName: kata-vm-isolation
   nodeSelector:
     perf.azure.com/node-role: workload
+    kubernetes.azure.com/os-sku: AzureLinux
   restartPolicy: Never
   containers:
     - name: pause

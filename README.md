@@ -30,6 +30,18 @@ TEST_SUITE=kata-perf make destroy
 
 `provision` creates the Azure resource group, AKS cluster, and suite ACR declared by the suite requirements. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group and waits for deletion to complete.
 
+## Existing AKS Cluster
+
+`run-suite` can target an existing AKS cluster without running `provision`. The target cluster name is read from the suite Bicep parameter file, such as `suites/kata-perf/infra.bicepparam`.
+
+```bash
+TEST_SUITE=kata-perf TEST_MODE=smoke RESOURCE_GROUP=<existing-resource-group> make run-suite
+```
+
+For `kata-perf`, the expected cluster name is `akskataperf` unless `suites/kata-perf/infra.bicepparam` is updated. Validate the existing cluster before running the suite: check Kubernetes version with `kubectl version -o json`, and check required node selectors with `kubectl get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
+
+When Prometheus is `required` and `install: true`, `run-suite` installs Prometheus before running the workload.
+
 `destroy` only deletes the default resource group name `rg-aks-burner-<suite>`. To delete a deliberately overridden suite resource group, call `perf-runner destroy` directly with `--allow-non-default-resource-group`.
 
 ## Suite Images

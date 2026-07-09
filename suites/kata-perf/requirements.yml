@@ -8,11 +8,12 @@ requires:
   kubernetes:
     minVersion: "1.36"
   nodeSelectors:
-    - name: workload
+    - name: azurelinux-workload
       required: true
       minNodes: 1
       labels:
         perf.azure.com/node-role: workload
+        kubernetes.azure.com/os-sku: AzureLinux
   images:
     registry:
       nameParameter: containerRegistryName

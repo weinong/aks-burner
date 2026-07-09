@@ -7,6 +7,16 @@ param systemNodeCount int = 1
 param systemNodeVmSize string = 'Standard_D4s_v5'
 param userNodeCount int = 3
 param userNodeVmSize string = 'Standard_D8s_v5'
+@allowed([
+  'Ubuntu'
+  'AzureLinux'
+])
+param userNodeOsSKU string = 'Ubuntu'
+@allowed([
+  'OCIContainer'
+  'KataMshvVmIsolation'
+])
+param userNodeWorkloadRuntime string = 'OCIContainer'
 param userNodeLabels object = {
   'perf.azure.com/node-role': 'workload'
 }
@@ -52,7 +62,9 @@ resource aks 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
         count: userNodeCount
         vmSize: userNodeVmSize
         osType: 'Linux'
+        osSKU: userNodeOsSKU
         type: 'VirtualMachineScaleSets'
+        workloadRuntime: userNodeWorkloadRuntime
         nodeLabels: userNodeLabels
       }
     ]
