@@ -16,6 +16,9 @@ func TestProvisionCommands(t *testing.T) {
 	if commands[1][0] != "az" || commands[1][1] != "deployment" || commands[1][2] != "group" || commands[1][3] != "create" {
 		t.Fatalf("unexpected deployment command: %#v", commands[1])
 	}
+	if !containsArgSequence(commands[1], "--name", DeploymentName) {
+		t.Fatalf("deployment command missing explicit name %q: %#v", DeploymentName, commands[1])
+	}
 	for _, arg := range commands[1] {
 		if arg == "--template-file" {
 			t.Fatalf("deployment command must use .bicepparam directly without --template-file: %#v", commands[1])
@@ -37,4 +40,33 @@ func TestGetCredentialsCommand(t *testing.T) {
 			t.Fatalf("cmd[%d] = %q, want %q", i, cmd[i], want[i])
 		}
 	}
+}
+
+func TestDeploymentOutputCommand(t *testing.T) {
+	cmd := DeploymentOutputCommand("rg-aks-burner-test", DeploymentName, "containerRegistryName")
+	want := []string{"az", "deployment", "group", "show", "--resource-group", "rg-aks-burner-test", "--name", DeploymentName, "--query", "properties.outputs.containerRegistryName.value", "--output", "tsv"}
+	if len(cmd) != len(want) {
+		t.Fatalf("len = %d, want %d", len(cmd), len(want))
+	}
+	for i := range want {
+		if cmd[i] != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, cmd[i], want[i])
+		}
+	}
+}
+
+func containsArgSequence(args []string, want ...string) bool {
+	for i := 0; i <= len(args)-len(want); i++ {
+		matched := true
+		for j := range want {
+			if args[i+j] != want[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/aks-burner/internal/acr"
 	"github.com/Azure/aks-burner/internal/config"
 	"github.com/Azure/aks-burner/internal/infra"
 	"github.com/Azure/aks-burner/internal/prometheus"
@@ -420,6 +421,7 @@ func runSuite(args []string) error {
 					Parameters string `yaml:"parameters"`
 				} `yaml:"bicep"`
 			} `yaml:"infrastructure"`
+			Images        acr.Requirements                 `yaml:"images"`
 			Kubernetes    runpkg.KubernetesRequirements    `yaml:"kubernetes"`
 			NodeSelectors []runpkg.NodeSelectorRequirement `yaml:"nodeSelectors"`
 			Observability struct {
@@ -441,7 +443,7 @@ func runSuite(args []string) error {
 	if err != nil {
 		return err
 	}
-	images, err := config.LoadImages(filepath.Join(root, "config", "images.yml"))
+	staticImages, err := config.LoadImages(filepath.Join(root, "config", "images.yml"))
 	if err != nil {
 		return err
 	}
@@ -453,6 +455,68 @@ func runSuite(args []string) error {
 	if err := runpkg.ValidateRequirements(ctx, runpkg.Requirements{Kubernetes: req.Requires.Kubernetes, NodeSelectors: req.Requires.NodeSelectors}, runpkg.KubectlOutput); err != nil {
 		return err
 	}
+	runTimestamp := time.Now().UTC()
+	runDir, err := runpkg.CreateRunDir(*suiteName, *modeName)
+	if err != nil {
+		return err
+	}
+	suiteDir := filepath.Join(root, "suites", *suiteName)
+	var workload map[string]any
+	workloadFile, err := resolveSuitePath(root, *suiteName, "workload.yml")
+	if err != nil {
+		return err
+	}
+	if err := config.LoadYAML(workloadFile, &workload); err != nil {
+		return err
+	}
+	var mode runpkg.Mode
+	modePath, err := resolveSuitePath(root, *suiteName, filepath.Join("vars", *modeName+".yml"))
+	if err != nil {
+		return err
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), modePath); err != nil {
+		return err
+	}
+	if err := config.LoadYAML(modePath, &mode); err != nil {
+		return err
+	}
+	if err := validateModeImageVars(mode.ImageVars, staticImages, req.Requires.Images.Builds); err != nil {
+		return err
+	}
+	builtImages := []acr.BuiltImage(nil)
+	builtImageMap := map[string]string{}
+	if len(req.Requires.Images.Builds) > 0 {
+		registryName, err := registryNameFromRequirements(parametersPath, req.Requires.Images)
+		if err != nil {
+			return err
+		}
+		registryServer := ""
+		if registryName == "" {
+			registryName, err = infra.DeploymentOutput(ctx, *resourceGroup, infra.DeploymentName, "containerRegistryName")
+			if err != nil {
+				return err
+			}
+			registryServer, err = infra.DeploymentOutput(ctx, *resourceGroup, infra.DeploymentName, "containerRegistryLoginServer")
+			if err != nil {
+				return err
+			}
+		} else {
+			registryServer = registryName + ".azurecr.io"
+		}
+		builtImages, builtImageMap, err = acr.Build(ctx, acr.BuildOptions{
+			SuiteDir:       suiteDir,
+			RegistryName:   registryName,
+			RegistryServer: registryServer,
+			ResourceGroup:  *resourceGroup,
+			Tag:            acr.RunTag(*suiteName, *modeName, runTimestamp),
+			Builds:         req.Requires.Images.Builds,
+			LogsDir:        filepath.Join(runDir, "logs"),
+		})
+		if err != nil {
+			return err
+		}
+	}
+	images := mergeImages(staticImages, builtImageMap)
 	if req.Requires.Observability.Prometheus.Required && req.Requires.Observability.Prometheus.Install {
 		prometheusImage, err := config.ResolveImage(images, req.Requires.Observability.Prometheus.ImageKey)
 		if err != nil {
@@ -481,33 +545,9 @@ func runSuite(args []string) error {
 		}
 		prometheusURL = endpoint
 	}
-	var workload map[string]any
-	workloadFile, err := resolveSuitePath(root, *suiteName, "workload.yml")
-	if err != nil {
+	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images, BuiltImages: builtImages}); err != nil {
 		return err
 	}
-	if err := config.LoadYAML(workloadFile, &workload); err != nil {
-		return err
-	}
-	var mode runpkg.Mode
-	modePath, err := resolveSuitePath(root, *suiteName, filepath.Join("vars", *modeName+".yml"))
-	if err != nil {
-		return err
-	}
-	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), modePath); err != nil {
-		return err
-	}
-	if err := config.LoadYAML(modePath, &mode); err != nil {
-		return err
-	}
-	runDir, err := runpkg.CreateRunDir(*suiteName, *modeName)
-	if err != nil {
-		return err
-	}
-	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: time.Now().UTC().Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images}); err != nil {
-		return err
-	}
-	suiteDir := filepath.Join(root, "suites", *suiteName)
 	if err := runpkg.CopyRenderAssets(suiteDir, runDir); err != nil {
 		return err
 	}
@@ -593,6 +633,47 @@ func validateDestroyTarget(suiteName string, resourceGroup string, allowNonDefau
 
 func defaultResourceGroup(suiteName string) string {
 	return "rg-aks-burner-" + suiteName
+}
+
+func registryNameFromRequirements(parametersPath string, images acr.Requirements) (string, error) {
+	if len(images.Builds) == 0 {
+		return "", nil
+	}
+	if images.Registry.NameParameter == "" {
+		return "", fmt.Errorf("requires.images.registry.nameParameter is required when image builds are configured")
+	}
+	registryName, err := readBicepParamString(parametersPath, images.Registry.NameParameter)
+	if err != nil && strings.Contains(err.Error(), "parameter "+images.Registry.NameParameter+" not found") {
+		return "", nil
+	}
+	return registryName, err
+}
+
+func mergeImages(base map[string]string, overlay map[string]string) map[string]string {
+	merged := map[string]string{}
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
+}
+
+func validateModeImageVars(imageVars map[string]string, staticImages map[string]string, builds []acr.ImageBuild) error {
+	known := map[string]bool{}
+	for key := range staticImages {
+		known[key] = true
+	}
+	for _, build := range builds {
+		known[build.Key] = true
+	}
+	for _, imageKey := range imageVars {
+		if !known[imageKey] {
+			return fmt.Errorf("image key %q not found", imageKey)
+		}
+	}
+	return nil
 }
 
 func resolveSuitePath(root string, suiteName string, value string) (string, error) {

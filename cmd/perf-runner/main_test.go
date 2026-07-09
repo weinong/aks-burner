@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/aks-burner/internal/acr"
 	"github.com/Azure/aks-burner/internal/config"
 )
 
@@ -156,6 +157,75 @@ func TestAddSuiteGuidedUsesDefaultsForBlankAnswers(t *testing.T) {
 	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "requirements.yml"), "required: true")
 	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "infra.bicepparam"), "param userNodeCount = 1")
 	assertGeneratedSuiteSchemas(t, root, "guided-suite")
+}
+
+func TestReadBicepParamStringReadsContainerRegistryName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "infra.bicepparam")
+	if err := os.WriteFile(path, []byte("param clusterName = 'akstest'\nparam containerRegistryName = 'acrtest'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readBicepParamString(path, "containerRegistryName")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "acrtest" {
+		t.Fatalf("readBicepParamString() = %q, want acrtest", got)
+	}
+}
+
+func TestRegistryNameFromRequirementsUsesParameterWhenPresent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "infra.bicepparam")
+	if err := os.WriteFile(path, []byte("param clusterName = 'akstest'\nparam containerRegistryName = 'acrtest'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := registryNameFromRequirements(path, acr.Requirements{
+		Registry: acr.RegistryConfig{NameParameter: "containerRegistryName"},
+		Builds:   []acr.ImageBuild{{Key: "image", Repository: "repo/image", Context: ".", Dockerfile: "Dockerfile"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "acrtest" {
+		t.Fatalf("registryNameFromRequirements() = %q, want acrtest", got)
+	}
+}
+
+func TestRegistryNameFromRequirementsAllowsGeneratedRegistryName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "infra.bicepparam")
+	if err := os.WriteFile(path, []byte("param clusterName = 'akstest'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := registryNameFromRequirements(path, acr.Requirements{
+		Registry: acr.RegistryConfig{NameParameter: "containerRegistryName"},
+		Builds:   []acr.ImageBuild{{Key: "image", Repository: "repo/image", Context: ".", Dockerfile: "Dockerfile"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("registryNameFromRequirements() = %q, want empty fallback marker", got)
+	}
+}
+
+func TestMergeImagesOverlaysBuiltImages(t *testing.T) {
+	got := mergeImages(map[string]string{"pause": "mcr/pause", "app": "old"}, map[string]string{"app": "acr/app:run"})
+	if got["pause"] != "mcr/pause" || got["app"] != "acr/app:run" {
+		t.Fatalf("mergeImages() = %#v", got)
+	}
+}
+
+func TestValidateModeImageVarsAllowsDeclaredBuildKeys(t *testing.T) {
+	err := validateModeImageVars(map[string]string{"image": "kata-pause"}, map[string]string{"prometheus": "mcr/prometheus"}, []acr.ImageBuild{{Key: "kata-pause"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateModeImageVarsRejectsUnknownImageKeyBeforeBuild(t *testing.T) {
+	err := validateModeImageVars(map[string]string{"image": "missing"}, map[string]string{"prometheus": "mcr/prometheus"}, []acr.ImageBuild{{Key: "kata-pause"}})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("validateModeImageVars() error = %v, want missing image key", err)
+	}
 }
 
 func testRepoRoot(t *testing.T) string {

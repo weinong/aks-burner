@@ -13,6 +13,16 @@ requires:
       minNodes: 1
       labels:
         perf.azure.com/node-role: workload
+  images:
+    registry:
+      nameParameter: containerRegistryName
+    builds:
+      - key: kata-pause
+        repository: kata-perf/pause
+        context: images/pause
+        dockerfile: Dockerfile
+        platform: linux/amd64
+        timeoutSeconds: 1800
   observability:
     prometheus:
       required: true

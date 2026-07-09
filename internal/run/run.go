@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/aks-burner/internal/acr"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,6 +53,7 @@ type Metadata struct {
 	ResourceGroup string            `yaml:"resourceGroup"`
 	ClusterName   string            `yaml:"clusterName"`
 	Images        map[string]string `yaml:"images"`
+	BuiltImages   []acr.BuiltImage  `yaml:"builtImages,omitempty"`
 }
 
 func RenderWorkload(workload map[string]any, mode Mode, images map[string]string, prometheusEndpoint string) (map[string]any, error) {

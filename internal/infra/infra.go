@@ -2,8 +2,10 @@ package infra
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 type ProvisionOptions struct {
@@ -13,10 +15,12 @@ type ProvisionOptions struct {
 	ClusterName    string
 }
 
+const DeploymentName = "aks-burner"
+
 func ProvisionCommands(opts ProvisionOptions) [][]string {
 	return [][]string{
 		{"az", "group", "create", "--name", opts.ResourceGroup, "--location", opts.Location},
-		{"az", "deployment", "group", "create", "--resource-group", opts.ResourceGroup, "--parameters", opts.ParametersFile, "location=" + opts.Location},
+		{"az", "deployment", "group", "create", "--resource-group", opts.ResourceGroup, "--name", DeploymentName, "--parameters", opts.ParametersFile, "location=" + opts.Location},
 		GetCredentialsCommand(opts.ResourceGroup, opts.ClusterName),
 	}
 }
@@ -55,4 +59,21 @@ func GetCredentials(ctx context.Context, resourceGroup string, clusterName strin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func DeploymentOutputCommand(resourceGroup string, deploymentName string, outputName string) []string {
+	return []string{"az", "deployment", "group", "show", "--resource-group", resourceGroup, "--name", deploymentName, "--query", "properties.outputs." + outputName + ".value", "--output", "tsv"}
+}
+
+func DeploymentOutput(ctx context.Context, resourceGroup string, deploymentName string, outputName string) (string, error) {
+	args := DeploymentOutputCommand(resourceGroup, deploymentName, outputName)
+	data, err := exec.CommandContext(ctx, args[0], args[1:]...).Output()
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", fmt.Errorf("deployment output %q not found", outputName)
+	}
+	return value, nil
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Azure/aks-burner/internal/acr"
 )
 
 func TestRenderWorkloadInjectsPrometheusEndpoint(t *testing.T) {
@@ -123,6 +125,14 @@ func TestWriteMetadataWritesSafeRunMetadata(t *testing.T) {
 		ResourceGroup: "rg-aks-burner-kata-perf",
 		ClusterName:   "akskataperf",
 		Images:        map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"},
+		BuiltImages: []acr.BuiltImage{{
+			Key:        "kata-pause",
+			Image:      "acrakskataperf.azurecr.io/kata-perf/pause:kata-perf-smoke-20260709T010203Z",
+			Repository: "kata-perf/pause",
+			Tag:        "kata-perf-smoke-20260709T010203Z",
+			Context:    "images/pause",
+			Dockerfile: "Dockerfile",
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +142,7 @@ func TestWriteMetadataWritesSafeRunMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"suite: kata-perf", "mode: smoke", "clusterName: akskataperf", "pause:"} {
+	for _, want := range []string{"suite: kata-perf", "mode: smoke", "clusterName: akskataperf", "pause:", "builtImages:", "kata-pause", "acrakskataperf.azurecr.io/kata-perf/pause:kata-perf-smoke-20260709T010203Z"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("metadata missing %q: %s", want, text)
 		}

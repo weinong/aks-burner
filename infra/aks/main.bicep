@@ -10,6 +10,23 @@ param userNodeVmSize string = 'Standard_D8s_v5'
 param userNodeLabels object = {
   'perf.azure.com/node-role': 'workload'
 }
+param containerRegistryName string = ''
+param containerRegistrySku string = 'Basic'
+
+var resolvedContainerRegistryName = empty(containerRegistryName) ? 'acr${take(uniqueString(resourceGroup().id, clusterName), 18)}' : containerRegistryName
+var acrPullRoleDefinitionId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: resolvedContainerRegistryName
+  location: location
+  sku: {
+    name: containerRegistrySku
+  }
+  properties: {
+    adminUserEnabled: false
+    publicNetworkAccess: 'Enabled'
+  }
+}
 
 resource aks 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
   name: clusterName
@@ -48,4 +65,16 @@ resource aks 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
   }
 }
 
+resource aksAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, clusterName, acrPullRoleDefinitionId)
+  scope: acr
+  properties: {
+    principalId: aks.properties.identityProfile.kubeletidentity.objectId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleDefinitionId)
+  }
+}
+
 output clusterName string = aks.name
+output containerRegistryName string = acr.name
+output containerRegistryLoginServer string = acr.properties.loginServer
