@@ -2,7 +2,30 @@ TEST_MODE ?= smoke
 AZURE_LOCATION ?= westus2
 RESOURCE_GROUP ?= rg-aks-burner-$(TEST_SUITE)
 
-.PHONY: test build list-suites provision run-suite destroy clean-results
+.DEFAULT_GOAL := test
+
+.PHONY: help test build list-suites provision run-suite destroy clean-results
+
+help:
+	@printf '%s\n' 'Available targets:'
+	@printf '  %-20s %s\n' 'help' 'Show this help message.'
+	@printf '  %-20s %s\n' 'test' 'Run Go tests.'
+	@printf '  %-20s %s\n' 'build' 'Build the perf-runner binary into bin/.'
+	@printf '  %-20s %s\n' 'list-suites' 'List configured performance test suites.'
+	@printf '  %-20s %s\n' 'provision' 'Provision Azure infrastructure for TEST_SUITE.'
+	@printf '  %-20s %s\n' 'run-suite' 'Run TEST_SUITE with kube-burner.'
+	@printf '  %-20s %s\n' 'destroy' 'Destroy the default suite resource group.'
+	@printf '  %-20s %s\n' 'clean-results' 'Remove generated result files.'
+	@printf '\n%s\n' 'Common examples:'
+	@printf '  %s\n' 'make list-suites'
+	@printf '  %s\n' 'TEST_SUITE=kata-perf make provision'
+	@printf '  %s\n' 'TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite'
+	@printf '  %s\n' 'TEST_SUITE=kata-perf make destroy'
+	@printf '\n%s\n' 'Key variables:'
+	@printf '  %-20s %s\n' 'TEST_SUITE' 'Required for provision, run-suite, and destroy.'
+	@printf '  %-20s %s\n' 'TEST_MODE' 'Defaults to smoke.'
+	@printf '  %-20s %s\n' 'AZURE_LOCATION' 'Defaults to westus2.'
+	@printf '  %-20s %s\n' 'RESOURCE_GROUP' 'Defaults to rg-aks-burner-$$(TEST_SUITE).'
 
 test:
 	go test ./...
