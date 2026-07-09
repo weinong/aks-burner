@@ -78,6 +78,113 @@ func TestCopyRenderAssetsCopiesTemplatesAndMetrics(t *testing.T) {
 	}
 }
 
+func TestExecuteKubeBurnerPrefersRepoLocalBinary(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFakeRepoRoot(t, repoDir)
+
+	writeFakeKubeBurner(t, filepath.Join(repoDir, "bin", "kube-burner"), "repo-local")
+	pathDir := t.TempDir()
+	writeFakeKubeBurner(t, filepath.Join(pathDir, "kube-burner"), "path-binary")
+	t.Setenv("PATH", pathDir)
+
+	workloadPath := filepath.Join(repoDir, "results", "run", "rendered", "workload.yml")
+	logPath := filepath.Join(repoDir, "results", "run", "logs", "kube-burner.log")
+	if err := os.MkdirAll(filepath.Dir(workloadPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workloadPath, []byte("jobs: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ExecuteKubeBurner(workloadPath, logPath); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logData)
+	if !strings.Contains(logText, "repo-local init -c workload.yml") {
+		t.Fatalf("log missing repo-local kube-burner output: %s", logText)
+	}
+	if strings.Contains(logText, "path-binary") {
+		t.Fatalf("log used PATH kube-burner instead of repo-local binary: %s", logText)
+	}
+}
+
+func TestExecuteKubeBurnerFallsBackToPathBinary(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFakeRepoRoot(t, repoDir)
+
+	pathDir := t.TempDir()
+	writeFakeKubeBurner(t, filepath.Join(pathDir, "kube-burner"), "path-binary")
+	t.Setenv("PATH", pathDir)
+
+	workloadPath := filepath.Join(repoDir, "results", "run", "rendered", "workload.yml")
+	logPath := filepath.Join(repoDir, "results", "run", "logs", "kube-burner.log")
+	if err := os.MkdirAll(filepath.Dir(workloadPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workloadPath, []byte("jobs: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ExecuteKubeBurner(workloadPath, logPath); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logData)
+	if !strings.Contains(logText, "path-binary init -c workload.yml") {
+		t.Fatalf("log missing PATH kube-burner output: %s", logText)
+	}
+}
+
+func TestExecuteKubeBurnerFallsBackWhenRepoLocalBinaryIsNotExecutable(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFakeRepoRoot(t, repoDir)
+
+	writeFakeKubeBurnerWithMode(t, filepath.Join(repoDir, "bin", "kube-burner"), "repo-local", 0o644)
+	pathDir := t.TempDir()
+	writeFakeKubeBurner(t, filepath.Join(pathDir, "kube-burner"), "path-binary")
+	t.Setenv("PATH", pathDir)
+
+	workloadPath := filepath.Join(repoDir, "results", "run", "rendered", "workload.yml")
+	logPath := filepath.Join(repoDir, "results", "run", "logs", "kube-burner.log")
+	if err := os.MkdirAll(filepath.Dir(workloadPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workloadPath, []byte("jobs: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ExecuteKubeBurner(workloadPath, logPath); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logData)
+	if !strings.Contains(logText, "path-binary init -c workload.yml") {
+		t.Fatalf("log missing PATH kube-burner output: %s", logText)
+	}
+	if strings.Contains(logText, "repo-local") {
+		t.Fatalf("log used non-executable repo-local binary: %s", logText)
+	}
+}
+
 func TestValidateRequirementsFailsWhenKubernetesVersionTooLow(t *testing.T) {
 	req := Requirements{Kubernetes: KubernetesRequirements{MinVersion: "1.30"}}
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
@@ -86,6 +193,32 @@ func TestValidateRequirementsFailsWhenKubernetesVersionTooLow(t *testing.T) {
 	err := ValidateRequirements(context.Background(), req, runner)
 	if err == nil || !strings.Contains(err.Error(), "Kubernetes version") {
 		t.Fatalf("ValidateRequirements() error = %v, want Kubernetes version error", err)
+	}
+}
+
+func writeFakeRepoRoot(t *testing.T, repoDir string) {
+	t.Helper()
+	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFakeKubeBurner(t *testing.T, path string, marker string) {
+	t.Helper()
+	writeFakeKubeBurnerWithMode(t, path, marker, 0o755)
+}
+
+func writeFakeKubeBurnerWithMode(t *testing.T, path string, marker string, mode os.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf '" + marker + " %s\\n' \"$*\"\n"
+	if err := os.WriteFile(path, []byte(script), mode); err != nil {
+		t.Fatal(err)
 	}
 }
 

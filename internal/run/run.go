@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Azure/aks-burner/internal/acr"
+	"github.com/Azure/aks-burner/internal/repo"
 	"gopkg.in/yaml.v3"
 )
 
@@ -134,11 +135,22 @@ func ExecuteKubeBurner(workloadPath string, logPath string) error {
 		return err
 	}
 	defer logFile.Close()
-	cmd := exec.Command("kube-burner", "init", "-c", filepath.Base(workloadPath))
+	cmd := exec.Command(kubeBurnerExecutable(workloadPath), "init", "-c", filepath.Base(workloadPath))
 	cmd.Dir = filepath.Dir(workloadPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Run()
+}
+
+func kubeBurnerExecutable(workloadPath string) string {
+	root, err := repo.Root(filepath.Dir(workloadPath))
+	if err == nil {
+		candidate := filepath.Join(root, "bin", "kube-burner")
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return "kube-burner"
 }
 
 func ValidateRequirements(ctx context.Context, req Requirements, runner KubectlRunner) error {
