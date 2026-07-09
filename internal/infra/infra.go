@@ -34,7 +34,7 @@ func Provision(ctx context.Context, opts ProvisionOptions) error {
 }
 
 func DestroyCommand(resourceGroup string) []string {
-	return []string{"az", "group", "delete", "--name", resourceGroup, "--yes", "--no-wait"}
+	return []string{"az", "group", "delete", "--name", resourceGroup, "--yes"}
 }
 
 func Destroy(ctx context.Context, resourceGroup string) error {
