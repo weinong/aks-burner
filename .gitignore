@@ -2,4 +2,5 @@ results/*
 !results/.gitkeep
 .rendered/
 bin/perf-runner
+bin/kube-burner
 *.test
