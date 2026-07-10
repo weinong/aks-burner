@@ -650,9 +650,9 @@ func waitArtifactJobsComplete(ctx context.Context, cfg artifacts.Config) error {
 
 func copyArtifacts(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
 	if subpath == "" {
-		return artifacts.Copy(ctx, cfg, destination)
+		return artifacts.Copy(ctx, kubetarget.Target{}, cfg, destination)
 	}
-	return artifacts.CopySubpath(ctx, cfg, destination, subpath)
+	return artifacts.CopySubpath(ctx, kubetarget.Target{}, cfg, destination, subpath)
 }
 
 func artifactSubpathFromRenderedWorkload(rendered map[string]any) string {

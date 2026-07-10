@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Azure/aks-burner/internal/kubetarget"
 )
 
 func TestCopyPodManifestMountsConfiguredPVC(t *testing.T) {
@@ -52,6 +55,52 @@ func TestCopyWithRunnerRunsApplyWaitCopyDelete(t *testing.T) {
 	for i := range want {
 		if calls[i] != want[i] {
 			t.Fatalf("calls[%d] = %q, want %q", i, calls[i], want[i])
+		}
+	}
+}
+
+func TestCopyWithTargetRunnerTargetsApplyWaitCopyAndDelete(t *testing.T) {
+	cfg := Config{Enabled: true, Namespace: "kata-io", PVCName: "results", MountPath: "/results", CopyImage: "busybox:test"}
+	var calls [][]string
+	runner := func(_ context.Context, _ string, args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		if args[len(args)-1] == "--timeout=2m" {
+			return errors.New("wait failed")
+		}
+		return nil
+	}
+
+	err := copyWithTargetRunnerAndPodName(context.Background(), kubetarget.Target{Context: "preview"}, cfg, t.TempDir(), runner, "copy-pod")
+	if err == nil || !strings.Contains(err.Error(), "wait failed") {
+		t.Fatalf("copy error = %v, want wait failure", err)
+	}
+	want := [][]string{
+		{"kubectl", "--context", "preview", "apply", "-f", "-"},
+		{"kubectl", "--context", "preview", "wait", "--for=condition=Ready", "pod/copy-pod", "-n", "kata-io", "--timeout=2m"},
+		{"kubectl", "--context", "preview", "delete", "pod", "copy-pod", "-n", "kata-io", "--ignore-not-found=true"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("commands = %#v, want %#v", calls, want)
+	}
+}
+
+func TestCopyWithTargetRunnerTargetsSuccessfulLifecycle(t *testing.T) {
+	cfg := Config{Enabled: true, Namespace: "kata-io", PVCName: "results", MountPath: "/results", CopyImage: "busybox:test"}
+	var calls [][]string
+	runner := func(_ context.Context, _ string, args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		return nil
+	}
+	if err := copyWithTargetRunnerAndPodName(context.Background(), kubetarget.Target{Context: "preview"}, cfg, t.TempDir(), runner, "copy-pod"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 4 {
+		t.Fatalf("calls = %#v, want apply, wait, copy, delete", calls)
+	}
+	wantPrefix := []string{"kubectl", "--context", "preview"}
+	for _, call := range calls {
+		if len(call) < len(wantPrefix) || !reflect.DeepEqual(call[:len(wantPrefix)], wantPrefix) {
+			t.Fatalf("command = %#v, want prefix %#v", call, wantPrefix)
 		}
 	}
 }
