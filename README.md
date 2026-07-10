@@ -75,3 +75,35 @@ requires:
 `run-suite` tags built images with an immutable tag derived from suite, mode, and run timestamp, then overlays those image refs onto `config/images.yml` before rendering mode `imageVars`. Build logs are written under the run directory as `logs/acr-build-<image-key>.log`, and final image refs are recorded in `metadata/run.yml`.
 
 The AKS Bicep template grants the cluster kubelet identity `AcrPull` on the suite ACR. The user running `provision` must have permission to create role assignments, such as Owner or User Access Administrator on the deployment scope.
+
+## Suite Setup Resources
+
+Suites can install persistent Kubernetes setup resources before kube-burner starts. Use this for suite-specific cluster preparation such as custom `RuntimeClass` objects or node-preparation `DaemonSet` resources.
+
+Declare setup resources in `suites/<suite>/suite.yml`:
+
+```yaml
+setup:
+  resources:
+    - name: kata-runtimeclass
+      path: setup/runtimeclass.yml
+      wait:
+        - kind: exists
+          resource: runtimeclass/custom-kata
+          timeout: 1m
+    - name: node-prep
+      path: setup/node-prep-daemonset.yml
+      wait:
+        - kind: rollout
+          resource: daemonset/node-prep
+          namespace: kube-system
+          timeout: 10m
+```
+
+`run-suite` applies each manifest with `kubectl apply -f` and then runs the declared waits before installing Prometheus or rendering the benchmark workload. Supported wait kinds are:
+
+- `exists`: runs `kubectl get <resource>` when no timeout is set, or `kubectl wait <resource> --for=create --timeout <timeout>` when a timeout is set.
+- `rollout`: runs `kubectl rollout status <resource>`.
+- `condition`: runs `kubectl wait <resource> --for=condition=<condition>`.
+
+Setup resources are intentionally kept after the run finishes. Remove them manually with `kubectl delete` when they are no longer needed, or destroy the suite resource group when using an isolated provisioned cluster.
