@@ -35,7 +35,7 @@
 - Produces: `kubetarget.Target{Context string}`.
 - Produces: `func (Target) KubectlCommand(args ...string) []string`, returning the executable plus arguments.
 - Produces: `func (Target) KubeBurnerArgs(args ...string) []string`, returning arguments only.
-- Produces: `func (Target) Output(context.Context, ...string) ([]byte, error)` and `func (Target) Run(context.Context, string, ...string) error` for kubectl execution.
+- Produces: `func (Target) Output(context.Context, ...string) ([]byte, error)` for kubectl output used by requirement validation.
 
 - [ ] **Step 1: Write command-construction tests**
 
@@ -97,9 +97,7 @@ package kubetarget
 
 import (
 	"context"
-	"os"
 	"os/exec"
-	"strings"
 )
 
 type Target struct {
@@ -127,16 +125,6 @@ func (t Target) Output(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, command[0], command[1:]...).Output()
 }
 
-func (t Target) Run(ctx context.Context, stdin string, args ...string) error {
-	command := t.KubectlCommand(args...)
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
 ```
 
 - [ ] **Step 4: Run tests and commit**
@@ -163,7 +151,7 @@ git commit -m "feat: add optional kubernetes target"
 - Modify: `internal/kubestatemetrics/kube_state_metrics_test.go:1-30`
 
 **Interfaces:**
-- Consumes: `kubetarget.Target.KubectlCommand`, `Target.Run`.
+- Consumes: `kubetarget.Target.KubectlCommand`.
 - Produces: `run.ApplySetup(ctx, target, suiteDir, setup)`.
 - Produces target parameters on Prometheus and kube-state-metrics install, rollout, and port-forward functions.
 
@@ -836,6 +824,27 @@ Create a valid Bicep template and parameter file for a legacy suite, run with `-
 
 For invalid combinations, call `validateRunSuiteTarget` directly and also call `run-suite` for an explicit suite with one image build but no resource group. Use marker files for `az`, `kubectl`, and `kube-burner`; assert all remain empty and `results/` does not exist.
 
+Add a direct requirement-runner unit test that uses both a minimum version and
+a required node selector. The recording runner must receive these argument
+lists, proving the same target-aware runner is used for both checks:
+
+```go
+want := [][]string{
+	{"version", "-o", "json"},
+	{"get", "nodes", "-l", "kubernetes.azure.com/os-sku=AzureLinux", "-o", "name"},
+}
+```
+
+At the CLI integration level, assert the fake kubectl marker contains
+`--context preview get nodes -l kubernetes.azure.com/os-sku=AzureLinux -o name`.
+
+Add an explicit-context suite with one image build and `--resource-group
+rg-build`. Use fake `az` and `kubectl` commands plus a suite-local fake build
+context. Assert the Azure marker contains the deployment-output/ACR build
+operations needed by the existing image path but does not contain `aks
+get-credentials`; assert every Kubernetes marker line contains `--context
+preview`.
+
 - [ ] **Step 4: Add failing target-aware artifact orchestration tests**
 
 Introduce target callback types in tests and update existing orchestration assertions:
@@ -971,6 +980,14 @@ func copyArtifacts(ctx context.Context, target kubetarget.Target, cfg artifacts.
 }
 ```
 
+Add a direct `waitArtifactJobsComplete` test using a fake kubectl executable in
+`PATH`. Call it with `kubetarget.Target{Context: "preview"}` and assert the
+recorded command is:
+
+```text
+--context preview wait --for=condition=complete job --all -n kata-io --timeout=15m
+```
+
 Pass `target` to execution, job wait, and copy callbacks while retaining the existing image resolution, execution, wait, copy, and error-precedence order.
 
 - [ ] **Step 9: Run CLI tests and the full suite, then commit**
@@ -1040,11 +1057,27 @@ func makeDryRun(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("make", append([]string{"-n"}, args...)...)
 	cmd.Dir = testSourceRoot
+	cmd.Env = filteredEnv(os.Environ(), "KUBE_CONTEXT", "RESOURCE_GROUP")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("make -n %v: %v\n%s", args, err, output)
 	}
 	return string(output)
+}
+
+func filteredEnv(env []string, names ...string) []string {
+	blocked := map[string]bool{}
+	for _, name := range names {
+		blocked[name] = true
+	}
+	result := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if !blocked[name] {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 ```
 
@@ -1055,7 +1088,7 @@ command line:
 func TestMakeRunSuiteForwardsEnvironmentResourceGroup(t *testing.T) {
 	cmd := exec.Command("make", "-n", "run-suite", "TEST_SUITE=kata-io")
 	cmd.Dir = testSourceRoot
-	cmd.Env = append(os.Environ(), "KUBE_CONTEXT=preview", "RESOURCE_GROUP=rg-environment")
+	cmd.Env = append(filteredEnv(os.Environ(), "KUBE_CONTEXT", "RESOURCE_GROUP"), "KUBE_CONTEXT=preview", "RESOURCE_GROUP=rg-environment")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("make -n run-suite: %v\n%s", err, output)
