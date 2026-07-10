@@ -42,6 +42,88 @@ func TestRunDispatchesRunSuite(t *testing.T) {
 	}
 }
 
+func TestRunSuiteRejectsInvalidSuiteSetupSchema(t *testing.T) {
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "bad-setup")
+	if err := os.MkdirAll(filepath.Join(suiteDir, "vars"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "suite.yml"), []byte(`name: bad-setup
+description: Bad setup suite
+tests:
+  - startup
+setup:
+  resources:
+    - name: node-prep
+      path: setup/node-prep.yml
+      wait:
+        - kind: sleep
+          resource: daemonset/node-prep
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "requirements.yml"), []byte(`suite: bad-setup
+requires:
+  infrastructure:
+    provider: aks
+    bicep:
+      template: infra/aks/main.bicep
+      parameters: suites/bad-setup/infra.bicepparam
+  kubernetes:
+    minVersion: "1.30"
+  nodeSelectors: []
+  observability:
+    prometheus:
+      required: false
+      install: false
+      namespace: perf-monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+      requiredMetrics: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "infra.bicepparam"), []byte("param clusterName = 'aksbadsetup'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "infra", "aks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "infra", "aks", "main.bicep"), []byte("param clusterName string\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2\nprometheus: prom/prometheus:v2.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "workload.yml"), []byte("jobs: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "vars", "smoke.yml"), []byte(`iterations: 1
+iterationsPerNamespace: 1
+qps: 1
+burst: 1
+cleanup: true
+waitWhenFinished: true
+preLoadImages: false
+templateVars: {}
+imageVars: {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withWorkingDir(t, root)
+
+	err := run([]string{"run-suite", "--suite", "bad-setup", "--mode", "smoke", "--resource-group", "rg-aks-burner-bad-setup"})
+	if err == nil || !strings.Contains(err.Error(), "suite.schema.json") || !strings.Contains(err.Error(), "/setup/resources/0/wait/0/kind") {
+		t.Fatalf("run-suite error = %v, want suite setup schema validation error", err)
+	}
+}
+
 func TestShouldWaitPrometheusRolloutOnlyWhenInstalledByRunner(t *testing.T) {
 	cases := []struct {
 		name     string

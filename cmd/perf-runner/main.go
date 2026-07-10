@@ -409,6 +409,17 @@ func runSuite(args []string) error {
 	if !suite.ValidName(*suiteName) || !suite.ValidName(*modeName) {
 		return fmt.Errorf("invalid suite or mode name")
 	}
+	suitePath, err := resolveSuitePath(root, *suiteName, "suite.yml")
+	if err != nil {
+		return err
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "suite.schema.json"), suitePath); err != nil {
+		return err
+	}
+	suiteCfg, err := suite.Load(root, *suiteName)
+	if err != nil {
+		return err
+	}
 	reqPath, err := resolveSuitePath(root, *suiteName, "requirements.yml")
 	if err != nil {
 		return err
@@ -523,6 +534,9 @@ func runSuite(args []string) error {
 		}
 	}
 	images := mergeImages(staticImages, builtImageMap)
+	if err := runpkg.ApplySetup(ctx, suiteDir, suiteCfg.Setup, runpkg.KubectlOutput); err != nil {
+		return err
+	}
 	if req.Requires.Observability.KubeStateMetrics.Required && req.Requires.Observability.KubeStateMetrics.Install {
 		kubeStateMetricsImage, err := config.ResolveImage(images, req.Requires.Observability.KubeStateMetrics.ImageKey)
 		if err != nil {
@@ -563,7 +577,7 @@ func runSuite(args []string) error {
 		}
 		prometheusURL = endpoint
 	}
-	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images, BuiltImages: builtImages}); err != nil {
+	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
 		return err
 	}
 	if err := runpkg.CopyRenderAssets(suiteDir, runDir); err != nil {

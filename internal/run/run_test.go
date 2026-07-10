@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Azure/aks-burner/internal/acr"
+	"github.com/Azure/aks-burner/internal/suite"
 )
 
 func TestModeSelectedWorkloadFileDefaultsToWorkloadYAML(t *testing.T) {
@@ -414,6 +415,32 @@ func TestWriteMetadataWritesSafeRunMetadata(t *testing.T) {
 	for _, forbidden := range []string{"kubeconfig", "bearer", "token", "Authorization"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("metadata contains forbidden auth material %q: %s", forbidden, text)
+		}
+	}
+}
+
+func TestWriteMetadataIncludesSetup(t *testing.T) {
+	runDir := t.TempDir()
+	metadata := Metadata{
+		Suite: "kata-perf",
+		Mode:  "smoke",
+		Setup: suite.Setup{Resources: []suite.SetupResource{{
+			Name: "node-prep",
+			Path: "setup/node-prep-daemonset.yml",
+			Wait: []suite.WaitRule{{Kind: "rollout", Resource: "daemonset/node-prep", Namespace: "kube-system", Timeout: "10m"}},
+		}}},
+	}
+	if err := WriteMetadata(runDir, metadata); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "metadata", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"setup:", "node-prep", "setup/node-prep-daemonset.yml", "daemonset/node-prep", "kube-system"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metadata missing %q:\n%s", want, text)
 		}
 	}
 }
