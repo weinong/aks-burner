@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -121,6 +122,47 @@ imageVars: {}
 	err := run([]string{"run-suite", "--suite", "bad-setup", "--mode", "smoke", "--resource-group", "rg-aks-burner-bad-setup"})
 	if err == nil || !strings.Contains(err.Error(), "suite.schema.json") || !strings.Contains(err.Error(), "/setup/resources/0/wait/0/kind") {
 		t.Fatalf("run-suite error = %v, want suite setup schema validation error", err)
+	}
+}
+
+func TestListSuitesPrintsModes(t *testing.T) {
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "demo")
+	if err := os.MkdirAll(filepath.Join(suiteDir, "vars"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "suite.yml"), []byte("name: demo\ndescription: Demo suite\ntests:\n  - startup-smoke\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "vars", "smoke.yml"), []byte("iterations: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "vars", "full.yml"), []byte("iterations: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+
+	var out bytes.Buffer
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() error = %v", err)
+	}
+	os.Stdout = w
+	err = run([]string{"list-suites"})
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatalf("Close() error = %v", closeErr)
+	}
+	os.Stdout = oldStdout
+	if _, copyErr := io.Copy(&out, r); copyErr != nil {
+		t.Fatalf("Copy() error = %v", copyErr)
+	}
+	if err != nil {
+		t.Fatalf("run(list-suites) error = %v", err)
+	}
+
+	if got, want := out.String(), "demo\tsmoke, full\tDemo suite\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
 

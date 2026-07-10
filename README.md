@@ -19,6 +19,8 @@ TEST_SUITE=kata-io make destroy
 
 `TEST_MODE` defaults to `smoke`. `RESOURCE_GROUP` defaults to `rg-aks-burner-$(TEST_SUITE)`. `AZURE_LOCATION` defaults to `westus2`.
 
+`make list-suites` prints each suite once with its available modes, so use the suite name for `TEST_SUITE` and one of the listed modes for `TEST_MODE`.
+
 `TEST_SUITE=my-suite make add-suite` creates a complete dummy suite under `suites/my-suite/` using defaults. `make add-suite-guided` prompts for the suite name, description, cluster name, Kubernetes version, node settings, Prometheus, and smoke/full sizes.
 
 ## Suite Lifecycle
