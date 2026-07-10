@@ -6,6 +6,7 @@ metadata:
   labels:
     app: kata-io
     benchmark: io
+    pvc-role: work
     storage-type: {{.storageType}}
 spec:
   accessModes:

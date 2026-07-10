@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kata-io-results
+  namespace: kata-io
+  labels:
+    app: kata-io
+    benchmark: io
+    storage-type: results
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile-csi
+  resources:
+    requests:
+      storage: 128Gi

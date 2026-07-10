@@ -83,7 +83,7 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 			"metrics":  []any{"metrics.yml"},
 			"indexer": map[string]any{
 				"type":             "local",
-				"metricsDirectory": "raw/metrics",
+				"metricsDirectory": "../raw/metrics",
 			},
 		}}
 	}
@@ -110,6 +110,7 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 			for key, value := range templateVars {
 				inputVars[key] = value
 			}
+			renderInputVarPlaceholders(inputVars, templateVars)
 			for key, imageKey := range mode.ImageVars {
 				image, ok := images[imageKey]
 				if !ok || image == "" {
@@ -122,6 +123,23 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 	return rendered, nil
 }
 
+func renderInputVarPlaceholders(inputVars map[string]any, templateVars map[string]any) {
+	for key, value := range inputVars {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		for templateKey, templateValue := range templateVars {
+			templateText, ok := templateValue.(string)
+			if !ok {
+				continue
+			}
+			text = strings.ReplaceAll(text, "{{."+templateKey+"}}", templateText)
+		}
+		inputVars[key] = text
+	}
+}
+
 func renderTemplateVars(vars map[string]any, timestamp time.Time) map[string]any {
 	rendered := map[string]any{}
 	for key, value := range vars {
@@ -130,7 +148,9 @@ func renderTemplateVars(vars map[string]any, timestamp time.Time) map[string]any
 			rendered[key] = value
 			continue
 		}
-		rendered[key] = strings.ReplaceAll(text, "{{.runTimestamp}}", timestamp.UTC().Format("20060102T150405.000000000Z"))
+		text = strings.ReplaceAll(text, "{{.runTimestamp}}", timestamp.UTC().Format("20060102T150405.000000000Z"))
+		text = strings.ReplaceAll(text, "{{.runTimestampDNS}}", timestamp.UTC().Format("20060102t150405")+fmt.Sprintf("%09d", timestamp.UTC().Nanosecond()))
+		rendered[key] = text
 	}
 	return rendered
 }

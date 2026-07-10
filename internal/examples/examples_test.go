@@ -290,12 +290,124 @@ func TestKataIOContractsValidate(t *testing.T) {
 		{"schemas/requirements.schema.json", "suites/kata-io/requirements.yml"},
 		{"schemas/mode.schema.json", "suites/kata-io/vars/smoke.yml"},
 		{"schemas/mode.schema.json", "suites/kata-io/vars/full.yml"},
+		{"schemas/mode.schema.json", "suites/kata-io/vars/fio-fast.yml"},
+		{"schemas/mode.schema.json", "suites/kata-io/vars/git-fast.yml"},
+		{"schemas/mode.schema.json", "suites/kata-io/vars/fio.yml"},
+		{"schemas/mode.schema.json", "suites/kata-io/vars/git.yml"},
 	}
 	for _, tc := range cases {
 		if err := config.ValidateYAML(filepath.Join(root, tc.schema), filepath.Join(root, tc.file)); err != nil {
 			t.Fatalf("%s failed validation against %s: %v", tc.file, tc.schema, err)
 		}
 	}
+}
+
+func TestKataIOMergeReadyContracts(t *testing.T) {
+	root := filepath.Join("..", "..")
+	modes := []string{"smoke", "full", "fio-fast", "git-fast", "fio", "git"}
+	for _, mode := range modes {
+		data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "vars", mode+".yml"))
+		if err != nil {
+			t.Fatalf("missing mode %s: %v", mode, err)
+		}
+		var doc struct {
+			Cleanup      bool           `yaml:"cleanup"`
+			WorkloadFile string         `yaml:"workloadFile"`
+			TemplateVars map[string]any `yaml:"templateVars"`
+		}
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.Cleanup {
+			t.Fatalf("%s cleanup must be false so results PVC survives artifact copy", mode)
+		}
+		if doc.TemplateVars["resultsStorageClass"] != nil || doc.TemplateVars["resultsVolumeSize"] != nil {
+			t.Fatalf("%s must not define results PVC vars because setup/results-pvc.yml is static", mode)
+		}
+		if asString(doc.TemplateVars["k8sRunID"]) == "" || !strings.Contains(asString(doc.TemplateVars["k8sRunID"]), "{{.runTimestampDNS}}") {
+			t.Fatalf("%s k8sRunID must contain {{.runTimestampDNS}}", mode)
+		}
+		if doc.WorkloadFile != "" {
+			if _, err := os.Stat(filepath.Join(root, "suites", "kata-io", doc.WorkloadFile)); err != nil {
+				t.Fatalf("%s workloadFile %s missing: %v", mode, doc.WorkloadFile, err)
+			}
+		}
+	}
+}
+
+func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
+	root := filepath.Join("..", "..")
+	workloads := kataIOWorkloadFiles(t)
+	workPVCData, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "templates", "work-pvc.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workPVCData), "pvc-role: work") {
+		t.Fatal("work-pvc.yml must label work PVCs with pvc-role: work")
+	}
+	for _, workloadFile := range workloads {
+		t.Run(workloadFile, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", workloadFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var workload struct {
+				Jobs []struct {
+					Name            string `yaml:"name"`
+					JobType         string `yaml:"jobType"`
+					Namespace       string `yaml:"namespace"`
+					SkipIndexing    bool   `yaml:"skipIndexing"`
+					NamespacedIters *bool  `yaml:"namespacedIterations"`
+					Objects         []struct {
+						Kind          string            `yaml:"kind"`
+						LabelSelector map[string]string `yaml:"labelSelector"`
+						InputVars      map[string]any    `yaml:"inputVars"`
+					} `yaml:"objects"`
+				} `yaml:"jobs"`
+			}
+			if err := yaml.Unmarshal(data, &workload); err != nil {
+				t.Fatal(err)
+			}
+			foundCleanup := map[string]bool{"Job": false, "Pod": false, "PersistentVolumeClaim": false}
+			for _, job := range workload.Jobs {
+				if job.Namespace == "kata-io" && (job.NamespacedIters == nil || *job.NamespacedIters) {
+					t.Fatalf("job %s must set namespacedIterations: false", job.Name)
+				}
+				if job.JobType != "delete" {
+					continue
+				}
+				if !job.SkipIndexing {
+					t.Fatalf("cleanup job %s must set skipIndexing: true", job.Name)
+				}
+				for _, object := range job.Objects {
+					if object.LabelSelector["app"] == "kata-io" && object.LabelSelector["benchmark"] == "io" {
+						foundCleanup[object.Kind] = true
+					}
+					if object.Kind == "PersistentVolumeClaim" && object.LabelSelector["pvc-role"] != "work" {
+						t.Fatalf("work PVC cleanup selector = %#v, want pvc-role=work", object.LabelSelector)
+					}
+				}
+			}
+			for kind, found := range foundCleanup {
+				if !found {
+					t.Fatalf("missing cleanup delete job for %s", kind)
+				}
+			}
+		})
+	}
+}
+
+func kataIOWorkloadFiles(t *testing.T) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join("..", "..", "suites", "kata-io", "workload*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make([]string, 0, len(matches))
+	for _, match := range matches {
+		files = append(files, filepath.Base(match))
+	}
+	return files
 }
 
 func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {

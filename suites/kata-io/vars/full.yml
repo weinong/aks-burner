@@ -9,12 +9,11 @@ workloadFile: workload-full.yml
 templateVars:
   namespace: kata-io
   runID: kata-io-full-{{.runTimestamp}}
+  k8sRunID: kio-full-{{.runTimestampDNS}}
   repoURL: https://github.com/kubernetes/kubernetes
   kataRuntimeClassName: kata-vm-isolation
   azureDiskStorageClass: managed-csi
   azureFilesStorageClass: azurefile-csi
-  resultsStorageClass: azurefile-csi
   workVolumeSize: 128Gi
-  resultsVolumeSize: 128Gi
 imageVars:
   benchmarkImage: benchmark

@@ -5,11 +5,11 @@ burst: 1
 cleanup: false
 waitWhenFinished: true
 preLoadImages: true
-workloadFile: workload-smoke.yml
+workloadFile: workload-git.yml
 templateVars:
   namespace: kata-io
-  runID: kata-io-smoke-{{.runTimestamp}}
-  k8sRunID: kio-smoke-{{.runTimestampDNS}}
+  runID: kata-io-git-{{.runTimestamp}}
+  k8sRunID: kio-git-{{.runTimestampDNS}}
   repoURL: https://github.com/kubernetes/kubernetes
   kataRuntimeClassName: kata-vm-isolation
   azureDiskStorageClass: managed-csi

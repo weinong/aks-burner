@@ -39,50 +39,6 @@ jobs:
     labelSelector:
       app: kata-io
       benchmark: io
-- name: kio-smoke-1
-  jobType: create
-  namespace: kata-io
-  namespacedIterations: false
-  jobIterations: 1
-  qps: 1
-  burst: 1
-  cleanup: true
-  waitWhenFinished: true
-  preLoadImages: true
-  objects:
-  - objectTemplate: templates/fio-emptydir-standard-job.yml
-    replicas: 1
-    inputVars:
-      jobName: '{{.k8sRunID}}-std-ed-fio-rr'
-      scenario: runtime-standard-storage-emptydir-fio-randread-4k-concurrency-1
-      runtime: runtime-standard
-      storageType: storage-emptydir
-      workloadType: fio
-      fioProfile: /profiles/randread-4k.fio
-      fioProfileName: randread-4k
-      concurrency: '1'
-- name: kio-smoke-2
-  jobType: create
-  namespace: kata-io
-  namespacedIterations: false
-  jobIterations: 1
-  qps: 1
-  burst: 1
-  cleanup: true
-  waitWhenFinished: true
-  preLoadImages: true
-  objects:
-  - objectTemplate: templates/fio-emptydir-kata-job.yml
-    replicas: 1
-    inputVars:
-      jobName: '{{.k8sRunID}}-kata-ed-fio-rr'
-      scenario: runtime-kata-storage-emptydir-fio-randread-4k-concurrency-1
-      runtime: runtime-kata
-      storageType: storage-emptydir
-      workloadType: fio
-      fioProfile: /profiles/randread-4k.fio
-      fioProfileName: randread-4k
-      concurrency: '1'
 - name: kio-smoke-3
   jobType: create
   namespace: kata-io
