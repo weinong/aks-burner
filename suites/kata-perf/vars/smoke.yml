@@ -8,4 +8,4 @@ preLoadImages: true
 templateVars:
   app: kata-perf
 imageVars:
-  image: kata-pause
+  image: pause

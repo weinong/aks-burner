@@ -31,6 +31,39 @@ func TestKataPerfContractsValidate(t *testing.T) {
 	}
 }
 
+func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
+	root := filepath.Join("..", "..")
+	images, err := config.LoadImages(filepath.Join(root, "config/images.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := images["pause"]; got != "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2" {
+		t.Fatalf("static pause image = %q, want mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2", got)
+	}
+	var requirements struct {
+		Requires struct {
+			Images any `yaml:"images"`
+		} `yaml:"requires"`
+	}
+	if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/requirements.yml"), &requirements); err != nil {
+		t.Fatal(err)
+	}
+	if requirements.Requires.Images != nil {
+		t.Fatal("kata-perf requirements must omit images")
+	}
+	for _, mode := range []string{"smoke", "full"} {
+		var vars struct {
+			ImageVars map[string]string `yaml:"imageVars"`
+		}
+		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", mode+".yml"), &vars); err != nil {
+			t.Fatal(err)
+		}
+		if got := vars.ImageVars["image"]; got != "pause" {
+			t.Fatalf("kata-perf %s image key = %q, want pause", mode, got)
+		}
+	}
+}
+
 func TestSuiteSchemaAcceptsSetupResources(t *testing.T) {
 	root := filepath.Join("..", "..")
 	dir := t.TempDir()

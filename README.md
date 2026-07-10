@@ -58,7 +58,7 @@ When Prometheus is `required` and `install: true`, `run-suite` installs Promethe
 
 ## Suite Images
 
-Suites can declare images to build under `requires.images` in `suites/<suite>/requirements.yml`. By default, the AKS Bicep template generates a suite ACR name from the resource group and cluster name, and `run-suite` reads the deployed registry name and login server from the `aks-burner` deployment outputs. Suites can still set the named `.bicepparam` parameter explicitly when they need a fixed public-cloud registry name. Each build context is suite-relative.
+Suites can declare images to build under `requires.images` in `suites/<suite>/requirements.yml`. For suites that declare builds, the AKS Bicep template generates a suite ACR name from the resource group and cluster name, and `run-suite` reads the deployed registry name and login server from the `aks-burner` deployment outputs. Suites without `requires.images`, such as `kata-perf`, use static images from `config/images.yml` and do not provision ACR. Each build context is suite-relative.
 
 ```yaml
 requires:
@@ -66,9 +66,9 @@ requires:
     registry:
       nameParameter: containerRegistryName
     builds:
-      - key: kata-pause
-        repository: kata-perf/pause
-        context: images/pause
+      - key: benchmark
+        repository: kata-io/benchmark
+        context: images/benchmark
         dockerfile: Dockerfile
         platform: linux/amd64
         timeoutSeconds: 1800
@@ -76,7 +76,7 @@ requires:
 
 `run-suite` tags built images with an immutable tag derived from suite, mode, and run timestamp, then overlays those image refs onto `config/images.yml` before rendering mode `imageVars`. Build logs are written under the run directory as `logs/acr-build-<image-key>.log`, and final image refs are recorded in `metadata/run.yml`.
 
-The AKS Bicep template grants the cluster kubelet identity `AcrPull` on the suite ACR. The user running `provision` must have permission to create role assignments, such as Owner or User Access Administrator on the deployment scope.
+When a suite declares image builds, the AKS Bicep template grants the cluster kubelet identity `AcrPull` on the suite ACR. The user running `provision` for such a suite must have permission to create role assignments, such as Owner or User Access Administrator on the deployment scope.
 
 ## Suite Setup Resources
 
