@@ -421,6 +421,19 @@ func TestRegistryNameFromRequirementsAllowsGeneratedRegistryName(t *testing.T) {
 	}
 }
 
+func TestShouldDeployContainerRegistryRequiresImages(t *testing.T) {
+	if shouldDeployContainerRegistry(nil) {
+		t.Fatal("shouldDeployContainerRegistry(nil) = true, want false")
+	}
+	images := &acr.Requirements{
+		Registry: acr.RegistryConfig{NameParameter: "containerRegistryName"},
+		Builds:   []acr.ImageBuild{{Key: "image", Repository: "repo/image", Context: ".", Dockerfile: "Dockerfile"}},
+	}
+	if !shouldDeployContainerRegistry(images) {
+		t.Fatal("shouldDeployContainerRegistry(images) = false, want true")
+	}
+}
+
 func TestMergeImagesOverlaysBuiltImages(t *testing.T) {
 	got := mergeImages(map[string]string{"pause": "mcr/pause", "app": "old"}, map[string]string{"app": "acr/app:run"})
 	if got["pause"] != "mcr/pause" || got["app"] != "acr/app:run" {

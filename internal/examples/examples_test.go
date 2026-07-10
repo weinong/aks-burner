@@ -205,6 +205,25 @@ func TestKataPerfUsesKataRuntime(t *testing.T) {
 	assertContains("suites/kata-perf/templates/pod.yml", "kubernetes.azure.com/os-sku: AzureLinux")
 }
 
+func TestAKSTemplateConditionallyDeploysContainerRegistry(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "infra", "aks", "main.bicep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"param deployContainerRegistry bool = true",
+		"resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (deployContainerRegistry)",
+		"resource aksAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerRegistry)",
+		"output containerRegistryName string = deployContainerRegistry ? acr.name : ''",
+		"output containerRegistryLoginServer string = deployContainerRegistry ? acr!.properties.loginServer : ''",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("infra/aks/main.bicep must contain %q", want)
+		}
+	}
+}
+
 func TestKataPerfRequiresAzureLinuxWorkloadNode(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var doc struct {

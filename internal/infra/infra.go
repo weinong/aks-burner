@@ -9,10 +9,11 @@ import (
 )
 
 type ProvisionOptions struct {
-	ResourceGroup  string
-	Location       string
-	ParametersFile string
-	ClusterName    string
+	ResourceGroup           string
+	Location                string
+	ParametersFile          string
+	ClusterName             string
+	DeployContainerRegistry bool
 }
 
 const DeploymentName = "aks-burner"
@@ -20,7 +21,7 @@ const DeploymentName = "aks-burner"
 func ProvisionCommands(opts ProvisionOptions) [][]string {
 	return [][]string{
 		{"az", "group", "create", "--name", opts.ResourceGroup, "--location", opts.Location},
-		{"az", "deployment", "group", "create", "--resource-group", opts.ResourceGroup, "--name", DeploymentName, "--parameters", opts.ParametersFile, "location=" + opts.Location},
+		{"az", "deployment", "group", "create", "--resource-group", opts.ResourceGroup, "--name", DeploymentName, "--parameters", opts.ParametersFile, "location=" + opts.Location, fmt.Sprintf("deployContainerRegistry=%t", opts.DeployContainerRegistry)},
 		GetCredentialsCommand(opts.ResourceGroup, opts.ClusterName),
 	}
 }

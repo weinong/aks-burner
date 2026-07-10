@@ -4,10 +4,11 @@ import "testing"
 
 func TestProvisionCommands(t *testing.T) {
 	opts := ProvisionOptions{
-		ResourceGroup:  "rg-aks-burner-test",
-		Location:       "westus2",
-		ParametersFile: "suites/kata-perf/infra.bicepparam",
-		ClusterName:    "akstest",
+		ResourceGroup:           "rg-aks-burner-test",
+		Location:                "westus2",
+		ParametersFile:          "suites/kata-perf/infra.bicepparam",
+		ClusterName:             "akstest",
+		DeployContainerRegistry: true,
 	}
 	commands := ProvisionCommands(opts)
 	if commands[0][0] != "az" || commands[0][1] != "group" || commands[0][2] != "create" {
@@ -19,6 +20,9 @@ func TestProvisionCommands(t *testing.T) {
 	if !containsArgSequence(commands[1], "--name", DeploymentName) {
 		t.Fatalf("deployment command missing explicit name %q: %#v", DeploymentName, commands[1])
 	}
+	if got := commands[1][len(commands[1])-1]; got != "deployContainerRegistry=true" {
+		t.Fatalf("deployment command last argument = %q, want deployContainerRegistry=true", got)
+	}
 	for _, arg := range commands[1] {
 		if arg == "--template-file" {
 			t.Fatalf("deployment command must use .bicepparam directly without --template-file: %#v", commands[1])
@@ -26,6 +30,32 @@ func TestProvisionCommands(t *testing.T) {
 	}
 	if commands[2][0] != "az" || commands[2][1] != "aks" || commands[2][2] != "get-credentials" {
 		t.Fatalf("unexpected credentials command: %#v", commands[2])
+	}
+}
+
+func TestProvisionCommandsDisablesContainerRegistryAfterParameterFile(t *testing.T) {
+	commands := ProvisionCommands(ProvisionOptions{
+		ResourceGroup:  "rg-aks-burner-test",
+		Location:       "westus2",
+		ParametersFile: "suites/generated/infra.bicepparam",
+		ClusterName:    "akstest",
+	})
+	deployment := commands[1]
+	parametersIndex := -1
+	for i, arg := range deployment {
+		if arg == "--parameters" {
+			parametersIndex = i
+			break
+		}
+	}
+	if parametersIndex < 0 || parametersIndex+1 >= len(deployment) {
+		t.Fatalf("deployment command missing parameter file: %#v", deployment)
+	}
+	if got := deployment[len(deployment)-1]; got != "deployContainerRegistry=false" {
+		t.Fatalf("deployment command last argument = %q, want deployContainerRegistry=false", got)
+	}
+	if len(deployment)-1 <= parametersIndex+1 {
+		t.Fatalf("derived parameter must follow parameter file: %#v", deployment)
 	}
 }
 

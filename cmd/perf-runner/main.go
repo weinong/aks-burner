@@ -706,6 +706,7 @@ func provision(args []string) error {
 					Parameters string `yaml:"parameters"`
 				} `yaml:"bicep"`
 			} `yaml:"infrastructure"`
+			Images *acr.Requirements `yaml:"images"`
 		} `yaml:"requires"`
 	}
 	reqPath, err := resolveSuitePath(root, *suiteName, "requirements.yml")
@@ -730,11 +731,16 @@ func provision(args []string) error {
 		return err
 	}
 	return infra.Provision(context.Background(), infra.ProvisionOptions{
-		ResourceGroup:  *resourceGroup,
-		Location:       *location,
-		ParametersFile: parametersPath,
-		ClusterName:    clusterName,
+		ResourceGroup:           *resourceGroup,
+		Location:                *location,
+		ParametersFile:          parametersPath,
+		ClusterName:             clusterName,
+		DeployContainerRegistry: shouldDeployContainerRegistry(req.Requires.Images),
 	})
+}
+
+func shouldDeployContainerRegistry(images *acr.Requirements) bool {
+	return images != nil
 }
 
 func validateDestroyTarget(suiteName string, resourceGroup string, allowNonDefaultResourceGroup bool) error {
