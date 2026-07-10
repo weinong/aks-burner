@@ -393,17 +393,18 @@ func destroy(args []string) error {
 }
 
 func runSuite(args []string) error {
-	target := kubetarget.Target{}
 	fs := flag.NewFlagSet("run-suite", flag.ContinueOnError)
 	suiteName := fs.String("suite", "", "suite name")
 	modeName := fs.String("mode", "smoke", "mode")
 	resourceGroup := fs.String("resource-group", "", "Azure resource group")
+	kubeContext := fs.String("kube-context", "", "kube context")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *suiteName == "" || *resourceGroup == "" {
-		return fmt.Errorf("usage: perf-runner run-suite --suite SUITE --mode MODE --resource-group RG")
+	if *suiteName == "" {
+		return fmt.Errorf("usage: perf-runner run-suite --suite SUITE --mode MODE [--resource-group RG] [--kube-context CONTEXT]")
 	}
+	target := kubetarget.Target{Context: *kubeContext}
 	root, err := repo.Root(".")
 	if err != nil {
 		return err
@@ -450,16 +451,25 @@ func runSuite(args []string) error {
 	if err := config.LoadYAML(reqPath, &req); err != nil {
 		return err
 	}
-	parametersPath, err := resolveSuitePath(root, *suiteName, req.Requires.Infrastructure.Bicep.Parameters)
-	if err != nil {
+	if err := validateRunSuiteTarget(*kubeContext, *resourceGroup, req.Requires.Images.Builds); err != nil {
 		return err
 	}
-	if _, err := resolveRepoPath(root, req.Requires.Infrastructure.Bicep.Template); err != nil {
-		return err
+	parametersPath := ""
+	clusterName := ""
+	if *kubeContext == "" || len(req.Requires.Images.Builds) > 0 {
+		parametersPath, err = resolveSuitePath(root, *suiteName, req.Requires.Infrastructure.Bicep.Parameters)
+		if err != nil {
+			return err
+		}
+		if _, err := resolveRepoPath(root, req.Requires.Infrastructure.Bicep.Template); err != nil {
+			return err
+		}
 	}
-	clusterName, err := readBicepParamString(parametersPath, "clusterName")
-	if err != nil {
-		return err
+	if *kubeContext == "" {
+		clusterName, err = readBicepParamString(parametersPath, "clusterName")
+		if err != nil {
+			return err
+		}
 	}
 	staticImages, err := config.LoadImages(filepath.Join(root, "config", "images.yml"))
 	if err != nil {
@@ -467,10 +477,12 @@ func runSuite(args []string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := infra.GetCredentials(ctx, *resourceGroup, clusterName); err != nil {
-		return err
+	if *kubeContext == "" {
+		if err := infra.GetCredentials(ctx, *resourceGroup, clusterName); err != nil {
+			return err
+		}
 	}
-	if err := runpkg.ValidateRequirements(ctx, runpkg.Requirements{Kubernetes: req.Requires.Kubernetes, NodeSelectors: req.Requires.NodeSelectors}, runpkg.KubectlOutput); err != nil {
+	if err := runpkg.ValidateRequirements(ctx, runpkg.Requirements{Kubernetes: req.Requires.Kubernetes, NodeSelectors: req.Requires.NodeSelectors}, target.Output); err != nil {
 		return err
 	}
 	runTimestamp := time.Now().UTC()
@@ -539,7 +551,7 @@ func runSuite(args []string) error {
 	if err := runpkg.ApplySetup(ctx, target, suiteDir, suiteCfg.Setup); err != nil {
 		return err
 	}
-	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
+	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, KubeContext: *kubeContext, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
 		return err
 	}
 	if req.Requires.Observability.KubeStateMetrics.Required && req.Requires.Observability.KubeStateMetrics.Install {
@@ -593,10 +605,17 @@ func runSuite(args []string) error {
 	if err := config.WriteYAML(workloadPath, rendered); err != nil {
 		return err
 	}
-	executeKubeBurner := func(workloadPath string, logPath string) error {
-		return runpkg.ExecuteKubeBurner(workloadPath, logPath, kubetarget.Target{})
+	return executeRunAndCopyArtifacts(ctx, target, workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"), req.Requires.Artifacts, images, filepath.Join(runDir, "artifacts"), artifactSubpathFromRenderedWorkload(rendered), runpkg.ExecuteKubeBurner, waitArtifactJobsComplete, copyArtifacts)
+}
+
+func validateRunSuiteTarget(kubeContext, resourceGroup string, builds []acr.ImageBuild) error {
+	if resourceGroup == "" && (kubeContext == "" || len(builds) > 0) {
+		if kubeContext == "" {
+			return fmt.Errorf("resource-group is required when kube-context is omitted")
+		}
+		return fmt.Errorf("resource-group is required when suite image builds are configured")
 	}
-	return executeRunAndCopyArtifacts(ctx, workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"), req.Requires.Artifacts, images, filepath.Join(runDir, "artifacts"), artifactSubpathFromRenderedWorkload(rendered), executeKubeBurner, waitArtifactJobsComplete, copyArtifacts)
+	return nil
 }
 
 func kubeStateMetricsScrapeTarget(cfg kubestatemetrics.Config) string {
@@ -606,13 +625,13 @@ func kubeStateMetricsScrapeTarget(cfg kubestatemetrics.Config) string {
 	return fmt.Sprintf("%s.%s.svc:%d", cfg.ServiceName, cfg.Namespace, cfg.ServicePort)
 }
 
-type kubeBurnerExecutor func(workloadPath string, logPath string) error
+type targetKubeBurnerExecutor func(workloadPath string, logPath string, target kubetarget.Target) error
 
-type artifactJobWaiter func(ctx context.Context, cfg artifacts.Config) error
+type targetArtifactJobWaiter func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error
 
-type artifactCopier func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error
+type targetArtifactCopier func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error
 
-func executeRunAndCopyArtifacts(ctx context.Context, workloadPath string, logPath string, artifactCfg artifacts.Config, images map[string]string, artifactDestination string, artifactSubpath string, execute kubeBurnerExecutor, waitArtifactJobs artifactJobWaiter, copyArtifacts artifactCopier) error {
+func executeRunAndCopyArtifacts(ctx context.Context, target kubetarget.Target, workloadPath string, logPath string, artifactCfg artifacts.Config, images map[string]string, artifactDestination string, artifactSubpath string, execute targetKubeBurnerExecutor, waitArtifactJobs targetArtifactJobWaiter, copyArtifacts targetArtifactCopier) error {
 	if artifactCfg.Enabled {
 		copyImage, err := config.ResolveImage(images, artifactCfg.CopyImage)
 		if err != nil {
@@ -625,13 +644,13 @@ func executeRunAndCopyArtifacts(ctx context.Context, workloadPath string, logPat
 		}
 		artifactCfg.CopyImage = copyImage
 	}
-	executeErr := execute(workloadPath, logPath)
+	executeErr := execute(workloadPath, logPath, target)
 	if executeErr == nil && artifactCfg.Enabled {
-		if err := waitArtifactJobs(ctx, artifactCfg); err != nil {
+		if err := waitArtifactJobs(ctx, target, artifactCfg); err != nil {
 			executeErr = err
 		}
 	}
-	artifactErr := copyArtifacts(ctx, artifactCfg, artifactDestination, artifactSubpath)
+	artifactErr := copyArtifacts(ctx, target, artifactCfg, artifactDestination, artifactSubpath)
 	if executeErr != nil {
 		if artifactErr != nil {
 			return fmt.Errorf("kube-burner failed: %w; artifact copy also failed: %v", executeErr, artifactErr)
@@ -641,21 +660,22 @@ func executeRunAndCopyArtifacts(ctx context.Context, workloadPath string, logPat
 	return artifactErr
 }
 
-func waitArtifactJobsComplete(ctx context.Context, cfg artifacts.Config) error {
+func waitArtifactJobsComplete(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 	if !cfg.Enabled || cfg.Namespace == "" {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, "kubectl", "wait", "--for=condition=complete", "job", "--all", "-n", cfg.Namespace, "--timeout=15m")
+	args := target.KubectlCommand("wait", "--for=condition=complete", "job", "--all", "-n", cfg.Namespace, "--timeout=15m")
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-func copyArtifacts(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+func copyArtifacts(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 	if subpath == "" {
-		return artifacts.Copy(ctx, kubetarget.Target{}, cfg, destination)
+		return artifacts.Copy(ctx, target, cfg, destination)
 	}
-	return artifacts.CopySubpath(ctx, kubetarget.Target{}, cfg, destination, subpath)
+	return artifacts.CopySubpath(ctx, target, cfg, destination, subpath)
 }
 
 func artifactSubpathFromRenderedWorkload(rendered map[string]any) string {
