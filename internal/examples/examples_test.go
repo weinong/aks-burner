@@ -2,6 +2,7 @@ package examples
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -305,6 +306,33 @@ func TestAKSTemplateUsesArbitraryNodePoolsAndDerivedRegistryName(t *testing.T) {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("main.bicep still contains %q", unwanted)
 		}
+	}
+}
+
+func TestMakeClusterNameOverrideIsOptional(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for _, target := range []string{"provision", "run-suite"} {
+		t.Run(target, func(t *testing.T) {
+			defaultCommand := exec.Command("make", "-n", target, "TEST_SUITE=demo")
+			defaultCommand.Dir = root
+			defaultOutput, err := defaultCommand.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n %s: %v\n%s", target, err, defaultOutput)
+			}
+			if strings.Contains(string(defaultOutput), "--cluster-name") {
+				t.Fatalf("default %s command unexpectedly contains --cluster-name:\n%s", target, defaultOutput)
+			}
+
+			overrideCommand := exec.Command("make", "-n", target, "TEST_SUITE=demo", "CLUSTER_NAME=existing-aks")
+			overrideCommand.Dir = root
+			overrideOutput, err := overrideCommand.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n %s with override: %v\n%s", target, err, overrideOutput)
+			}
+			if !strings.Contains(string(overrideOutput), `--cluster-name "existing-aks"`) {
+				t.Fatalf("overridden %s command missing cluster name:\n%s", target, overrideOutput)
+			}
+		})
 	}
 }
 

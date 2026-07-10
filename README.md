@@ -17,11 +17,11 @@ TEST_SUITE=kata-io TEST_MODE=full make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
-`TEST_MODE` defaults to `smoke`. `RESOURCE_GROUP` defaults to `rg-aks-burner-$(TEST_SUITE)`. `AZURE_LOCATION` defaults to `westus2`.
+`TEST_MODE` defaults to `smoke`. `RESOURCE_GROUP` defaults to `rg-aks-burner-$(TEST_SUITE)`. `AZURE_LOCATION` defaults to `westus2`. Set `CLUSTER_NAME` only when overriding the cluster name derived from `TEST_SUITE`.
 
 `make list-suites` prints each suite once with its available modes, so use the suite name for `TEST_SUITE` and one of the listed modes for `TEST_MODE`.
 
-`TEST_SUITE=my-suite make add-suite` creates a complete dummy suite under `suites/my-suite/` using defaults. `make add-suite-guided` prompts for the suite name, description, cluster name, Kubernetes version, node settings, Prometheus, and smoke/full sizes.
+`TEST_SUITE=my-suite make add-suite` creates a complete dummy suite under `suites/my-suite/` using defaults. `make add-suite-guided` prompts for the suite name, description, Kubernetes version, node settings, Prometheus, and smoke/full sizes.
 
 ## Suite Lifecycle
 
@@ -38,7 +38,48 @@ TEST_SUITE=kata-io TEST_MODE=full make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
-`provision` creates the Azure resource group, AKS cluster, and suite ACR declared by the suite requirements. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group and waits for deletion to complete.
+`provision` loads `suites/<suite>/requirements.yml`, validates it, and generates the ARM deployment parameters used to create the Azure resource group, AKS cluster, node pools, and optional suite ACR. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group and waits for deletion to complete.
+
+Node pools are declared once in `requirements.yml`; no checked-in Bicep parameter file is needed. Each selector names the pool that must satisfy it:
+
+```yaml
+requires:
+  infrastructure:
+    provider: aks
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+      - name: userpool
+        mode: User
+        count: 1
+        vmSize: Standard_D16as_v5
+        osType: Linux
+        osSKU: AzureLinux
+        workloadRuntime: KataMshvVmIsolation
+        labels:
+          perf.azure.com/node-role: workload
+        taints: []
+  nodeSelectors:
+    - name: workload
+      pool: userpool
+      required: true
+      minNodes: 1
+      labels:
+        perf.azure.com/node-role: workload
+```
+
+Preview the generated ARM parameter JSON without creating a resource group or running Azure commands:
+
+```bash
+go run ./cmd/perf-runner provision --suite kata-perf --resource-group dry-run-unused --location westus2 --dry-run
+```
 
 ## Existing AKS Cluster
 
@@ -46,6 +87,8 @@ TEST_SUITE=kata-io make destroy
 
 ```bash
 go run ./cmd/perf-runner run-suite --suite kata-perf --mode smoke --resource-group <existing-resource-group> --cluster-name <existing-cluster>
+# Or through Make:
+TEST_SUITE=kata-perf RESOURCE_GROUP=<existing-resource-group> CLUSTER_NAME=<existing-cluster> make run-suite
 ```
 
 Validate the existing cluster before running the suite: check Kubernetes version with `kubectl version -o json`, and check required node selectors with `kubectl get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.

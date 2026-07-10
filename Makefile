@@ -1,6 +1,8 @@
 TEST_MODE ?= smoke
 AZURE_LOCATION ?= westus2
 RESOURCE_GROUP ?= rg-aks-burner-$(TEST_SUITE)
+CLUSTER_NAME ?=
+CLUSTER_NAME_ARG = $(if $(strip $(CLUSTER_NAME)), --cluster-name "$(CLUSTER_NAME)")
 
 .DEFAULT_GOAL := test
 
@@ -30,6 +32,7 @@ help:
 	@printf '  %-20s %s\n' 'TEST_MODE' 'Defaults to smoke.'
 	@printf '  %-20s %s\n' 'AZURE_LOCATION' 'Defaults to westus2.'
 	@printf '  %-20s %s\n' 'RESOURCE_GROUP' 'Defaults to rg-aks-burner-$$(TEST_SUITE).'
+	@printf '  %-20s %s\n' 'CLUSTER_NAME' 'Optionally overrides the derived AKS cluster name.'
 
 test:
 	go test ./...
@@ -49,11 +52,11 @@ add-suite-guided:
 
 provision:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)
-	go run ./cmd/perf-runner provision --suite "$(TEST_SUITE)" --resource-group "$(RESOURCE_GROUP)" --location "$(AZURE_LOCATION)"
+	go run ./cmd/perf-runner provision --suite "$(TEST_SUITE)" --resource-group "$(RESOURCE_GROUP)" --location "$(AZURE_LOCATION)"$(CLUSTER_NAME_ARG)
 
 run-suite:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)
-	go run ./cmd/perf-runner run-suite --suite "$(TEST_SUITE)" --mode "$(TEST_MODE)" --resource-group "$(RESOURCE_GROUP)"
+	go run ./cmd/perf-runner run-suite --suite "$(TEST_SUITE)" --mode "$(TEST_MODE)" --resource-group "$(RESOURCE_GROUP)"$(CLUSTER_NAME_ARG)
 
 destroy:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)
