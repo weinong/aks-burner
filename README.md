@@ -38,7 +38,7 @@ TEST_SUITE=kata-io TEST_MODE=full make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
-`provision` loads `suites/<suite>/requirements.yml`, validates it, and generates the ARM deployment parameters used to create the Azure resource group, AKS cluster, node pools, and optional suite ACR. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group and waits for deletion to complete.
+`provision` loads `suites/<suite>/requirements.yml`, validates it, and generates the ARM deployment parameters that configure the AKS cluster, node pools, and optional suite ACR; resource-group creation is a separate provisioning step. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group and waits for deletion to complete.
 
 Node pools are declared once in `requirements.yml`; no checked-in Bicep parameter file is needed. Each selector names the pool that must satisfy it:
 
