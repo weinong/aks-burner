@@ -61,7 +61,6 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 	rendered := cloneMap(workload)
 	global := ensureMap(rendered, "global")
 	global["gc"] = mode.Cleanup
-	global["waitWhenFinished"] = mode.WaitWhenFinished
 	if prometheusEndpoint != "" {
 		rendered["metricsEndpoints"] = []any{map[string]any{
 			"endpoint": prometheusEndpoint,

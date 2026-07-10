@@ -43,6 +43,24 @@ func TestRenderWorkloadSkipsPrometheusEndpointWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderWorkloadKeepsWaitWhenFinishedJobScoped(t *testing.T) {
+	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
+	mode := Mode{Iterations: 20, IterationsPerNamespace: 20, QPS: 20, Burst: 20, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, TemplateVars: map[string]any{"app": "test"}, ImageVars: map[string]string{"image": "pause"}}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	global := rendered["global"].(map[string]any)
+	if _, ok := global["waitWhenFinished"]; ok {
+		t.Fatalf("global waitWhenFinished disables useful podLatency waiting: %#v", global)
+	}
+	job := rendered["jobs"].([]any)[0].(map[string]any)
+	if job["waitWhenFinished"] != true {
+		t.Fatalf("job waitWhenFinished = %#v, want true", job["waitWhenFinished"])
+	}
+}
+
 func TestRunDirNameIncludesNanoseconds(t *testing.T) {
 	base := time.Date(2026, 7, 8, 1, 2, 3, 4, time.UTC)
 	first := runDirName("kata-perf", "smoke", base)
