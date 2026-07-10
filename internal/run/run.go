@@ -50,6 +50,7 @@ type KubernetesRequirements struct {
 
 type NodeSelectorRequirement struct {
 	Name     string            `yaml:"name"`
+	Pool     string            `yaml:"pool"`
 	Required bool              `yaml:"required"`
 	MinNodes int               `yaml:"minNodes"`
 	Labels   map[string]string `yaml:"labels"`

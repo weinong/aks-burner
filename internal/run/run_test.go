@@ -10,6 +10,7 @@ import (
 
 	"github.com/Azure/aks-burner/internal/acr"
 	"github.com/Azure/aks-burner/internal/suite"
+	"gopkg.in/yaml.v3"
 )
 
 func TestModeSelectedWorkloadFileDefaultsToWorkloadYAML(t *testing.T) {
@@ -396,6 +397,16 @@ func TestValidateRequirementsFailsWhenKubernetesVersionTooLow(t *testing.T) {
 	err := ValidateRequirements(context.Background(), req, runner)
 	if err == nil || !strings.Contains(err.Error(), "Kubernetes version") {
 		t.Fatalf("ValidateRequirements() error = %v, want Kubernetes version error", err)
+	}
+}
+
+func TestNodeSelectorRequirementLoadsPool(t *testing.T) {
+	var selector NodeSelectorRequirement
+	if err := yaml.Unmarshal([]byte("name: workload\npool: userpool\n"), &selector); err != nil {
+		t.Fatal(err)
+	}
+	if selector.Pool != "userpool" {
+		t.Fatalf("Pool = %q, want userpool", selector.Pool)
 	}
 }
 

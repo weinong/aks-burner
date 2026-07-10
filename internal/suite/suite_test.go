@@ -147,6 +147,16 @@ func TestLoadRejectsUnsafeDeclaredSuiteName(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsSuiteNameMismatch(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "suites", "demo", "suite.yml"), "name: other\n")
+
+	_, err := Load(root, "demo")
+	if err == nil || !strings.Contains(err.Error(), `suite name "other" does not match "demo"`) {
+		t.Fatalf("Load() error = %v, want suite name mismatch", err)
+	}
+}
+
 func TestValidName(t *testing.T) {
 	valid := []string{"kata-perf", "a", "a1-b2"}
 	for _, name := range valid {

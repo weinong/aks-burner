@@ -51,6 +51,9 @@ func Load(root string, name string) (Config, error) {
 	if !ValidName(cfg.Name) {
 		return Config{}, fmt.Errorf("invalid suite name %q in %s", cfg.Name, path)
 	}
+	if cfg.Name != name {
+		return Config{}, fmt.Errorf("suite name %q does not match %q", cfg.Name, name)
+	}
 	return cfg, nil
 }
 
