@@ -843,7 +843,7 @@ func listSuites() error {
 		return err
 	}
 	for _, cfg := range suites {
-		fmt.Printf("%s\t%s\n", cfg.Name, cfg.Description)
+		fmt.Printf("%s\t%s\t%s\n", cfg.Name, strings.Join(cfg.Modes, ", "), cfg.Description)
 	}
 	return nil
 }
