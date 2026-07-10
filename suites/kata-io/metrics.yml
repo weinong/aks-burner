@@ -1,6 +1,6 @@
-- query: sum(rate(container_cpu_usage_seconds_total[2m])) by (pod, namespace)
+- query: sum(rate(container_cpu_usage_seconds_total{namespace="kata-io"}[2m])) by (pod, namespace)
   metricName: podCPUUsage
-- query: sum(container_memory_working_set_bytes) by (pod, namespace)
+- query: sum(container_memory_working_set_bytes{namespace="kata-io"}) by (pod, namespace)
   metricName: podMemoryWorkingSet
 - query: sum(increase(container_fs_reads_bytes_total[{{ .elapsed }}])) by (namespace, pod)
   metricName: containerFsReadBytes

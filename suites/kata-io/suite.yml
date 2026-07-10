@@ -3,3 +3,18 @@ description: Exploratory AKS Kata Pod Sandboxing I/O and Git clone benchmark sui
 tests:
   - kata-io-smoke
   - kata-io-full
+setup:
+  resources:
+    - name: namespace
+      path: setup/namespace.yml
+      wait:
+        - kind: exists
+          resource: namespace/kata-io
+          timeout: 1m
+    - name: results-pvc
+      path: setup/results-pvc.yml
+      wait:
+        - kind: exists
+          resource: pvc/kata-io-results
+          namespace: kata-io
+          timeout: 10m

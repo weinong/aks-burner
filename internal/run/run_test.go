@@ -45,6 +45,23 @@ func TestRenderWorkloadInjectsPrometheusEndpoint(t *testing.T) {
 	}
 }
 
+func TestRenderWorkloadWritesPrometheusMetricsToRunRoot(t *testing.T) {
+	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
+	mode := Mode{Iterations: 1, IterationsPerNamespace: 1, QPS: 1, Burst: 1, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "http://127.0.0.1:9090")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	endpoints := rendered["metricsEndpoints"].([]any)
+	endpoint := endpoints[0].(map[string]any)
+	indexer := endpoint["indexer"].(map[string]any)
+	if got, want := indexer["metricsDirectory"], "../raw/metrics"; got != want {
+		t.Fatalf("metricsDirectory = %#v, want %#v", got, want)
+	}
+}
+
 func TestRenderWorkloadSkipsPrometheusEndpointWhenEmpty(t *testing.T) {
 	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
 	mode := Mode{Iterations: 20, IterationsPerNamespace: 20, QPS: 20, Burst: 20, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, TemplateVars: map[string]any{"app": "test"}, ImageVars: map[string]string{"image": "pause"}}
@@ -172,6 +189,60 @@ func TestRenderWorkloadUsesModeRunTimestampForPlaceholder(t *testing.T) {
 	inputVars := objects[0].(map[string]any)["inputVars"].(map[string]any)
 	if got, want := inputVars["runID"], "kata-io-full-20260709T010203.000000004Z"; got != want {
 		t.Fatalf("runID = %q, want %q", got, want)
+	}
+}
+
+func TestRenderWorkloadUsesDNSRunTimestampPlaceholder(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/job.yml", "replicas": 1, "inputVars": map[string]any{}},
+				},
+			},
+		},
+	}
+	mode := Mode{
+		RunTimestamp: time.Date(2026, 7, 9, 1, 2, 3, 4, time.UTC),
+		TemplateVars: map[string]any{"k8sRunID": "kio-smoke-{{.runTimestampDNS}}"},
+	}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	objects := rendered["jobs"].([]any)[0].(map[string]any)["objects"].([]any)
+	inputVars := objects[0].(map[string]any)["inputVars"].(map[string]any)
+	if got, want := inputVars["k8sRunID"], "kio-smoke-20260709t010203000000004"; got != want {
+		t.Fatalf("k8sRunID = %q, want %q", got, want)
+	}
+}
+
+func TestRenderWorkloadReplacesInputVarTemplateVars(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/job.yml", "replicas": 1, "inputVars": map[string]any{"jobName": "{{.runID}}-fio"}},
+				},
+			},
+		},
+	}
+	mode := Mode{
+		RunTimestamp: time.Date(2026, 7, 9, 1, 2, 3, 4, time.UTC),
+		TemplateVars: map[string]any{"runID": "kata-io-smoke-{{.runTimestamp}}"},
+	}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	objects := rendered["jobs"].([]any)[0].(map[string]any)["objects"].([]any)
+	inputVars := objects[0].(map[string]any)["inputVars"].(map[string]any)
+	if got, want := inputVars["jobName"], "kata-io-smoke-20260709T010203.000000004Z-fio"; got != want {
+		t.Fatalf("jobName = %q, want %q", got, want)
 	}
 }
 

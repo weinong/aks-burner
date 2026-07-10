@@ -1,0 +1,657 @@
+jobs:
+- name: kio-clean-jobs
+  jobType: delete
+  namespace: kata-io
+  namespacedIterations: false
+  skipIndexing: true
+  qps: 20
+  burst: 20
+  objects:
+  - kind: Job
+    apiVersion: batch/v1
+    labelSelector:
+      app: kata-io
+      benchmark: io
+- name: kio-clean-work-pvcs
+  jobType: delete
+  namespace: kata-io
+  namespacedIterations: false
+  skipIndexing: true
+  qps: 20
+  burst: 20
+  objects:
+  - kind: PersistentVolumeClaim
+    apiVersion: v1
+    labelSelector:
+      app: kata-io
+      benchmark: io
+      pvc-role: work
+- name: kio-clean-pods
+  jobType: delete
+  namespace: kata-io
+  namespacedIterations: false
+  skipIndexing: true
+  qps: 20
+  burst: 20
+  objects:
+  - kind: Pod
+    apiVersion: v1
+    labelSelector:
+      app: kata-io
+      benchmark: io
+- name: kio-6
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-6'
+      scenario: runtime-standard-storage-emptydir-git-full-concurrency-1
+      runtime: runtime-standard
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: full
+      concurrency: '1'
+- name: kio-7
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-7'
+      scenario: runtime-standard-storage-emptydir-git-blobless-concurrency-1
+      runtime: runtime-standard
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '1'
+- name: kio-13
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-13'
+      scenario: runtime-standard-storage-emptydir-git-full-concurrency-10
+      runtime: runtime-standard
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: full
+      concurrency: '10'
+- name: kio-14
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-14'
+      scenario: runtime-standard-storage-emptydir-git-blobless-concurrency-10
+      runtime: runtime-standard
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '10'
+- name: kio-20
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-20'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-20'
+      scenario: runtime-standard-storage-azure-disk-git-full-concurrency-1
+      runtime: runtime-standard
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: full
+      concurrency: '1'
+- name: kio-21
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-21'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-21'
+      scenario: runtime-standard-storage-azure-disk-git-blobless-concurrency-1
+      runtime: runtime-standard
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '1'
+- name: kio-27
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-27'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-27'
+      scenario: runtime-standard-storage-azure-disk-git-full-concurrency-10
+      runtime: runtime-standard
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: full
+      concurrency: '10'
+- name: kio-28
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-28'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-28'
+      scenario: runtime-standard-storage-azure-disk-git-blobless-concurrency-10
+      runtime: runtime-standard
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '10'
+- name: kio-34
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-34'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-34'
+      scenario: runtime-standard-storage-azure-files-git-full-concurrency-1
+      runtime: runtime-standard
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: full
+      concurrency: '1'
+- name: kio-35
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-35'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-35'
+      scenario: runtime-standard-storage-azure-files-git-blobless-concurrency-1
+      runtime: runtime-standard
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '1'
+- name: kio-41
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-41'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-41'
+      scenario: runtime-standard-storage-azure-files-git-full-concurrency-10
+      runtime: runtime-standard
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: full
+      concurrency: '10'
+- name: kio-42
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-42'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-standard-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-42'
+      scenario: runtime-standard-storage-azure-files-git-blobless-concurrency-10
+      runtime: runtime-standard
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '10'
+- name: kio-48
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-48'
+      scenario: runtime-kata-storage-emptydir-git-full-concurrency-1
+      runtime: runtime-kata
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: full
+      concurrency: '1'
+- name: kio-49
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-49'
+      scenario: runtime-kata-storage-emptydir-git-blobless-concurrency-1
+      runtime: runtime-kata
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '1'
+- name: kio-55
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-55'
+      scenario: runtime-kata-storage-emptydir-git-full-concurrency-10
+      runtime: runtime-kata
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: full
+      concurrency: '10'
+- name: kio-56
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/git-emptydir-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-56'
+      scenario: runtime-kata-storage-emptydir-git-blobless-concurrency-10
+      runtime: runtime-kata
+      storageType: storage-emptydir
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '10'
+- name: kio-62
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-62'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-62'
+      scenario: runtime-kata-storage-azure-disk-git-full-concurrency-1
+      runtime: runtime-kata
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: full
+      concurrency: '1'
+- name: kio-63
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-63'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-63'
+      scenario: runtime-kata-storage-azure-disk-git-blobless-concurrency-1
+      runtime: runtime-kata
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '1'
+- name: kio-69
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-69'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-69'
+      scenario: runtime-kata-storage-azure-disk-git-full-concurrency-10
+      runtime: runtime-kata
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: full
+      concurrency: '10'
+- name: kio-70
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-70'
+      storageType: storage-azure-disk
+      workStorageClass: managed-csi
+      workAccessMode: ReadWriteOnce
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-70'
+      scenario: runtime-kata-storage-azure-disk-git-blobless-concurrency-10
+      runtime: runtime-kata
+      storageType: storage-azure-disk
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '10'
+- name: kio-76
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-76'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-76'
+      scenario: runtime-kata-storage-azure-files-git-full-concurrency-1
+      runtime: runtime-kata
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: full
+      concurrency: '1'
+- name: kio-77
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-77'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-77'
+      scenario: runtime-kata-storage-azure-files-git-blobless-concurrency-1
+      runtime: runtime-kata
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '1'
+- name: kio-83
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-83'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-83'
+      scenario: runtime-kata-storage-azure-files-git-full-concurrency-10
+      runtime: runtime-kata
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: full
+      concurrency: '10'
+- name: kio-84
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: true
+  objects:
+  - objectTemplate: templates/work-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-84'
+      storageType: storage-azure-files
+      workStorageClass: azurefile-csi
+      workAccessMode: ReadWriteMany
+  - objectTemplate: templates/git-pvc-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-84'
+      scenario: runtime-kata-storage-azure-files-git-blobless-concurrency-10
+      runtime: runtime-kata
+      storageType: storage-azure-files
+      workloadType: git
+      cloneMode: blobless
+      concurrency: '10'
