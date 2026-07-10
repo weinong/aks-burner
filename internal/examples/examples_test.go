@@ -31,6 +31,129 @@ func TestKataPerfContractsValidate(t *testing.T) {
 	}
 }
 
+func TestSuiteSchemaAcceptsSetupResources(t *testing.T) {
+	root := filepath.Join("..", "..")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suite.yml")
+	data := []byte(`name: setup-suite
+description: Suite with setup resources
+tests:
+  - startup
+setup:
+  resources:
+    - name: kata-runtimeclass
+      path: setup/runtimeclass.yml
+      wait:
+        - kind: exists
+          resource: runtimeclass/custom-kata
+          timeout: 1m
+    - name: node-prep
+      path: setup/node-prep-daemonset.yml
+      wait:
+        - kind: rollout
+          resource: daemonset/node-prep
+          namespace: kube-system
+          timeout: 10m
+        - kind: condition
+          resource: pod/node-prep-check
+          namespace: default
+          condition: Ready
+          timeout: 5m
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas/suite.schema.json"), path); err != nil {
+		t.Fatalf("suite schema rejected setup resources: %v", err)
+	}
+}
+
+func TestSuiteSchemaRejectsInvalidSetupWait(t *testing.T) {
+	root := filepath.Join("..", "..")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suite.yml")
+	data := []byte(`name: setup-suite
+description: Suite with invalid setup wait
+tests:
+  - startup
+setup:
+  resources:
+    - name: node-prep
+      path: setup/node-prep-daemonset.yml
+      wait:
+        - kind: sleep
+          resource: daemonset/node-prep
+          timeout: 10m
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas/suite.schema.json"), path); err == nil {
+		t.Fatal("suite schema accepted invalid setup wait kind")
+	}
+}
+
+func TestSuiteSchemaRequiresConditionForConditionWait(t *testing.T) {
+	root := filepath.Join("..", "..")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suite.yml")
+	data := []byte(`name: setup-suite
+description: Suite with invalid condition wait
+tests:
+  - startup
+setup:
+  resources:
+    - name: node-prep-check
+      path: setup/node-prep-check.yml
+      wait:
+        - kind: condition
+          resource: pod/node-prep-check
+          namespace: default
+          timeout: 5m
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas/suite.schema.json"), path); err == nil {
+		t.Fatal("suite schema accepted condition wait without condition")
+	}
+}
+
+func TestSuiteSchemaRejectsUnsafeSetupResourcePaths(t *testing.T) {
+	root := filepath.Join("..", "..")
+	unsafePaths := []string{
+		"/setup/runtimeclass.yml",
+		"C:/setup/runtimeclass.yml",
+		`C:\setup\runtimeclass.yml`,
+		`\setup\runtimeclass.yml`,
+		"../setup/runtimeclass.yml",
+		`..\setup\runtimeclass.yml`,
+		"setup/../runtimeclass.yml",
+		`setup\..\runtimeclass.yml`,
+	}
+	for _, unsafePath := range unsafePaths {
+		t.Run(unsafePath, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "suite.yml")
+			data := []byte(`name: setup-suite
+description: Suite with unsafe setup path
+tests:
+  - startup
+setup:
+  resources:
+    - name: node-prep
+      path: ` + unsafePath + `
+`)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := config.ValidateYAML(filepath.Join(root, "schemas/suite.schema.json"), path); err == nil {
+				t.Fatalf("suite schema accepted unsafe setup resource path %q", unsafePath)
+			}
+		})
+	}
+}
+
 func TestKataPerfSuiteHasGenericKataIdentity(t *testing.T) {
 	root := filepath.Join("..", "..")
 	files := []string{

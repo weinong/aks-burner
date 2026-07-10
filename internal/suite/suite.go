@@ -16,6 +16,25 @@ type Config struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	Tests       []string `yaml:"tests"`
+	Setup       Setup    `yaml:"setup"`
+}
+
+type Setup struct {
+	Resources []SetupResource `yaml:"resources"`
+}
+
+type SetupResource struct {
+	Name string     `yaml:"name"`
+	Path string     `yaml:"path"`
+	Wait []WaitRule `yaml:"wait"`
+}
+
+type WaitRule struct {
+	Kind      string `yaml:"kind"`
+	Resource  string `yaml:"resource"`
+	Namespace string `yaml:"namespace"`
+	Condition string `yaml:"condition"`
+	Timeout   string `yaml:"timeout"`
 }
 
 func Load(root string, name string) (Config, error) {
