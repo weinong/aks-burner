@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Azure/aks-burner/internal/config"
+	"github.com/Azure/aks-burner/internal/requirements"
 	"github.com/Azure/aks-burner/internal/run"
 	"gopkg.in/yaml.v3"
 )
@@ -192,7 +193,6 @@ func TestKataPerfSuiteHasGenericKataIdentity(t *testing.T) {
 	files := []string{
 		"suites/kata-perf/suite.yml",
 		"suites/kata-perf/requirements.yml",
-		"suites/kata-perf/infra.bicepparam",
 		"suites/kata-perf/workload.yml",
 		"suites/kata-perf/metrics.yml",
 		"suites/kata-perf/templates/pod.yml",
@@ -227,15 +227,85 @@ func TestKataPerfUsesKataRuntime(t *testing.T) {
 		}
 	}
 
-	assertContains("infra/aks/main.bicep", "param userNodeWorkloadRuntime string = 'OCIContainer'")
+	assertContains("infra/aks/main.bicep", "param nodePools NodePool[]")
 	assertContains("infra/aks/main.bicep", "'KataMshvVmIsolation'")
-	assertContains("infra/aks/main.bicep", "param userNodeOsSKU string = 'Ubuntu'")
-	assertContains("infra/aks/main.bicep", "osSKU: userNodeOsSKU")
-	assertContains("infra/aks/main.bicep", "workloadRuntime: userNodeWorkloadRuntime")
-	assertContains("suites/kata-perf/infra.bicepparam", "param userNodeOsSKU = 'AzureLinux'")
-	assertContains("suites/kata-perf/infra.bicepparam", "param userNodeWorkloadRuntime = 'KataMshvVmIsolation'")
+	assertContains("infra/aks/main.bicep", "osSKU: pool.osSKU")
+	assertContains("infra/aks/main.bicep", "workloadRuntime: pool.workloadRuntime")
 	assertContains("suites/kata-perf/templates/pod.yml", "runtimeClassName: kata-vm-isolation")
 	assertContains("suites/kata-perf/templates/pod.yml", "kubernetes.azure.com/os-sku: AzureLinux")
+}
+
+func TestSuiteRequirementsDriveNodePoolsWithoutParameterFiles(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for _, test := range []struct {
+		name      string
+		wantCount int
+		wantSize  string
+	}{
+		{name: "kata-perf", wantCount: 1, wantSize: "Standard_D16as_v5"},
+		{name: "kata-io", wantCount: 4, wantSize: "Standard_D8s_v5"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			doc, err := requirements.Load(root, test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(doc.Requires.Infrastructure.NodePools) != 2 {
+				t.Fatalf("node pools = %#v, want system and user pools", doc.Requires.Infrastructure.NodePools)
+			}
+			system, user := doc.Requires.Infrastructure.NodePools[0], doc.Requires.Infrastructure.NodePools[1]
+			if system.Name != "systempool" || system.Mode != "System" {
+				t.Fatalf("system pool = %#v", system)
+			}
+			if user.Name != "userpool" || user.Mode != "User" || user.Count != test.wantCount || user.VMSize != test.wantSize {
+				t.Fatalf("user pool = %#v", user)
+			}
+			if doc.Requires.NodeSelectors[0].Pool != "userpool" {
+				t.Fatalf("selector pool = %q, want userpool", doc.Requires.NodeSelectors[0].Pool)
+			}
+			if _, err := os.Stat(filepath.Join(root, "suites", test.name, "infra.bicepparam")); !os.IsNotExist(err) {
+				t.Fatalf("infra.bicepparam still exists: %v", err)
+			}
+		})
+	}
+}
+
+func TestRequirementsSchemaRejectsInvalidNodePools(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for _, invalidPool := range []string{
+		"name: UPPER\n        mode: System\n        count: 1\n        vmSize: Standard_D4s_v5\n        osType: Linux\n        osSKU: Ubuntu\n        workloadRuntime: OCIContainer\n        labels: {}\n        taints: []",
+		"name: systempool\n        mode: System\n        count: 0\n        vmSize: Standard_D4s_v5\n        osType: Linux\n        osSKU: Ubuntu\n        workloadRuntime: OCIContainer\n        labels: {}\n        taints: []",
+		"name: systempool\n        mode: System\n        count: 1\n        vmSize: Standard_D4s_v5\n        osType: Linux\n        osSKU: Ubuntu\n        workloadRuntime: OCIContainer\n        labels: {}\n        taints: [dedicated=true:Unknown]",
+	} {
+		t.Run(invalidPool[:12], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "requirements.yml")
+			data := "suite: demo\nrequires:\n  infrastructure:\n    provider: aks\n    nodePools:\n      - " + invalidPool + "\n  kubernetes:\n    minVersion: \"1.36\"\n  nodeSelectors: []\n  observability:\n    prometheus:\n      required: false\n      install: false\n      namespace: monitoring\n      imageKey: prometheus\n      serviceName: prometheus\n      servicePort: 9090\n      localPort: 9090\n"
+			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), path); err == nil {
+				t.Fatal("schema accepted invalid node pool")
+			}
+		})
+	}
+}
+
+func TestAKSTemplateUsesArbitraryNodePoolsAndDerivedRegistryName(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "infra", "aks", "main.bicep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"param nodePools NodePool[]", "[for pool in nodePools:", "nodeLabels: pool.labels", "nodeTaints: pool.taints"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("main.bicep missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{"param userNodeCount", "param systemNodeCount", "param containerRegistryName"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("main.bicep still contains %q", unwanted)
+		}
+	}
 }
 
 func TestAKSTemplateConditionallyDeploysContainerRegistry(t *testing.T) {
@@ -361,7 +431,7 @@ func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
 					Objects         []struct {
 						Kind          string            `yaml:"kind"`
 						LabelSelector map[string]string `yaml:"labelSelector"`
-						InputVars      map[string]any    `yaml:"inputVars"`
+						InputVars     map[string]any    `yaml:"inputVars"`
 					} `yaml:"objects"`
 				} `yaml:"jobs"`
 			}
@@ -566,21 +636,15 @@ func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {
 }
 
 func TestKataIOInfraDefaultsCanScheduleConcurrencyTen(t *testing.T) {
-	infraPath := filepath.Join("..", "..", "suites", "kata-io", "infra.bicepparam")
-	data, err := os.ReadFile(infraPath)
+	doc, err := requirements.Load(filepath.Join("..", ".."), "kata-io")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
-	if !strings.Contains(text, "param userNodeOsSKU = 'AzureLinux'") {
-		t.Fatalf("infra.bicepparam must preserve AzureLinux OS SKU")
+	user := doc.Requires.Infrastructure.NodePools[1]
+	if user.OSSKU != "AzureLinux" || user.WorkloadRuntime != "KataMshvVmIsolation" {
+		t.Fatalf("user pool = %#v", user)
 	}
-	if !strings.Contains(text, "param userNodeWorkloadRuntime = 'KataMshvVmIsolation'") {
-		t.Fatalf("infra.bicepparam must preserve KataMshvVmIsolation workload runtime")
-	}
-
-	nodeCount := bicepIntParam(t, text, "userNodeCount")
-	vmSize := bicepStringParam(t, text, "userNodeVmSize")
+	nodeCount, vmSize := user.Count, user.VMSize
 	vcpuBySize := map[string]int{"Standard_D8s_v5": 8, "Standard_D16s_v5": 16}
 	vcpu, ok := vcpuBySize[vmSize]
 	if !ok {
@@ -598,13 +662,12 @@ func TestKataIOInfraDefaultsCanScheduleConcurrencyTen(t *testing.T) {
 }
 
 func TestKataIOInfraDefaultsFitWestUS2Quota(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "infra.bicepparam"))
+	doc, err := requirements.Load(filepath.Join("..", ".."), "kata-io")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
-	nodeCount := bicepIntParam(t, text, "userNodeCount")
-	vmSize := bicepStringParam(t, text, "userNodeVmSize")
+	user := doc.Requires.Infrastructure.NodePools[1]
+	nodeCount, vmSize := user.Count, user.VMSize
 	vcpuBySize := map[string]int{"Standard_D8s_v5": 8, "Standard_D16s_v5": 16}
 	vcpu, ok := vcpuBySize[vmSize]
 	if !ok {
@@ -618,12 +681,11 @@ func TestKataIOInfraDefaultsFitWestUS2Quota(t *testing.T) {
 }
 
 func TestKataIOInfraPinsRequiredKubernetesVersion(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "infra.bicepparam"))
+	doc, err := requirements.Load(filepath.Join("..", ".."), "kata-io")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
-	version := bicepStringParam(t, text, "kubernetesVersion")
+	version := doc.Requires.Kubernetes.MinVersion
 	if compareMajorMinor(version, "1.36") < 0 {
 		t.Fatalf("kata-io kubernetesVersion = %q, want >= 1.36 to satisfy requirements.yml", version)
 	}
@@ -726,28 +788,6 @@ func asString(value any) string {
 		return ""
 	}
 	return value.(string)
-}
-
-func bicepIntParam(t *testing.T, text string, name string) int {
-	t.Helper()
-	match := regexp.MustCompile(`(?m)^param\s+` + regexp.QuoteMeta(name) + `\s*=\s*(\d+)\s*$`).FindStringSubmatch(text)
-	if match == nil {
-		t.Fatalf("missing integer bicep param %s", name)
-	}
-	value, err := strconv.Atoi(match[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return value
-}
-
-func bicepStringParam(t *testing.T, text string, name string) string {
-	t.Helper()
-	match := regexp.MustCompile(`(?m)^param\s+` + regexp.QuoteMeta(name) + `\s*=\s*'([^']+)'\s*$`).FindStringSubmatch(text)
-	if match == nil {
-		t.Fatalf("missing string bicep param %s", name)
-	}
-	return match[1]
 }
 
 func maxKataIOPodCPURequest(t *testing.T) int {

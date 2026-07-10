@@ -86,8 +86,6 @@ requires:
       labels:
         perf.azure.com/node-role: workload
   images:
-    registry:
-      nameParameter: containerRegistryName
     builds:
       - key: benchmark
         repository: demo/benchmark

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/Azure/aks-burner/internal/acr"
 	"github.com/Azure/aks-burner/internal/artifacts"
 	"github.com/Azure/aks-burner/internal/config"
+	"github.com/Azure/aks-burner/internal/infra"
 	"github.com/Azure/aks-burner/internal/kubestatemetrics"
 )
 
@@ -25,10 +27,9 @@ func TestInfraBicepSupportsKataWorkloadRuntimeParameters(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		"param userNodeOsSKU string = 'Ubuntu'",
-		"param userNodeWorkloadRuntime string = 'OCIContainer'",
-		"osSKU: userNodeOsSKU",
-		"workloadRuntime: userNodeWorkloadRuntime",
+		"param nodePools NodePool[]",
+		"osSKU: pool.osSKU",
+		"workloadRuntime: pool.workloadRuntime",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("main.bicep missing %q", want)
@@ -67,9 +68,16 @@ setup:
 requires:
   infrastructure:
     provider: aks
-    bicep:
-      template: infra/aks/main.bicep
-      parameters: suites/bad-setup/infra.bicepparam
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
   kubernetes:
     minVersion: "1.30"
   nodeSelectors: []
@@ -84,9 +92,6 @@ requires:
       localPort: 9090
       requiredMetrics: []
 `), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(suiteDir, "infra.bicepparam"), []byte("param clusterName = 'aksbadsetup'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "infra", "aks"), 0o755); err != nil {
@@ -204,9 +209,16 @@ func TestRequirementsSchemaAcceptsKubeStateMetricsAndArtifacts(t *testing.T) {
 requires:
   infrastructure:
     provider: aks
-    bicep:
-      template: infra/aks/main.bicep
-      parameters: suites/kata-io/infra.bicepparam
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
   kubernetes:
     minVersion: "1.36"
   observability:
@@ -262,11 +274,11 @@ func TestResolveSuitePathRejectsOutsideSuite(t *testing.T) {
 
 func TestResolveSuitePathAcceptsRepoRelativeSuitePath(t *testing.T) {
 	root := t.TempDir()
-	got, err := resolveSuitePath(root, "kata-perf", "suites/kata-perf/infra.bicepparam")
+	got, err := resolveSuitePath(root, "kata-perf", "suites/kata-perf/requirements.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(root, "suites", "kata-perf", "infra.bicepparam")
+	want := filepath.Join(root, "suites", "kata-perf", "requirements.yml")
 	if got != want {
 		t.Fatalf("resolveSuitePath() = %q, want %q", got, want)
 	}
@@ -284,14 +296,6 @@ func TestModeWorkloadFileResolvesInsideSuite(t *testing.T) {
 	}
 }
 
-func TestResolveRepoPathRejectsOutsideRepo(t *testing.T) {
-	root := t.TempDir()
-	_, err := resolveRepoPath(root, "../outside/main.bicep")
-	if err == nil || !strings.Contains(err.Error(), "outside repo") {
-		t.Fatalf("resolveRepoPath() error = %v, want outside repo", err)
-	}
-}
-
 func TestAddSuiteFastModeWritesDummySuite(t *testing.T) {
 	root := testRepoRoot(t)
 	withWorkingDir(t, root)
@@ -302,8 +306,12 @@ func TestAddSuiteFastModeWritesDummySuite(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "suite.yml"), "name: demo-suite")
 	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "requirements.yml"), "suite: demo-suite")
-	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "requirements.yml"), "parameters: suites/demo-suite/infra.bicepparam")
-	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "infra.bicepparam"), "param clusterName = 'aksdemosuite'")
+	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "requirements.yml"), "name: systempool")
+	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "requirements.yml"), "name: userpool")
+	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "requirements.yml"), "pool: userpool")
+	if _, err := os.Stat(filepath.Join(root, "suites", "demo-suite", "infra.bicepparam")); !os.IsNotExist(err) {
+		t.Fatalf("infra.bicepparam exists: %v", err)
+	}
 	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "workload.yml"), "name: startup-smoke")
 	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "templates", "pod.yml"), "app: demo-suite")
 	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "vars", "smoke.yml"), "iterations: 20")
@@ -334,13 +342,13 @@ func TestAddSuiteRefusesOverwrite(t *testing.T) {
 	}
 }
 
-func TestAddSuiteRejectsUnsafeBicepParameterText(t *testing.T) {
+func TestAddSuiteRejectsClusterNameFlag(t *testing.T) {
 	root := testRepoRoot(t)
 	withWorkingDir(t, root)
 
-	err := addSuiteWithIO([]string{"--suite", "demo-suite", "--cluster-name", "aksdemo'\nparam extra = 'x"}, strings.NewReader(""), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "cluster name") {
-		t.Fatalf("addSuiteWithIO() error = %v, want cluster name validation", err)
+	err := addSuiteWithIO([]string{"--suite", "demo-suite", "--cluster-name", "custom-aks"}, strings.NewReader(""), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("addSuiteWithIO() error = %v, want unknown flag", err)
 	}
 }
 
@@ -361,64 +369,23 @@ func TestAddSuiteRejectsNonPositiveNumbers(t *testing.T) {
 func TestAddSuiteGuidedUsesDefaultsForBlankAnswers(t *testing.T) {
 	root := testRepoRoot(t)
 	withWorkingDir(t, root)
-	input := strings.NewReader("guided-suite\n\n\n\n\n\n\n\n\n")
+	input := strings.NewReader("guided-suite\n\n\n\n\n\n\n\n")
+	var out bytes.Buffer
 
-	if err := addSuiteWithIO([]string{"--guided"}, input, io.Discard); err != nil {
+	if err := addSuiteWithIO([]string{"--guided"}, input, &out); err != nil {
 		t.Fatalf("addSuiteWithIO() returned error: %v", err)
 	}
 
 	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "suite.yml"), "description: Dummy guided-suite performance suite.")
 	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "requirements.yml"), "required: true")
-	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "infra.bicepparam"), "param userNodeCount = 1")
+	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "requirements.yml"), "count: 1")
+	if strings.Contains(out.String(), "Cluster name") {
+		t.Fatalf("guided prompts include cluster name: %q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "suites", "guided-suite", "infra.bicepparam")); !os.IsNotExist(err) {
+		t.Fatalf("infra.bicepparam exists: %v", err)
+	}
 	assertGeneratedSuiteSchemas(t, root, "guided-suite")
-}
-
-func TestReadBicepParamStringReadsContainerRegistryName(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "infra.bicepparam")
-	if err := os.WriteFile(path, []byte("param clusterName = 'akstest'\nparam containerRegistryName = 'acrtest'\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := readBicepParamString(path, "containerRegistryName")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "acrtest" {
-		t.Fatalf("readBicepParamString() = %q, want acrtest", got)
-	}
-}
-
-func TestRegistryNameFromRequirementsUsesParameterWhenPresent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "infra.bicepparam")
-	if err := os.WriteFile(path, []byte("param clusterName = 'akstest'\nparam containerRegistryName = 'acrtest'\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := registryNameFromRequirements(path, acr.Requirements{
-		Registry: acr.RegistryConfig{NameParameter: "containerRegistryName"},
-		Builds:   []acr.ImageBuild{{Key: "image", Repository: "repo/image", Context: ".", Dockerfile: "Dockerfile"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "acrtest" {
-		t.Fatalf("registryNameFromRequirements() = %q, want acrtest", got)
-	}
-}
-
-func TestRegistryNameFromRequirementsAllowsGeneratedRegistryName(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "infra.bicepparam")
-	if err := os.WriteFile(path, []byte("param clusterName = 'akstest'\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := registryNameFromRequirements(path, acr.Requirements{
-		Registry: acr.RegistryConfig{NameParameter: "containerRegistryName"},
-		Builds:   []acr.ImageBuild{{Key: "image", Repository: "repo/image", Context: ".", Dockerfile: "Dockerfile"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "" {
-		t.Fatalf("registryNameFromRequirements() = %q, want empty fallback marker", got)
-	}
 }
 
 func TestShouldDeployContainerRegistryRequiresImages(t *testing.T) {
@@ -426,11 +393,153 @@ func TestShouldDeployContainerRegistryRequiresImages(t *testing.T) {
 		t.Fatal("shouldDeployContainerRegistry(nil) = true, want false")
 	}
 	images := &acr.Requirements{
-		Registry: acr.RegistryConfig{NameParameter: "containerRegistryName"},
-		Builds:   []acr.ImageBuild{{Key: "image", Repository: "repo/image", Context: ".", Dockerfile: "Dockerfile"}},
+		Builds: []acr.ImageBuild{{Key: "image", Repository: "repo/image", Context: ".", Dockerfile: "Dockerfile"}},
 	}
 	if !shouldDeployContainerRegistry(images) {
 		t.Fatal("shouldDeployContainerRegistry(images) = false, want true")
+	}
+}
+
+func TestProvisionDryRunPrintsGeneratedParameters(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	oldProvision := provisionInfra
+	called := false
+	provisionInfra = func(context.Context, infra.ProvisionOptions) error { called = true; return nil }
+	t.Cleanup(func() { provisionInfra = oldProvision })
+	var out bytes.Buffer
+	if err := provisionWithIO([]string{"--suite", "demo", "--resource-group", "rg-demo", "--location", "westus2", "--dry-run"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Parameters map[string]struct {
+			Value any `json:"value"`
+		} `json:"parameters"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("dry-run output is not JSON: %v\n%s", err, out.String())
+	}
+	if got := doc.Parameters["clusterName"].Value; got != "aksdemo" {
+		t.Fatalf("clusterName = %#v, want aksdemo", got)
+	}
+	if called {
+		t.Fatal("provision command executed during dry-run")
+	}
+}
+
+func TestProvisionClusterNameOverrideAndValidation(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	var out bytes.Buffer
+	if err := provisionWithIO([]string{"--suite", "demo", "--resource-group", "rg-demo", "--location", "westus2", "--cluster-name", "custom-aks", "--dry-run"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"value": "custom-aks"`) {
+		t.Fatalf("output missing cluster override: %s", out.String())
+	}
+	if err := provisionWithIO([]string{"--suite", "demo", "--resource-group", "rg-demo", "--location", "westus2", "--cluster-name", "Invalid", "--dry-run"}, io.Discard); err == nil || !strings.Contains(err.Error(), "invalid cluster name") {
+		t.Fatalf("invalid override error = %v", err)
+	}
+}
+
+func TestProvisionPassesGeneratedParametersToInfra(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	oldProvision := provisionInfra
+	var got infra.ProvisionOptions
+	provisionInfra = func(_ context.Context, opts infra.ProvisionOptions) error { got = opts; return nil }
+	t.Cleanup(func() { provisionInfra = oldProvision })
+	if err := provisionWithIO([]string{"--suite", "demo", "--resource-group", "rg-demo", "--location", "westus2"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got.ResourceGroup != "rg-demo" || got.Location != "westus2" || got.ClusterName != "aksdemo" {
+		t.Fatalf("provision options = %#v", got)
+	}
+	if got.TemplateFile != filepath.Join(root, "infra", "aks", "main.bicep") {
+		t.Fatalf("template file = %q", got.TemplateFile)
+	}
+	if !json.Valid(got.ParametersJSON) || !bytes.Contains(got.ParametersJSON, []byte(`"nodePools"`)) {
+		t.Fatalf("parameters JSON = %s", got.ParametersJSON)
+	}
+}
+
+func TestProvisionRejectsPoolRelationshipsBeforeCommand(t *testing.T) {
+	root := provisionTestRepo(t)
+	path := filepath.Join(root, "suites", "demo", "requirements.yml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.Replace(data, []byte("pool: userpool"), []byte("pool: missing"), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	oldProvision := provisionInfra
+	called := false
+	provisionInfra = func(context.Context, infra.ProvisionOptions) error { called = true; return nil }
+	t.Cleanup(func() { provisionInfra = oldProvision })
+	err = provisionWithIO([]string{"--suite", "demo", "--resource-group", "rg-demo", "--location", "westus2"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "references missing pool") {
+		t.Fatalf("error = %v", err)
+	}
+	if called {
+		t.Fatal("provision command ran after semantic validation failure")
+	}
+}
+
+func TestRunSuiteClusterOverrideUsesOverrideForCredentials(t *testing.T) {
+	root := provisionTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("images:\n  pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	stop := errors.New("stop after credentials")
+	var got string
+	err := runSuiteWithDependencies([]string{"--suite", "demo", "--mode", "smoke", "--resource-group", "rg-demo", "--cluster-name", "existing-aks"}, runSuiteDependencies{
+		GetCredentials: func(_ context.Context, _, cluster string) error { got = cluster; return stop },
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("runSuiteWithDependencies() error = %v, want sentinel", err)
+	}
+	if got != "existing-aks" {
+		t.Fatalf("credentials cluster = %q, want existing-aks", got)
+	}
+}
+
+func TestRunSuiteRegistryOutputsPrecedeCredentials(t *testing.T) {
+	order := []string{}
+	registryName, registryServer, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, runSuiteDependencies{
+		DeploymentOutput: func(_ context.Context, _, _, output string) (string, error) {
+			order = append(order, "output:"+output)
+			if strings.HasSuffix(output, "Name") {
+				return "acrdemo", nil
+			}
+			return "acrdemo.azurecr.io", nil
+		},
+		GetCredentials: func(context.Context, string, string) error { order = append(order, "credentials"); return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registryName != "acrdemo" || registryServer != "acrdemo.azurecr.io" {
+		t.Fatalf("registry = %q/%q", registryName, registryServer)
+	}
+	want := "output:containerRegistryName,output:containerRegistryLoginServer,credentials"
+	if strings.Join(order, ",") != want {
+		t.Fatalf("order = %q, want %q", strings.Join(order, ","), want)
+	}
+}
+
+func TestRunSuiteRegistryOutputFailureExplainsManagedDeployment(t *testing.T) {
+	_, _, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, runSuiteDependencies{
+		DeploymentOutput: func(context.Context, string, string, string) (string, error) { return "", errors.New("missing") },
+		GetCredentials:   func(context.Context, string, string) error { t.Fatal("credentials called"); return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires an aks-burner deployment with container registry outputs") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -597,6 +706,73 @@ func TestExecuteRunAndCopyArtifactsPrefersKubeBurnerFailureOverArtifactCopy(t *t
 	if !errors.Is(err, executeErr) || !strings.Contains(err.Error(), "artifact copy also failed") {
 		t.Fatalf("executeRunAndCopyArtifacts() error = %v, want kube-burner error with artifact copy context", err)
 	}
+}
+
+func provisionTestRepo(t *testing.T) string {
+	t.Helper()
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "demo")
+	if err := os.MkdirAll(filepath.Join(suiteDir, "vars"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"suite.yml": "name: demo\ndescription: Demo suite\ntests: [startup]\n",
+		"requirements.yml": `suite: demo
+requires:
+  infrastructure:
+    provider: aks
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+      - name: userpool
+        mode: User
+        count: 1
+        vmSize: Standard_D8s_v5
+        osType: Linux
+        osSKU: AzureLinux
+        workloadRuntime: KataMshvVmIsolation
+        labels:
+          perf.azure.com/node-role: workload
+        taints: []
+  kubernetes:
+    minVersion: "1.36"
+  nodeSelectors:
+    - name: workload
+      pool: userpool
+      required: true
+      minNodes: 1
+      labels:
+        perf.azure.com/node-role: workload
+  observability:
+    prometheus:
+      required: false
+      install: false
+      namespace: monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+`,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(suiteDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "infra", "aks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "infra", "aks", "main.bicep"), []byte("param clusterName string\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func testRepoRoot(t *testing.T) string {

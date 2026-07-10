@@ -2,13 +2,31 @@ suite: kata-perf
 requires:
   infrastructure:
     provider: aks
-    bicep:
-      template: infra/aks/main.bicep
-      parameters: suites/kata-perf/infra.bicepparam
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+      - name: userpool
+        mode: User
+        count: 1
+        vmSize: Standard_D16as_v5
+        osType: Linux
+        osSKU: AzureLinux
+        workloadRuntime: KataMshvVmIsolation
+        labels:
+          perf.azure.com/node-role: workload
+        taints: []
   kubernetes:
     minVersion: "1.36"
   nodeSelectors:
     - name: azurelinux-workload
+      pool: userpool
       required: true
       minNodes: 1
       labels:

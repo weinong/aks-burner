@@ -13,16 +13,27 @@
         "infrastructure": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["provider", "bicep"],
+          "required": ["provider", "nodePools"],
           "properties": {
             "provider": { "type": "string", "enum": ["aks"] },
-            "bicep": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["template", "parameters"],
-              "properties": {
-                "template": { "type": "string", "minLength": 1 },
-                "parameters": { "type": "string", "minLength": 1 }
+            "nodePools": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "mode", "count", "vmSize", "osType", "osSKU", "workloadRuntime", "labels", "taints"],
+                "properties": {
+                  "name": { "type": "string", "pattern": "^[a-z][a-z0-9]{0,11}$" },
+                  "mode": { "type": "string", "enum": ["System", "User"] },
+                  "count": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                  "vmSize": { "type": "string", "minLength": 1 },
+                  "osType": { "const": "Linux" },
+                  "osSKU": { "type": "string", "enum": ["Ubuntu", "AzureLinux"] },
+                  "workloadRuntime": { "type": "string", "enum": ["OCIContainer", "KataMshvVmIsolation", "KataVmIsolation"] },
+                  "labels": { "type": "object", "propertyNames": { "minLength": 1 }, "additionalProperties": { "type": "string", "minLength": 1 } },
+                  "taints": { "type": "array", "items": { "type": "string", "pattern": "^[^:=\\s]+(?:=[^:\\s]+)?:(NoSchedule|PreferNoSchedule|NoExecute)$" } }
+                }
               }
             }
           }
@@ -40,9 +51,10 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "required", "minNodes", "labels"],
+            "required": ["name", "pool", "required", "minNodes", "labels"],
             "properties": {
               "name": { "type": "string", "minLength": 1 },
+              "pool": { "type": "string", "minLength": 1 },
               "required": { "type": "boolean" },
               "minNodes": { "type": "integer", "minimum": 0 },
               "labels": { "type": "object", "additionalProperties": { "type": "string" } }
@@ -52,16 +64,8 @@
         "images": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["registry", "builds"],
+          "required": ["builds"],
           "properties": {
-            "registry": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["nameParameter"],
-              "properties": {
-                "nameParameter": { "type": "string", "minLength": 1 }
-              }
-            },
             "builds": {
               "type": "array",
               "minItems": 1,

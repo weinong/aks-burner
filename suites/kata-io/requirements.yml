@@ -2,20 +2,36 @@ suite: kata-io
 requires:
   infrastructure:
     provider: aks
-    bicep:
-      template: infra/aks/main.bicep
-      parameters: suites/kata-io/infra.bicepparam
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+      - name: userpool
+        mode: User
+        count: 4
+        vmSize: Standard_D8s_v5
+        osType: Linux
+        osSKU: AzureLinux
+        workloadRuntime: KataMshvVmIsolation
+        labels:
+          perf.azure.com/node-role: workload
+        taints: []
   kubernetes:
     minVersion: "1.36"
   nodeSelectors:
     - name: workload
+      pool: userpool
       required: true
       minNodes: 1
       labels:
         perf.azure.com/node-role: workload
   images:
-    registry:
-      nameParameter: containerRegistryName
     builds:
       - key: benchmark
         repository: kata-io/benchmark

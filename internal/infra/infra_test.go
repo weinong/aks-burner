@@ -1,61 +1,98 @@
 package infra
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestProvisionCommands(t *testing.T) {
 	opts := ProvisionOptions{
-		ResourceGroup:           "rg-aks-burner-test",
-		Location:                "westus2",
-		ParametersFile:          "suites/kata-perf/infra.bicepparam",
-		ClusterName:             "akstest",
-		DeployContainerRegistry: true,
+		ResourceGroup: "rg-aks-burner-test",
+		Location:      "westus2",
+		TemplateFile:  "infra/aks/main.bicep",
+		ClusterName:   "akstest",
 	}
-	commands := ProvisionCommands(opts)
-	if commands[0][0] != "az" || commands[0][1] != "group" || commands[0][2] != "create" {
-		t.Fatalf("unexpected group command: %#v", commands[0])
+	commands := ProvisionCommands(opts, "/tmp/generated.parameters.json")
+	want := [][]string{
+		{"az", "group", "create", "--name", "rg-aks-burner-test", "--location", "westus2"},
+		{"az", "deployment", "group", "create", "--resource-group", "rg-aks-burner-test", "--name", DeploymentName, "--template-file", "infra/aks/main.bicep", "--parameters", "@/tmp/generated.parameters.json"},
+		{"az", "aks", "get-credentials", "--resource-group", "rg-aks-burner-test", "--name", "akstest", "--overwrite-existing"},
 	}
-	if commands[1][0] != "az" || commands[1][1] != "deployment" || commands[1][2] != "group" || commands[1][3] != "create" {
-		t.Fatalf("unexpected deployment command: %#v", commands[1])
-	}
-	if !containsArgSequence(commands[1], "--name", DeploymentName) {
-		t.Fatalf("deployment command missing explicit name %q: %#v", DeploymentName, commands[1])
-	}
-	if got := commands[1][len(commands[1])-1]; got != "deployContainerRegistry=true" {
-		t.Fatalf("deployment command last argument = %q, want deployContainerRegistry=true", got)
-	}
-	for _, arg := range commands[1] {
-		if arg == "--template-file" {
-			t.Fatalf("deployment command must use .bicepparam directly without --template-file: %#v", commands[1])
-		}
-	}
-	if commands[2][0] != "az" || commands[2][1] != "aks" || commands[2][2] != "get-credentials" {
-		t.Fatalf("unexpected credentials command: %#v", commands[2])
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("ProvisionCommands() = %#v, want %#v", commands, want)
 	}
 }
 
-func TestProvisionCommandsDisablesContainerRegistryAfterParameterFile(t *testing.T) {
-	commands := ProvisionCommands(ProvisionOptions{
-		ResourceGroup:  "rg-aks-burner-test",
-		Location:       "westus2",
-		ParametersFile: "suites/generated/infra.bicepparam",
-		ClusterName:    "akstest",
-	})
-	deployment := commands[1]
-	parametersIndex := -1
-	for i, arg := range deployment {
-		if arg == "--parameters" {
-			parametersIndex = i
-			break
-		}
+func TestProvisionRemovesPrivateParametersFileOnEveryExit(t *testing.T) {
+	tests := []struct {
+		name        string
+		failCommand int
+		cancel      bool
+	}{
+		{name: "first command fails", failCommand: 1},
+		{name: "second command fails", failCommand: 2},
+		{name: "third command fails", failCommand: 3},
+		{name: "context canceled", cancel: true},
 	}
-	if parametersIndex < 0 || parametersIndex+1 >= len(deployment) {
-		t.Fatalf("deployment command missing parameter file: %#v", deployment)
-	}
-	if got := deployment[len(deployment)-1]; got != "deployContainerRegistry=false" {
-		t.Fatalf("deployment command last argument = %q, want deployContainerRegistry=false", got)
-	}
-	if len(deployment)-1 <= parametersIndex+1 {
-		t.Fatalf("derived parameter must follow parameter file: %#v", deployment)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			if test.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			calls := 0
+			var parametersPath string
+			tempDir := t.TempDir()
+			runCommand := func(ctx context.Context, args []string) error {
+				calls++
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "@") {
+						parametersPath = strings.TrimPrefix(arg, "@")
+					}
+				}
+				if parametersPath == "" {
+					matches, err := filepath.Glob(filepath.Join(tempDir, "aks-burner-*.parameters.json"))
+					if err != nil || len(matches) != 1 {
+						t.Fatalf("temporary parameters file count = %d, error = %v", len(matches), err)
+					}
+					parametersPath = matches[0]
+				}
+				{
+					info, err := os.Stat(parametersPath)
+					if err != nil {
+						t.Fatalf("parameters file unavailable during command: %v", err)
+					}
+					if got := info.Mode().Perm(); got != 0o600 {
+						t.Fatalf("parameters mode = %o, want 600", got)
+					}
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if calls == test.failCommand {
+					return errors.New("injected command failure")
+				}
+				return nil
+			}
+			err := Provision(ctx, ProvisionOptions{ResourceGroup: "rg", Location: "westus2", TemplateFile: "main.bicep", ParametersJSON: []byte(`{"parameters":{}}`), ClusterName: "aksdemo", TempDir: tempDir, RunCommand: runCommand})
+			if err == nil {
+				t.Fatal("Provision() error = nil")
+			}
+			matches, globErr := filepath.Glob(filepath.Join(tempDir, "aks-burner-*.parameters.json"))
+			if globErr != nil {
+				t.Fatal(globErr)
+			}
+			if len(matches) != 0 {
+				t.Fatalf("temporary parameters files remain: %#v", matches)
+			}
+		})
 	}
 }
 

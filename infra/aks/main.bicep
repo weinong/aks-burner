@@ -3,33 +3,26 @@ targetScope = 'resourceGroup'
 param clusterName string
 param location string = resourceGroup().location
 param kubernetesVersion string = ''
-param systemNodeCount int = 1
-param systemNodeVmSize string = 'Standard_D4s_v5'
-param userNodeCount int = 3
-param userNodeVmSize string = 'Standard_D8s_v5'
-@allowed([
-  'Ubuntu'
-  'AzureLinux'
-])
-param userNodeOsSKU string = 'Ubuntu'
-@allowed([
-  'OCIContainer'
-  'KataMshvVmIsolation'
-  'KataVmIsolation'
-])
-param userNodeWorkloadRuntime string = 'OCIContainer'
-param userNodeLabels object = {
-  'perf.azure.com/node-role': 'workload'
+type NodePool = {
+  name: string
+  mode: 'System' | 'User'
+  count: int
+  vmSize: string
+  osType: 'Linux'
+  osSKU: 'Ubuntu' | 'AzureLinux'
+  workloadRuntime: 'OCIContainer' | 'KataMshvVmIsolation' | 'KataVmIsolation'
+  labels: object
+  taints: string[]
 }
-param containerRegistryName string = ''
+param nodePools NodePool[]
 param containerRegistrySku string = 'Basic'
 param deployContainerRegistry bool = true
 
-var resolvedContainerRegistryName = empty(containerRegistryName) ? 'acr${take(uniqueString(resourceGroup().id, clusterName), 18)}' : containerRegistryName
+var containerRegistryName = 'acr${take(uniqueString(resourceGroup().id, clusterName), 18)}'
 var acrPullRoleDefinitionId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (deployContainerRegistry) {
-  name: resolvedContainerRegistryName
+  name: containerRegistryName
   location: location
   sku: {
     name: containerRegistrySku
@@ -49,27 +42,18 @@ resource aks 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
   properties: {
     dnsPrefix: clusterName
     kubernetesVersion: empty(kubernetesVersion) ? null : kubernetesVersion
-    agentPoolProfiles: [
-      {
-        name: 'systempool'
-        mode: 'System'
-        count: systemNodeCount
-        vmSize: systemNodeVmSize
-        osType: 'Linux'
-        type: 'VirtualMachineScaleSets'
-      }
-      {
-        name: 'userpool'
-        mode: 'User'
-        count: userNodeCount
-        vmSize: userNodeVmSize
-        osType: 'Linux'
-        osSKU: userNodeOsSKU
-        type: 'VirtualMachineScaleSets'
-        workloadRuntime: userNodeWorkloadRuntime
-        nodeLabels: userNodeLabels
-      }
-    ]
+    agentPoolProfiles: [for pool in nodePools: {
+      name: pool.name
+      mode: pool.mode
+      count: pool.count
+      vmSize: pool.vmSize
+      osType: pool.osType
+      osSKU: pool.osSKU
+      type: 'VirtualMachineScaleSets'
+      workloadRuntime: pool.workloadRuntime
+      nodeLabels: pool.labels
+      nodeTaints: pool.taints
+    }]
     networkProfile: {
       networkPlugin: 'azure'
       networkPluginMode: 'overlay'

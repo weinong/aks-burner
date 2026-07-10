@@ -42,13 +42,13 @@ TEST_SUITE=kata-io make destroy
 
 ## Existing AKS Cluster
 
-`run-suite` can target an existing AKS cluster without running `provision`. The target cluster name is read from the suite Bicep parameter file, such as `suites/kata-perf/infra.bicepparam`.
+`run-suite` can target an existing AKS cluster without running `provision`. By default, the cluster name is derived from the suite name (for example, `kata-perf` becomes `akskataperf`); pass `--cluster-name` when the existing cluster uses another name.
 
 ```bash
-TEST_SUITE=kata-perf TEST_MODE=smoke RESOURCE_GROUP=<existing-resource-group> make run-suite
+go run ./cmd/perf-runner run-suite --suite kata-perf --mode smoke --resource-group <existing-resource-group> --cluster-name <existing-cluster>
 ```
 
-For `kata-perf`, the expected cluster name is `akskataperf` unless `suites/kata-perf/infra.bicepparam` is updated. Validate the existing cluster before running the suite: check Kubernetes version with `kubectl version -o json`, and check required node selectors with `kubectl get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
+Validate the existing cluster before running the suite: check Kubernetes version with `kubectl version -o json`, and check required node selectors with `kubectl get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
 
 When Prometheus is `required` and `install: true`, `run-suite` installs Prometheus before running the workload.
 
@@ -63,8 +63,6 @@ Suites can declare images to build under `requires.images` in `suites/<suite>/re
 ```yaml
 requires:
   images:
-    registry:
-      nameParameter: containerRegistryName
     builds:
       - key: benchmark
         repository: kata-io/benchmark

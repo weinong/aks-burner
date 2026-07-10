@@ -17,13 +17,8 @@ const maxTagLength = 128
 
 var imageKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-type RegistryConfig struct {
-	NameParameter string `yaml:"nameParameter"`
-}
-
 type Requirements struct {
-	Registry RegistryConfig `yaml:"registry"`
-	Builds   []ImageBuild   `yaml:"builds"`
+	Builds []ImageBuild `yaml:"builds"`
 }
 
 type ImageBuild struct {

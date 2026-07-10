@@ -21,6 +21,7 @@ import (
 	"github.com/Azure/aks-burner/internal/kubestatemetrics"
 	"github.com/Azure/aks-burner/internal/prometheus"
 	"github.com/Azure/aks-burner/internal/repo"
+	"github.com/Azure/aks-burner/internal/requirements"
 	runpkg "github.com/Azure/aks-burner/internal/run"
 	"github.com/Azure/aks-burner/internal/suite"
 )
@@ -55,7 +56,6 @@ func run(args []string) error {
 type addSuiteOptions struct {
 	SuiteName         string
 	Description       string
-	ClusterName       string
 	KubernetesVersion string
 	NodeCount         int
 	NodeVMSize        string
@@ -72,7 +72,6 @@ func addSuiteWithIO(args []string, in io.Reader, out io.Writer) error {
 	fs := flag.NewFlagSet("add-suite", flag.ContinueOnError)
 	suiteName := fs.String("suite", "", "suite name")
 	description := fs.String("description", "", "suite description")
-	clusterName := fs.String("cluster-name", "", "AKS cluster name")
 	kubernetesVersion := fs.String("kubernetes-version", "1.36", "AKS Kubernetes version")
 	nodeCount := fs.Int("node-count", 1, "AKS user node count")
 	nodeVMSize := fs.String("node-vm-size", "Standard_D16as_v5", "AKS user node VM size")
@@ -87,7 +86,7 @@ func addSuiteWithIO(args []string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("usage: perf-runner add-suite --suite SUITE [--guided]")
 	}
 	opts := suiteDefaults(*suiteName)
-	applyAddSuiteFlags(&opts, *description, *clusterName, *kubernetesVersion, *nodeCount, *nodeVMSize, *prometheus, *smokeIterations, *fullIterations)
+	applyAddSuiteFlags(&opts, *description, *kubernetesVersion, *nodeCount, *nodeVMSize, *prometheus, *smokeIterations, *fullIterations)
 	if *guided {
 		var err error
 		opts, err = promptAddSuiteOptions(in, out, opts)
@@ -112,9 +111,6 @@ func addSuiteWithIO(args []string, in io.Reader, out io.Writer) error {
 }
 
 func validateAddSuiteOptions(opts addSuiteOptions) error {
-	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]$`).MatchString(opts.ClusterName) {
-		return fmt.Errorf("cluster name %q must contain only letters, numbers, and hyphens, start and end with a letter or number, and be at most 63 characters", opts.ClusterName)
-	}
 	if !regexp.MustCompile(`^v?[0-9]+\.[0-9]+(\.[0-9]+)?$`).MatchString(opts.KubernetesVersion) {
 		return fmt.Errorf("kubernetes version %q must look like 1.36 or 1.36.0", opts.KubernetesVersion)
 	}
@@ -134,14 +130,9 @@ func validateAddSuiteOptions(opts addSuiteOptions) error {
 }
 
 func suiteDefaults(name string) addSuiteOptions {
-	clusterName := ""
-	if name != "" {
-		clusterName = "aks" + strings.ReplaceAll(name, "-", "")
-	}
 	return addSuiteOptions{
 		SuiteName:         name,
 		Description:       fmt.Sprintf("Dummy %s performance suite.", name),
-		ClusterName:       clusterName,
 		KubernetesVersion: "1.36",
 		NodeCount:         1,
 		NodeVMSize:        "Standard_D16as_v5",
@@ -151,12 +142,9 @@ func suiteDefaults(name string) addSuiteOptions {
 	}
 }
 
-func applyAddSuiteFlags(opts *addSuiteOptions, description string, clusterName string, kubernetesVersion string, nodeCount int, nodeVMSize string, prometheus bool, smokeIterations int, fullIterations int) {
+func applyAddSuiteFlags(opts *addSuiteOptions, description string, kubernetesVersion string, nodeCount int, nodeVMSize string, prometheus bool, smokeIterations int, fullIterations int) {
 	if description != "" {
 		opts.Description = description
-	}
-	if clusterName != "" {
-		opts.ClusterName = clusterName
 	}
 	if kubernetesVersion != "" {
 		opts.KubernetesVersion = kubernetesVersion
@@ -181,14 +169,7 @@ func promptAddSuiteOptions(in io.Reader, out io.Writer, opts addSuiteOptions) (a
 	if opts.Description == "Dummy  performance suite." || opts.Description == "" {
 		opts.Description = defaults.Description
 	}
-	if opts.ClusterName == "" {
-		opts.ClusterName = defaults.ClusterName
-	}
 	opts.Description, err = promptString(reader, out, "Description", opts.Description)
-	if err != nil {
-		return opts, err
-	}
-	opts.ClusterName, err = promptString(reader, out, "Cluster name", opts.ClusterName)
 	if err != nil {
 		return opts, err
 	}
@@ -284,9 +265,6 @@ func writeSuite(root string, opts addSuiteOptions) error {
 	if err := config.WriteYAML(filepath.Join(suiteDir, "requirements.yml"), suiteRequirements(opts)); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(suiteDir, "infra.bicepparam"), []byte(infraBicepParam(opts)), 0o644); err != nil {
-		return err
-	}
 	if err := config.WriteYAML(filepath.Join(suiteDir, "workload.yml"), suiteWorkload(opts)); err != nil {
 		return err
 	}
@@ -308,10 +286,13 @@ func suiteRequirements(opts addSuiteOptions) map[string]any {
 		"requires": map[string]any{
 			"infrastructure": map[string]any{
 				"provider": "aks",
-				"bicep":    map[string]any{"template": "infra/aks/main.bicep", "parameters": filepath.ToSlash(filepath.Join("suites", opts.SuiteName, "infra.bicepparam"))},
+				"nodePools": []map[string]any{
+					{"name": "systempool", "mode": "System", "count": 1, "vmSize": "Standard_D4s_v5", "osType": "Linux", "osSKU": "Ubuntu", "workloadRuntime": "OCIContainer", "labels": map[string]string{}, "taints": []string{}},
+					{"name": "userpool", "mode": "User", "count": opts.NodeCount, "vmSize": opts.NodeVMSize, "osType": "Linux", "osSKU": "Ubuntu", "workloadRuntime": "OCIContainer", "labels": map[string]string{"perf.azure.com/node-role": "workload"}, "taints": []string{}},
+				},
 			},
 			"kubernetes":    map[string]any{"minVersion": opts.KubernetesVersion},
-			"nodeSelectors": []map[string]any{{"name": "workload", "required": true, "minNodes": 1, "labels": map[string]string{"perf.azure.com/node-role": "workload"}}},
+			"nodeSelectors": []map[string]any{{"name": "workload", "pool": "userpool", "required": true, "minNodes": 1, "labels": map[string]string{"perf.azure.com/node-role": "workload"}}},
 			"observability": map[string]any{
 				"prometheus": map[string]any{
 					"required":        opts.Prometheus,
@@ -326,10 +307,6 @@ func suiteRequirements(opts addSuiteOptions) map[string]any {
 			},
 		},
 	}
-}
-
-func infraBicepParam(opts addSuiteOptions) string {
-	return fmt.Sprintf("using '../../infra/aks/main.bicep'\n\nparam clusterName = '%s'\nparam kubernetesVersion = '%s'\nparam userNodeCount = %d\nparam userNodeVmSize = '%s'\nparam userNodeOsSKU = 'Ubuntu'\nparam userNodeWorkloadRuntime = 'OCIContainer'\nparam userNodeLabels = {\n  'perf.azure.com/node-role': 'workload'\n}\n", opts.ClusterName, opts.KubernetesVersion, opts.NodeCount, opts.NodeVMSize)
 }
 
 func suiteWorkload(opts addSuiteOptions) map[string]any {
@@ -391,11 +368,49 @@ func destroy(args []string) error {
 	return infra.Destroy(context.Background(), *resourceGroup)
 }
 
+type deploymentOutputFunc func(context.Context, string, string, string) (string, error)
+type getCredentialsFunc func(context.Context, string, string) error
+
+type runSuiteDependencies struct {
+	DeploymentOutput deploymentOutputFunc
+	GetCredentials   getCredentialsFunc
+}
+
+func prepareRunSuiteCluster(ctx context.Context, resourceGroup string, clusterName string, images *acr.Requirements, deps runSuiteDependencies) (string, string, error) {
+	if deps.DeploymentOutput == nil {
+		deps.DeploymentOutput = infra.DeploymentOutput
+	}
+	if deps.GetCredentials == nil {
+		deps.GetCredentials = infra.GetCredentials
+	}
+	registryName, registryServer := "", ""
+	if images != nil && len(images.Builds) > 0 {
+		var err error
+		registryName, err = deps.DeploymentOutput(ctx, resourceGroup, infra.DeploymentName, "containerRegistryName")
+		if err != nil {
+			return "", "", fmt.Errorf("suite image builds requires an aks-burner deployment with container registry outputs: %w", err)
+		}
+		registryServer, err = deps.DeploymentOutput(ctx, resourceGroup, infra.DeploymentName, "containerRegistryLoginServer")
+		if err != nil {
+			return "", "", fmt.Errorf("suite image builds requires an aks-burner deployment with container registry outputs: %w", err)
+		}
+	}
+	if err := deps.GetCredentials(ctx, resourceGroup, clusterName); err != nil {
+		return "", "", err
+	}
+	return registryName, registryServer, nil
+}
+
 func runSuite(args []string) error {
+	return runSuiteWithDependencies(args, runSuiteDependencies{})
+}
+
+func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	fs := flag.NewFlagSet("run-suite", flag.ContinueOnError)
 	suiteName := fs.String("suite", "", "suite name")
 	modeName := fs.String("mode", "smoke", "mode")
 	resourceGroup := fs.String("resource-group", "", "Azure resource group")
+	clusterNameOverride := fs.String("cluster-name", "", "AKS cluster name override")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -420,43 +435,18 @@ func runSuite(args []string) error {
 	if err != nil {
 		return err
 	}
-	reqPath, err := resolveSuitePath(root, *suiteName, "requirements.yml")
+	req, err := requirements.Load(root, *suiteName)
 	if err != nil {
 		return err
 	}
-	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), reqPath); err != nil {
-		return err
+	if req.Requires.Infrastructure.Provider != "aks" {
+		return fmt.Errorf("unsupported infrastructure provider %q", req.Requires.Infrastructure.Provider)
 	}
-	var req struct {
-		Requires struct {
-			Infrastructure struct {
-				Bicep struct {
-					Template   string `yaml:"template"`
-					Parameters string `yaml:"parameters"`
-				} `yaml:"bicep"`
-			} `yaml:"infrastructure"`
-			Images        acr.Requirements                 `yaml:"images"`
-			Kubernetes    runpkg.KubernetesRequirements    `yaml:"kubernetes"`
-			NodeSelectors []runpkg.NodeSelectorRequirement `yaml:"nodeSelectors"`
-			Artifacts     artifacts.Config                 `yaml:"artifacts"`
-			Observability struct {
-				Prometheus       prometheus.Config       `yaml:"prometheus"`
-				KubeStateMetrics kubestatemetrics.Config `yaml:"kubeStateMetrics"`
-			} `yaml:"observability"`
-		} `yaml:"requires"`
-	}
-	if err := config.LoadYAML(reqPath, &req); err != nil {
-		return err
-	}
-	parametersPath, err := resolveSuitePath(root, *suiteName, req.Requires.Infrastructure.Bicep.Parameters)
+	clusterName, err := infra.ClusterName(*suiteName, *clusterNameOverride)
 	if err != nil {
 		return err
 	}
-	if _, err := resolveRepoPath(root, req.Requires.Infrastructure.Bicep.Template); err != nil {
-		return err
-	}
-	clusterName, err := readBicepParamString(parametersPath, "clusterName")
-	if err != nil {
+	if err := infra.ValidateNodePools(*suiteName, req.Requires.Infrastructure.NodePools, req.Requires.NodeSelectors); err != nil {
 		return err
 	}
 	staticImages, err := config.LoadImages(filepath.Join(root, "config", "images.yml"))
@@ -465,7 +455,8 @@ func runSuite(args []string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := infra.GetCredentials(ctx, *resourceGroup, clusterName); err != nil {
+	registryName, registryServer, err := prepareRunSuiteCluster(ctx, *resourceGroup, clusterName, req.Requires.Images, deps)
+	if err != nil {
 		return err
 	}
 	if err := runpkg.ValidateRequirements(ctx, runpkg.Requirements{Kubernetes: req.Requires.Kubernetes, NodeSelectors: req.Requires.NodeSelectors}, runpkg.KubectlOutput); err != nil {
@@ -497,29 +488,16 @@ func runSuite(args []string) error {
 	if err := config.LoadYAML(workloadFile, &workload); err != nil {
 		return err
 	}
-	if err := validateModeImageVars(mode.ImageVars, staticImages, req.Requires.Images.Builds); err != nil {
+	var imageBuilds []acr.ImageBuild
+	if req.Requires.Images != nil {
+		imageBuilds = req.Requires.Images.Builds
+	}
+	if err := validateModeImageVars(mode.ImageVars, staticImages, imageBuilds); err != nil {
 		return err
 	}
 	builtImages := []acr.BuiltImage(nil)
 	builtImageMap := map[string]string{}
-	if len(req.Requires.Images.Builds) > 0 {
-		registryName, err := registryNameFromRequirements(parametersPath, req.Requires.Images)
-		if err != nil {
-			return err
-		}
-		registryServer := ""
-		if registryName == "" {
-			registryName, err = infra.DeploymentOutput(ctx, *resourceGroup, infra.DeploymentName, "containerRegistryName")
-			if err != nil {
-				return err
-			}
-			registryServer, err = infra.DeploymentOutput(ctx, *resourceGroup, infra.DeploymentName, "containerRegistryLoginServer")
-			if err != nil {
-				return err
-			}
-		} else {
-			registryServer = registryName + ".azurecr.io"
-		}
+	if req.Requires.Images != nil && len(req.Requires.Images.Builds) > 0 {
 		builtImages, builtImageMap, err = acr.Build(ctx, acr.BuildOptions{
 			SuiteDir:       suiteDir,
 			RegistryName:   registryName,
@@ -680,11 +658,19 @@ func shouldWaitPrometheusRollout(required bool, install bool) bool {
 	return required && install
 }
 
+var provisionInfra = infra.Provision
+
 func provision(args []string) error {
+	return provisionWithIO(args, os.Stdout)
+}
+
+func provisionWithIO(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("provision", flag.ContinueOnError)
 	suiteName := fs.String("suite", "", "suite name")
 	resourceGroup := fs.String("resource-group", "", "Azure resource group")
 	location := fs.String("location", "", "Azure location")
+	clusterNameOverride := fs.String("cluster-name", "", "AKS cluster name override")
+	dryRun := fs.Bool("dry-run", false, "print generated ARM parameters without provisioning")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -698,44 +684,34 @@ func provision(args []string) error {
 	if !suite.ValidName(*suiteName) {
 		return fmt.Errorf("invalid suite name %q", *suiteName)
 	}
-	var req struct {
-		Requires struct {
-			Infrastructure struct {
-				Bicep struct {
-					Template   string `yaml:"template"`
-					Parameters string `yaml:"parameters"`
-				} `yaml:"bicep"`
-			} `yaml:"infrastructure"`
-			Images *acr.Requirements `yaml:"images"`
-		} `yaml:"requires"`
-	}
-	reqPath, err := resolveSuitePath(root, *suiteName, "requirements.yml")
+	req, err := requirements.Load(root, *suiteName)
 	if err != nil {
 		return err
 	}
-	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), reqPath); err != nil {
-		return err
+	if req.Requires.Infrastructure.Provider != "aks" {
+		return fmt.Errorf("unsupported infrastructure provider %q", req.Requires.Infrastructure.Provider)
 	}
-	if err := config.LoadYAML(reqPath, &req); err != nil {
-		return err
-	}
-	parametersPath, err := resolveSuitePath(root, *suiteName, req.Requires.Infrastructure.Bicep.Parameters)
+	clusterName, err := infra.ClusterName(*suiteName, *clusterNameOverride)
 	if err != nil {
 		return err
 	}
-	if _, err := resolveRepoPath(root, req.Requires.Infrastructure.Bicep.Template); err != nil {
+	if err := infra.ValidateNodePools(*suiteName, req.Requires.Infrastructure.NodePools, req.Requires.NodeSelectors); err != nil {
 		return err
 	}
-	clusterName, err := readBicepParamString(parametersPath, "clusterName")
+	parameterJSON, err := infra.ParametersJSON(clusterName, req.Requires.Kubernetes.MinVersion, req.Requires.Infrastructure.NodePools, shouldDeployContainerRegistry(req.Requires.Images))
 	if err != nil {
 		return err
 	}
-	return infra.Provision(context.Background(), infra.ProvisionOptions{
-		ResourceGroup:           *resourceGroup,
-		Location:                *location,
-		ParametersFile:          parametersPath,
-		ClusterName:             clusterName,
-		DeployContainerRegistry: shouldDeployContainerRegistry(req.Requires.Images),
+	if *dryRun {
+		_, err = out.Write(parameterJSON)
+		return err
+	}
+	return provisionInfra(context.Background(), infra.ProvisionOptions{
+		ResourceGroup:  *resourceGroup,
+		Location:       *location,
+		TemplateFile:   filepath.Join(root, "infra", "aks", "main.bicep"),
+		ParametersJSON: parameterJSON,
+		ClusterName:    clusterName,
 	})
 }
 
@@ -753,20 +729,6 @@ func validateDestroyTarget(suiteName string, resourceGroup string, allowNonDefau
 
 func defaultResourceGroup(suiteName string) string {
 	return "rg-aks-burner-" + suiteName
-}
-
-func registryNameFromRequirements(parametersPath string, images acr.Requirements) (string, error) {
-	if len(images.Builds) == 0 {
-		return "", nil
-	}
-	if images.Registry.NameParameter == "" {
-		return "", fmt.Errorf("requires.images.registry.nameParameter is required when image builds are configured")
-	}
-	registryName, err := readBicepParamString(parametersPath, images.Registry.NameParameter)
-	if err != nil && strings.Contains(err.Error(), "parameter "+images.Registry.NameParameter+" not found") {
-		return "", nil
-	}
-	return registryName, err
 }
 
 func mergeImages(base map[string]string, overlay map[string]string) map[string]string {
@@ -817,40 +779,9 @@ func resolveSuitePath(root string, suiteName string, value string) (string, erro
 	return resolved, nil
 }
 
-func resolveRepoPath(root string, value string) (string, error) {
-	cleanValue := filepath.Clean(value)
-	resolved := cleanValue
-	if !filepath.IsAbs(cleanValue) {
-		resolved = filepath.Join(root, cleanValue)
-	}
-	resolved = filepath.Clean(resolved)
-	if !pathInsideOrEqual(root, resolved) {
-		return "", fmt.Errorf("path %q resolves outside repo %q", value, root)
-	}
-	return resolved, nil
-}
-
 func pathInside(base string, target string) bool {
 	rel, err := filepath.Rel(base, target)
 	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
-}
-
-func pathInsideOrEqual(base string, target string) bool {
-	rel, err := filepath.Rel(base, target)
-	return err == nil && (rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)))
-}
-
-func readBicepParamString(path string, name string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	pattern := regexp.MustCompile(`(?m)^param\s+` + regexp.QuoteMeta(name) + `\s*=\s*'([^']+)'\s*$`)
-	matches := pattern.FindStringSubmatch(string(data))
-	if len(matches) != 2 {
-		return "", fmt.Errorf("parameter %s not found in %s", name, path)
-	}
-	return matches[1], nil
 }
 
 func listSuites() error {

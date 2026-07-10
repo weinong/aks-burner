@@ -9,29 +9,56 @@ import (
 )
 
 type ProvisionOptions struct {
-	ResourceGroup           string
-	Location                string
-	ParametersFile          string
-	ClusterName             string
-	DeployContainerRegistry bool
+	ResourceGroup  string
+	Location       string
+	TemplateFile   string
+	ParametersJSON []byte
+	ClusterName    string
+	TempDir        string
+	RunCommand     CommandRunner
 }
+
+type CommandRunner func(context.Context, []string) error
 
 const DeploymentName = "aks-burner"
 
-func ProvisionCommands(opts ProvisionOptions) [][]string {
+func ProvisionCommands(opts ProvisionOptions, parametersPath string) [][]string {
 	return [][]string{
 		{"az", "group", "create", "--name", opts.ResourceGroup, "--location", opts.Location},
-		{"az", "deployment", "group", "create", "--resource-group", opts.ResourceGroup, "--name", DeploymentName, "--parameters", opts.ParametersFile, "location=" + opts.Location, fmt.Sprintf("deployContainerRegistry=%t", opts.DeployContainerRegistry)},
+		{"az", "deployment", "group", "create", "--resource-group", opts.ResourceGroup, "--name", DeploymentName, "--template-file", opts.TemplateFile, "--parameters", "@" + parametersPath},
 		GetCredentialsCommand(opts.ResourceGroup, opts.ClusterName),
 	}
 }
 
 func Provision(ctx context.Context, opts ProvisionOptions) error {
-	for _, args := range ProvisionCommands(opts) {
-		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+	file, err := os.CreateTemp(opts.TempDir, "aks-burner-*.parameters.json")
+	if err != nil {
+		return err
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(opts.ParametersJSON); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	runCommand := opts.RunCommand
+	if runCommand == nil {
+		runCommand = func(ctx context.Context, args []string) error {
+			cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		}
+	}
+	for _, args := range ProvisionCommands(opts, path) {
+		if err := runCommand(ctx, args); err != nil {
 			return err
 		}
 	}
