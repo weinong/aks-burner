@@ -14,7 +14,15 @@ import (
 
 func TestResolveSetupPathRejectsUnsafePaths(t *testing.T) {
 	suiteDir := t.TempDir()
-	unsafe := []string{"/tmp/runtimeclass.yml", "../runtimeclass.yml", "setup/../../runtimeclass.yml"}
+	unsafe := []string{
+		"/tmp/runtimeclass.yml",
+		"../runtimeclass.yml",
+		"setup/../../runtimeclass.yml",
+		`C:\setup\runtimeclass.yml`,
+		`C:/setup/runtimeclass.yml`,
+		`setup\..\runtimeclass.yml`,
+		"setup/../runtimeclass.yml",
+	}
 	for _, path := range unsafe {
 		_, err := ResolveSetupPath(suiteDir, suite.SetupResource{Name: "bad", Path: path})
 		if err == nil || !strings.Contains(err.Error(), "invalid setup path") {
@@ -160,6 +168,62 @@ func TestApplySetupFailsWhenManifestMissing(t *testing.T) {
 	err := ApplySetup(context.Background(), suiteDir, setup, runner)
 	if err == nil || !strings.Contains(err.Error(), "setup manifest") {
 		t.Fatalf("ApplySetup() error = %v, want missing manifest error", err)
+	}
+}
+
+func TestApplySetupRejectsSymlinkManifestOutsideSuiteDir(t *testing.T) {
+	suiteDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "runtimeclass.yml")
+	if err := ensureFile(outsidePath); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(suiteDir, "setup", "runtimeclass.yml")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsidePath, manifestPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	setup := suite.Setup{Resources: []suite.SetupResource{{Name: "linked", Path: "setup/runtimeclass.yml"}}}
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		t.Fatalf("runner should not be called for symlink outside suiteDir: %#v", args)
+		return nil, nil
+	}
+
+	err := ApplySetup(context.Background(), suiteDir, setup, runner)
+	if err == nil || !strings.Contains(err.Error(), "invalid setup path") {
+		t.Fatalf("ApplySetup() error = %v, want invalid setup path", err)
+	}
+}
+
+func TestApplySetupAppliesResolvedSymlinkManifestPath(t *testing.T) {
+	suiteDir := t.TempDir()
+	targetPath := filepath.Join(suiteDir, "setup", "actual", "runtimeclass.yml")
+	if err := ensureFile(targetPath); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(suiteDir, "setup", "runtimeclass.yml")
+	if err := os.Symlink(targetPath, manifestPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	resolvedManifestPath, err := filepath.EvalSymlinks(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := suite.Setup{Resources: []suite.SetupResource{{Name: "linked", Path: "setup/runtimeclass.yml"}}}
+	var calls [][]string
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return []byte("ok"), nil
+	}
+
+	if err := ApplySetup(context.Background(), suiteDir, setup, runner); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"apply", "-f", resolvedManifestPath}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("kubectl calls = %#v, want %#v", calls, want)
 	}
 }
 

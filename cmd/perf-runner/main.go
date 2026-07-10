@@ -537,6 +537,9 @@ func runSuite(args []string) error {
 	if err := runpkg.ApplySetup(ctx, suiteDir, suiteCfg.Setup, runpkg.KubectlOutput); err != nil {
 		return err
 	}
+	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
+		return err
+	}
 	if req.Requires.Observability.KubeStateMetrics.Required && req.Requires.Observability.KubeStateMetrics.Install {
 		kubeStateMetricsImage, err := config.ResolveImage(images, req.Requires.Observability.KubeStateMetrics.ImageKey)
 		if err != nil {
@@ -576,9 +579,6 @@ func runSuite(args []string) error {
 			return err
 		}
 		prometheusURL = endpoint
-	}
-	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
-		return err
 	}
 	if err := runpkg.CopyRenderAssets(suiteDir, runDir); err != nil {
 		return err
