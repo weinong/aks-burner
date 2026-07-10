@@ -19,6 +19,7 @@ import (
 	"github.com/Azure/aks-burner/internal/config"
 	"github.com/Azure/aks-burner/internal/infra"
 	"github.com/Azure/aks-burner/internal/kubestatemetrics"
+	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/prometheus"
 	"github.com/Azure/aks-burner/internal/repo"
 	runpkg "github.com/Azure/aks-burner/internal/run"
@@ -392,6 +393,7 @@ func destroy(args []string) error {
 }
 
 func runSuite(args []string) error {
+	target := kubetarget.Target{}
 	fs := flag.NewFlagSet("run-suite", flag.ContinueOnError)
 	suiteName := fs.String("suite", "", "suite name")
 	modeName := fs.String("mode", "smoke", "mode")
@@ -534,7 +536,7 @@ func runSuite(args []string) error {
 		}
 	}
 	images := mergeImages(staticImages, builtImageMap)
-	if err := runpkg.ApplySetup(ctx, suiteDir, suiteCfg.Setup, runpkg.KubectlOutput); err != nil {
+	if err := runpkg.ApplySetup(ctx, target, suiteDir, suiteCfg.Setup); err != nil {
 		return err
 	}
 	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: clusterName, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
@@ -545,10 +547,10 @@ func runSuite(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := kubestatemetrics.Install(ctx, filepath.Join(root, "observability", "kube-state-metrics", "kube-state-metrics.yaml"), kubeStateMetricsImage); err != nil {
+		if err := kubestatemetrics.Install(ctx, target, filepath.Join(root, "observability", "kube-state-metrics", "kube-state-metrics.yaml"), kubeStateMetricsImage); err != nil {
 			return err
 		}
-		if err := kubestatemetrics.WaitRollout(ctx, req.Requires.Observability.KubeStateMetrics); err != nil {
+		if err := kubestatemetrics.WaitRollout(ctx, target, req.Requires.Observability.KubeStateMetrics); err != nil {
 			return err
 		}
 	}
@@ -557,19 +559,19 @@ func runSuite(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := prometheus.InstallWithScrapeTarget(ctx, filepath.Join(root, "observability", "prometheus", "prometheus.yaml"), prometheusImage, kubeStateMetricsScrapeTarget(req.Requires.Observability.KubeStateMetrics)); err != nil {
+		if err := prometheus.InstallWithScrapeTarget(ctx, target, filepath.Join(root, "observability", "prometheus", "prometheus.yaml"), prometheusImage, kubeStateMetricsScrapeTarget(req.Requires.Observability.KubeStateMetrics)); err != nil {
 			return err
 		}
 	}
 	prometheusURL := ""
 	if req.Requires.Observability.Prometheus.Required {
 		if shouldWaitPrometheusRollout(req.Requires.Observability.Prometheus.Required, req.Requires.Observability.Prometheus.Install) {
-			if err := prometheus.WaitRollout(ctx, req.Requires.Observability.Prometheus); err != nil {
+			if err := prometheus.WaitRollout(ctx, target, req.Requires.Observability.Prometheus); err != nil {
 				return err
 			}
 		}
 		portForwardCtx, portForwardCancel := context.WithCancel(ctx)
-		cmd, endpoint, err := prometheus.PortForward(portForwardCtx, req.Requires.Observability.Prometheus)
+		cmd, endpoint, err := prometheus.PortForward(portForwardCtx, target, req.Requires.Observability.Prometheus)
 		if err != nil {
 			portForwardCancel()
 			return err

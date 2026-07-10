@@ -3,10 +3,15 @@ package prometheus
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Azure/aks-burner/internal/kubetarget"
 )
 
 func TestEndpointURL(t *testing.T) {
@@ -18,8 +23,8 @@ func TestEndpointURL(t *testing.T) {
 
 func TestPortForwardArgs(t *testing.T) {
 	cfg := Config{Namespace: "perf-monitoring", ServiceName: "prometheus", ServicePort: 9090, LocalPort: 19090}
-	args := PortForwardArgs(cfg)
-	want := []string{"kubectl", "-n", "perf-monitoring", "port-forward", "service/prometheus", "19090:9090"}
+	args := PortForwardArgs(kubetarget.Target{Context: "preview"}, cfg)
+	want := []string{"kubectl", "--context", "preview", "-n", "perf-monitoring", "port-forward", "service/prometheus", "19090:9090"}
 	if len(args) != len(want) {
 		t.Fatalf("args length = %d, want %d: %#v", len(args), len(want), args)
 	}
@@ -30,9 +35,18 @@ func TestPortForwardArgs(t *testing.T) {
 	}
 }
 
+func TestPortForwardArgsWithEmptyTargetPreservesCommand(t *testing.T) {
+	cfg := Config{Namespace: "perf-monitoring", ServiceName: "prometheus", ServicePort: 9090, LocalPort: 19090}
+	got := PortForwardArgs(kubetarget.Target{}, cfg)
+	want := []string{"kubectl", "-n", "perf-monitoring", "port-forward", "service/prometheus", "19090:9090"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PortForwardArgs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestRolloutStatusArgs(t *testing.T) {
-	args := RolloutStatusArgs(Config{Namespace: "perf-monitoring"})
-	want := []string{"kubectl", "rollout", "status", "deployment/prometheus", "-n", "perf-monitoring", "--timeout=2m"}
+	args := RolloutStatusArgs(kubetarget.Target{Context: "preview"}, Config{Namespace: "perf-monitoring"})
+	want := []string{"kubectl", "--context", "preview", "rollout", "status", "deployment/prometheus", "-n", "perf-monitoring", "--timeout=2m"}
 	if len(args) != len(want) {
 		t.Fatalf("args length = %d, want %d: %#v", len(args), len(want), args)
 	}
@@ -40,6 +54,27 @@ func TestRolloutStatusArgs(t *testing.T) {
 		if args[i] != want[i] {
 			t.Fatalf("args[%d] = %q, want %q", i, args[i], want[i])
 		}
+	}
+}
+
+func TestInstallTargetsKubectlApply(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "manifest.yml")
+	if err := os.WriteFile(manifestPath, []byte("image: {{PROMETHEUS_IMAGE}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var command []string
+	var stdin string
+	runner := func(_ context.Context, input string, args ...string) error {
+		stdin = input
+		command = append([]string(nil), args...)
+		return nil
+	}
+	if err := installWithRunner(context.Background(), kubetarget.Target{Context: "preview"}, manifestPath, "prometheus:test", "", runner); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"kubectl", "--context", "preview", "apply", "-f", "-"}
+	if !reflect.DeepEqual(command, want) || !strings.Contains(stdin, "image: prometheus:test") {
+		t.Fatalf("command = %#v, stdin = %q", command, stdin)
 	}
 }
 

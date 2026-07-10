@@ -9,8 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/suite"
 )
+
+var setupTestTarget = kubetarget.Target{Context: "preview"}
 
 func TestResolveSetupPathRejectsUnsafePaths(t *testing.T) {
 	suiteDir := t.TempDir()
@@ -118,15 +121,37 @@ func TestApplySetupAppliesResourcesAndWaitsInOrder(t *testing.T) {
 		return []byte("ok"), nil
 	}
 
-	if err := ApplySetup(context.Background(), suiteDir, setup, runner); err != nil {
+	if err := applySetup(context.Background(), setupTestTarget, suiteDir, setup, runner); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"apply", "-f", manifestPath},
-		{"get", "runtimeclass/custom-kata"},
+		{"kubectl", "--context", "preview", "apply", "-f", manifestPath},
+		{"kubectl", "--context", "preview", "get", "runtimeclass/custom-kata"},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("kubectl calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestApplySetupWithEmptyTargetPreservesKubectlCommand(t *testing.T) {
+	suiteDir := t.TempDir()
+	manifestPath := filepath.Join(suiteDir, "setup", "runtimeclass.yml")
+	if err := ensureFile(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	setup := suite.Setup{Resources: []suite.SetupResource{{Name: "kata-runtimeclass", Path: "setup/runtimeclass.yml"}}}
+	var command []string
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		command = append([]string(nil), args...)
+		return []byte("ok"), nil
+	}
+
+	if err := applySetup(context.Background(), kubetarget.Target{}, suiteDir, setup, runner); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"kubectl", "apply", "-f", manifestPath}
+	if !reflect.DeepEqual(command, want) {
+		t.Fatalf("kubectl command = %#v, want %#v", command, want)
 	}
 }
 
@@ -147,11 +172,11 @@ func TestApplySetupFailsBeforeWaitWhenApplyFails(t *testing.T) {
 		return nil, errors.New("apply failed")
 	}
 
-	err := ApplySetup(context.Background(), suiteDir, setup, runner)
+	err := applySetup(context.Background(), setupTestTarget, suiteDir, setup, runner)
 	if err == nil || !strings.Contains(err.Error(), "apply setup resource kata-runtimeclass") {
 		t.Fatalf("ApplySetup() error = %v, want apply context", err)
 	}
-	want := [][]string{{"apply", "-f", manifestPath}}
+	want := [][]string{{"kubectl", "--context", "preview", "apply", "-f", manifestPath}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("kubectl calls = %#v, want %#v", calls, want)
 	}
@@ -165,7 +190,7 @@ func TestApplySetupFailsWhenManifestMissing(t *testing.T) {
 		return nil, nil
 	}
 
-	err := ApplySetup(context.Background(), suiteDir, setup, runner)
+	err := applySetup(context.Background(), setupTestTarget, suiteDir, setup, runner)
 	if err == nil || !strings.Contains(err.Error(), "setup manifest") {
 		t.Fatalf("ApplySetup() error = %v, want missing manifest error", err)
 	}
@@ -191,7 +216,7 @@ func TestApplySetupRejectsSymlinkManifestOutsideSuiteDir(t *testing.T) {
 		return nil, nil
 	}
 
-	err := ApplySetup(context.Background(), suiteDir, setup, runner)
+	err := applySetup(context.Background(), setupTestTarget, suiteDir, setup, runner)
 	if err == nil || !strings.Contains(err.Error(), "invalid setup path") {
 		t.Fatalf("ApplySetup() error = %v, want invalid setup path", err)
 	}
@@ -218,10 +243,10 @@ func TestApplySetupAppliesResolvedSymlinkManifestPath(t *testing.T) {
 		return []byte("ok"), nil
 	}
 
-	if err := ApplySetup(context.Background(), suiteDir, setup, runner); err != nil {
+	if err := applySetup(context.Background(), setupTestTarget, suiteDir, setup, runner); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"apply", "-f", resolvedManifestPath}}
+	want := [][]string{{"kubectl", "--context", "preview", "apply", "-f", resolvedManifestPath}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("kubectl calls = %#v, want %#v", calls, want)
 	}
@@ -244,19 +269,19 @@ func TestApplySetupFailsBeforeNextResourceWhenWaitFails(t *testing.T) {
 	var calls [][]string
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
-		if len(args) >= 2 && args[0] == "get" && args[1] == "runtimeclass/custom-kata" {
+		if reflect.DeepEqual(args, []string{"kubectl", "--context", "preview", "get", "runtimeclass/custom-kata"}) {
 			return nil, errors.New("not found")
 		}
 		return []byte("ok"), nil
 	}
 
-	err := ApplySetup(context.Background(), suiteDir, setup, runner)
+	err := applySetup(context.Background(), setupTestTarget, suiteDir, setup, runner)
 	if err == nil || !strings.Contains(err.Error(), "wait for setup resource kata-runtimeclass") {
 		t.Fatalf("ApplySetup() error = %v, want wait context", err)
 	}
 	want := [][]string{
-		{"apply", "-f", firstPath},
-		{"get", "runtimeclass/custom-kata"},
+		{"kubectl", "--context", "preview", "apply", "-f", firstPath},
+		{"kubectl", "--context", "preview", "get", "runtimeclass/custom-kata"},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("kubectl calls = %#v, want %#v", calls, want)

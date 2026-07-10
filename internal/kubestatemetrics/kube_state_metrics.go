@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/Azure/aks-burner/internal/kubetarget"
 )
 
 type Config struct {
@@ -21,26 +23,35 @@ func RenderManifest(manifest string, image string) string {
 	return strings.ReplaceAll(manifest, "{{KUBE_STATE_METRICS_IMAGE}}", image)
 }
 
-func RolloutStatusArgs(cfg Config) []string {
-	return []string{"kubectl", "rollout", "status", "deployment/kube-state-metrics", "-n", cfg.Namespace, "--timeout=2m"}
+func RolloutStatusArgs(target kubetarget.Target, cfg Config) []string {
+	return target.KubectlCommand("rollout", "status", "deployment/kube-state-metrics", "-n", cfg.Namespace, "--timeout=2m")
 }
 
-func Install(ctx context.Context, manifestPath string, image string) error {
+func Install(ctx context.Context, target kubetarget.Target, manifestPath string, image string) error {
+	return installWithRunner(ctx, target, manifestPath, image, commandRunner)
+}
+
+type Runner func(context.Context, string, ...string) error
+
+func installWithRunner(ctx context.Context, target kubetarget.Target, manifestPath string, image string, runner Runner) error {
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return err
 	}
-	rendered := RenderManifest(string(manifest), image)
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(rendered)
+	return runner(ctx, RenderManifest(string(manifest), image), target.KubectlCommand("apply", "-f", "-")...)
+}
+
+func WaitRollout(ctx context.Context, target kubetarget.Target, cfg Config) error {
+	args := RolloutStatusArgs(target, cfg)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-func WaitRollout(ctx context.Context, cfg Config) error {
-	args := RolloutStatusArgs(cfg)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+func commandRunner(ctx context.Context, stdin string, command ...string) error {
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
