@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Azure/aks-burner/internal/acr"
+	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/suite"
 )
 
@@ -302,7 +303,7 @@ func TestExecuteKubeBurnerPrefersRepoLocalBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ExecuteKubeBurner(workloadPath, logPath); err != nil {
+	if err := ExecuteKubeBurner(workloadPath, logPath, kubetarget.Target{Context: "preview"}); err != nil {
 		t.Fatal(err)
 	}
 	logData, err := os.ReadFile(logPath)
@@ -310,7 +311,7 @@ func TestExecuteKubeBurnerPrefersRepoLocalBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	logText := string(logData)
-	if !strings.Contains(logText, "repo-local init -c workload.yml") {
+	if !strings.Contains(logText, "repo-local init -c workload.yml --kube-context preview") {
 		t.Fatalf("log missing repo-local kube-burner output: %s", logText)
 	}
 	if strings.Contains(logText, "path-binary") {
@@ -338,7 +339,7 @@ func TestExecuteKubeBurnerFallsBackToPathBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ExecuteKubeBurner(workloadPath, logPath); err != nil {
+	if err := ExecuteKubeBurner(workloadPath, logPath, kubetarget.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	logData, err := os.ReadFile(logPath)
@@ -348,6 +349,9 @@ func TestExecuteKubeBurnerFallsBackToPathBinary(t *testing.T) {
 	logText := string(logData)
 	if !strings.Contains(logText, "path-binary init -c workload.yml") {
 		t.Fatalf("log missing PATH kube-burner output: %s", logText)
+	}
+	if strings.Contains(logText, "--kube-context") {
+		t.Fatalf("legacy kube-burner output contains context flag: %s", logText)
 	}
 }
 
@@ -372,7 +376,7 @@ func TestExecuteKubeBurnerFallsBackWhenRepoLocalBinaryIsNotExecutable(t *testing
 		t.Fatal(err)
 	}
 
-	if err := ExecuteKubeBurner(workloadPath, logPath); err != nil {
+	if err := ExecuteKubeBurner(workloadPath, logPath, kubetarget.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	logData, err := os.ReadFile(logPath)
@@ -487,6 +491,38 @@ func TestWriteMetadataWritesSafeRunMetadata(t *testing.T) {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("metadata contains forbidden auth material %q: %s", forbidden, text)
 		}
+	}
+}
+
+func TestWriteMetadataRecordsExplicitContextAndOmitsClusterName(t *testing.T) {
+	runDir := t.TempDir()
+	err := WriteMetadata(runDir, Metadata{Suite: "kata-perf", Mode: "smoke", KubeContext: "preview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "metadata", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "kubeContext: preview") || strings.Contains(text, "clusterName:") {
+		t.Fatalf("metadata = %s", text)
+	}
+}
+
+func TestWriteMetadataPreservesLegacyClusterName(t *testing.T) {
+	runDir := t.TempDir()
+	err := WriteMetadata(runDir, Metadata{Suite: "kata-perf", Mode: "smoke", ClusterName: "akskataperf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "metadata", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "clusterName: akskataperf") || strings.Contains(text, "kubeContext:") {
+		t.Fatalf("metadata = %s", text)
 	}
 }
 

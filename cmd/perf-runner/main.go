@@ -593,7 +593,10 @@ func runSuite(args []string) error {
 	if err := config.WriteYAML(workloadPath, rendered); err != nil {
 		return err
 	}
-	return executeRunAndCopyArtifacts(ctx, workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"), req.Requires.Artifacts, images, filepath.Join(runDir, "artifacts"), artifactSubpathFromRenderedWorkload(rendered), runpkg.ExecuteKubeBurner, waitArtifactJobsComplete, copyArtifacts)
+	executeKubeBurner := func(workloadPath string, logPath string) error {
+		return runpkg.ExecuteKubeBurner(workloadPath, logPath, kubetarget.Target{})
+	}
+	return executeRunAndCopyArtifacts(ctx, workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"), req.Requires.Artifacts, images, filepath.Join(runDir, "artifacts"), artifactSubpathFromRenderedWorkload(rendered), executeKubeBurner, waitArtifactJobsComplete, copyArtifacts)
 }
 
 func kubeStateMetricsScrapeTarget(cfg kubestatemetrics.Config) string {
