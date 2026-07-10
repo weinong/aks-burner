@@ -28,6 +28,9 @@ func TestInfraBicepSupportsKataWorkloadRuntimeParameters(t *testing.T) {
 	text := string(data)
 	for _, want := range []string{
 		"param nodePools NodePool[]",
+		"Microsoft.ContainerService/managedClusters@2025-09-02-preview",
+		"'KataMshvVmIsolation'",
+		"'KataVmIsolation'",
 		"osSKU: pool.osSKU",
 		"workloadRuntime: pool.workloadRuntime",
 	} {
@@ -319,6 +322,27 @@ func TestAddSuiteFastModeWritesDummySuite(t *testing.T) {
 	assertGeneratedSuiteSchemas(t, root, "demo-suite")
 }
 
+func TestAddSuiteVPrefixedKubernetesVersionProducesNormalizedARMParameters(t *testing.T) {
+	root := testRepoRoot(t)
+	withWorkingDir(t, root)
+	if err := addSuiteWithIO([]string{"--suite", "demo-suite", "--kubernetes-version", "v1.36"}, strings.NewReader(""), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "infra", "aks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "infra", "aks", "main.bicep"), []byte("param clusterName string\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := provisionWithIO([]string{"--suite", "demo-suite", "--resource-group", "rg-demo", "--location", "westus2", "--dry-run"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), `"value": "v1.36"`) || !strings.Contains(out.String(), `"value": "1.36"`) {
+		t.Fatalf("dry-run kubernetesVersion was not normalized:\n%s", out.String())
+	}
+}
+
 func TestAddSuiteRejectsInvalidName(t *testing.T) {
 	root := testRepoRoot(t)
 	withWorkingDir(t, root)
@@ -514,10 +538,14 @@ func TestRunSuiteRegistryOutputsPrecedeCredentials(t *testing.T) {
 	registryName, registryServer, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, runSuiteDependencies{
 		DeploymentOutput: func(_ context.Context, _, _, output string) (string, error) {
 			order = append(order, "output:"+output)
-			if strings.HasSuffix(output, "Name") {
+			switch output {
+			case "clusterName":
+				return "aksdemo", nil
+			case "containerRegistryName":
 				return "acrdemo", nil
+			default:
+				return "acrdemo.azurecr.io", nil
 			}
-			return "acrdemo.azurecr.io", nil
 		},
 		GetCredentials: func(context.Context, string, string) error { order = append(order, "credentials"); return nil },
 	})
@@ -527,9 +555,29 @@ func TestRunSuiteRegistryOutputsPrecedeCredentials(t *testing.T) {
 	if registryName != "acrdemo" || registryServer != "acrdemo.azurecr.io" {
 		t.Fatalf("registry = %q/%q", registryName, registryServer)
 	}
-	want := "output:containerRegistryName,output:containerRegistryLoginServer,credentials"
+	want := "output:clusterName,output:containerRegistryName,output:containerRegistryLoginServer,credentials"
 	if strings.Join(order, ",") != want {
 		t.Fatalf("order = %q, want %q", strings.Join(order, ","), want)
+	}
+}
+
+func TestRunSuiteRejectsImageBuildClusterMismatchBeforeRegistryAndCredentials(t *testing.T) {
+	outputs := []string{}
+	_, _, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "requested-aks", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, runSuiteDependencies{
+		DeploymentOutput: func(_ context.Context, _, _, output string) (string, error) {
+			outputs = append(outputs, output)
+			return "deployed-aks", nil
+		},
+		GetCredentials: func(context.Context, string, string) error {
+			t.Fatal("credentials called after cluster mismatch")
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "managed aks-burner deployment") || !strings.Contains(err.Error(), "AcrPull") {
+		t.Fatalf("error = %v, want managed deployment and AcrPull guidance", err)
+	}
+	if got := strings.Join(outputs, ","); got != "clusterName" {
+		t.Fatalf("deployment outputs = %q, want only clusterName", got)
 	}
 }
 

@@ -33,7 +33,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (deployCon
   }
 }
 
-resource aks 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
+resource aks 'Microsoft.ContainerService/managedClusters@2025-09-02-preview' = {
   name: clusterName
   location: location
   identity: {

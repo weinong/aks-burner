@@ -117,7 +117,7 @@ requires:
 
 `run-suite` tags built images with an immutable tag derived from suite, mode, and run timestamp, then overlays those image refs onto `config/images.yml` before rendering mode `imageVars`. Build logs are written under the run directory as `logs/acr-build-<image-key>.log`, and final image refs are recorded in `metadata/run.yml`.
 
-When a suite declares image builds, the AKS Bicep template grants the cluster kubelet identity `AcrPull` on the suite ACR. The user running `provision` for such a suite must have permission to create role assignments, such as Owner or User Access Administrator on the deployment scope.
+When a suite declares image builds, `run-suite` must target the cluster recorded in the managed `aks-burner` deployment outputs. The AKS Bicep template grants that cluster's kubelet identity `AcrPull` on the suite ACR; a different cluster does not receive that role. The user running `provision` for such a suite must have permission to create role assignments, such as Owner or User Access Administrator on the deployment scope.
 
 ## Suite Setup Resources
 

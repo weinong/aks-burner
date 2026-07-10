@@ -385,7 +385,13 @@ func prepareRunSuiteCluster(ctx context.Context, resourceGroup string, clusterNa
 	}
 	registryName, registryServer := "", ""
 	if images != nil && len(images.Builds) > 0 {
-		var err error
+		deployedClusterName, err := deps.DeploymentOutput(ctx, resourceGroup, infra.DeploymentName, "clusterName")
+		if err != nil {
+			return "", "", fmt.Errorf("suite image builds requires an aks-burner deployment with container registry outputs, including clusterName, so its kubelet identity has AcrPull on the deployment registry: %w", err)
+		}
+		if deployedClusterName != clusterName {
+			return "", "", fmt.Errorf("suite image builds requested cluster %q, but the managed aks-burner deployment targets %q; use the deployed cluster so its kubelet identity has AcrPull on the deployment registry", clusterName, deployedClusterName)
+		}
 		registryName, err = deps.DeploymentOutput(ctx, resourceGroup, infra.DeploymentName, "containerRegistryName")
 		if err != nil {
 			return "", "", fmt.Errorf("suite image builds requires an aks-burner deployment with container registry outputs: %w", err)

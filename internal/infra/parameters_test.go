@@ -86,6 +86,10 @@ func TestValidateNodePoolsRejectsInvalidRelationships(t *testing.T) {
 			p[1].OSSKU = "Ubuntu"
 			return p, s
 		}, wantError: "suite kata-io selector workload requires label kubernetes.azure.com/os-sku=AzureLinux on pool userpool"},
+		{name: "reserved OS label matches OS SKU", mutate: func(p []NodePool, s []run.NodeSelectorRequirement) ([]NodePool, []run.NodeSelectorRequirement) {
+			p[1].Labels["kubernetes.azure.com/os-sku"] = p[1].OSSKU
+			return p, s
+		}, wantError: `suite kata-io pool "userpool" labels must not set reserved label "kubernetes.azure.com/os-sku"; use osSKU instead`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -149,6 +153,16 @@ func TestParametersJSON(t *testing.T) {
 `
 	if string(got) != want {
 		t.Fatalf("ParametersJSON() =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestParametersJSONNormalizesVPrefixedKubernetesVersion(t *testing.T) {
+	got, err := ParametersJSON("akskataio", "v1.36", validNodePools(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `"value": "v1.36"`) || !strings.Contains(string(got), `"value": "1.36"`) {
+		t.Fatalf("ParametersJSON() kubernetesVersion was not normalized:\n%s", got)
 	}
 }
 

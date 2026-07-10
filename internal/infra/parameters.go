@@ -51,6 +51,9 @@ func ValidateNodePools(suiteName string, pools []NodePool, selectors []run.NodeS
 	poolsByName := make(map[string]NodePool, len(pools))
 	hasSystemPool := false
 	for _, pool := range pools {
+		if _, exists := pool.Labels["kubernetes.azure.com/os-sku"]; exists {
+			return fmt.Errorf("suite %s pool %q labels must not set reserved label %q; use osSKU instead", suiteName, pool.Name, "kubernetes.azure.com/os-sku")
+		}
 		if _, exists := poolsByName[pool.Name]; exists {
 			return fmt.Errorf("suite %s has duplicate pool %q", suiteName, pool.Name)
 		}
@@ -101,7 +104,7 @@ type parameterDocument struct {
 func ParametersJSON(clusterName string, kubernetesVersion string, pools []NodePool, deployRegistry bool) ([]byte, error) {
 	doc := parameterDocument{Schema: armParametersSchema, ContentVersion: "1.0.0.0"}
 	doc.Parameters.ClusterName.Value = clusterName
-	doc.Parameters.KubernetesVersion.Value = kubernetesVersion
+	doc.Parameters.KubernetesVersion.Value = strings.TrimPrefix(kubernetesVersion, "v")
 	doc.Parameters.NodePools.Value = pools
 	doc.Parameters.DeployContainerRegistry.Value = deployRegistry
 	data, err := json.MarshalIndent(doc, "", "  ")

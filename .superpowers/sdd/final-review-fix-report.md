@@ -31,6 +31,157 @@ Fix: Added `run.WriteMetadata` and call it from `run-suite` to write `metadata/r
 - `make build`: PASS
 - `make list-suites`: PASS, output included `kata-disk-perf`
 
+## Requirements-Driven Bicep Parameters Final Review Fixes
+
+Date: 2026-07-10
+
+### Finding 1: AKS API contract did not support both declared Kata runtimes
+
+Verification: The official version-specific `Microsoft.ContainerService/managedClusters@2025-09-02-preview` Bicep reference lists `KataMshvVmIsolation`, `KataVmIsolation`, `OCIContainer`, and `WasmWasi` for `workloadRuntime`: https://learn.microsoft.com/azure/templates/microsoft.containerservice/2025-09-02-preview/managedclusters#property-values
+
+Fix: Updated `infra/aks/main.bicep` from `2025-05-01` to `2025-09-02-preview` and expanded the source-contract test to require the API version and both declared Kata runtime values.
+
+RED:
+
+```text
+$ go test -count=1 ./cmd/perf-runner -run '^TestInfraBicepSupportsKataWorkloadRuntimeParameters$'
+--- FAIL: TestInfraBicepSupportsKataWorkloadRuntimeParameters (0.00s)
+    main_test.go:38: main.bicep missing "Microsoft.ContainerService/managedClusters@2025-09-02-preview"
+FAIL
+FAIL github.com/Azure/aks-burner/cmd/perf-runner 0.016s
+FAIL
+```
+
+GREEN:
+
+```text
+$ go test -count=1 ./cmd/perf-runner -run '^TestInfraBicepSupportsKataWorkloadRuntimeParameters$'
+ok github.com/Azure/aks-burner/cmd/perf-runner 0.025s
+
+$ az bicep build --file infra/aks/main.bicep --stdout
+PASS (exit 0); compiled ARM contained:
+"apiVersion": "2025-09-02-preview"
+"allowedValues": ["KataMshvVmIsolation", "KataVmIsolation", "OCIContainer"]
+```
+
+### Finding 2: Image builds could use registry outputs for a different cluster
+
+Fix: `prepareRunSuiteCluster` now reads deployment output `clusterName` first, compares it with the requested or derived cluster, and returns managed-deployment/AcrPull guidance before registry output reads or credential access on mismatch. README now documents that only the deployment cluster's kubelet identity receives `AcrPull`.
+
+RED:
+
+```text
+$ go test -count=1 ./cmd/perf-runner -run '^TestRunSuite(RegistryOutputsPrecedeCredentials|RejectsImageBuildClusterMismatchBeforeRegistryAndCredentials)$'
+--- FAIL: TestRunSuiteRegistryOutputsPrecedeCredentials (0.00s)
+    main_test.go:539: order = "output:containerRegistryName,output:containerRegistryLoginServer,credentials", want "output:clusterName,output:containerRegistryName,output:containerRegistryLoginServer,credentials"
+--- FAIL: TestRunSuiteRejectsImageBuildClusterMismatchBeforeRegistryAndCredentials (0.00s)
+    main_test.go:551: credentials called after cluster mismatch
+FAIL
+FAIL github.com/Azure/aks-burner/cmd/perf-runner 0.017s
+FAIL
+```
+
+GREEN:
+
+```text
+$ go test -count=1 ./cmd/perf-runner -run '^TestRunSuite(RegistryOutputsPrecedeCredentials|RejectsImageBuildClusterMismatchBeforeRegistryAndCredentials|RegistryOutputFailureExplainsManagedDeployment)$'
+ok github.com/Azure/aks-burner/cmd/perf-runner 0.019s
+```
+
+### Finding 3: Accepted v-prefixed Kubernetes versions reached ARM unchanged
+
+Fix: `ParametersJSON` removes one accepted leading `v` at the ARM serialization boundary. This covers direct requirements and suites generated through `add-suite` while preserving the accepted input form in suite requirements.
+
+RED:
+
+```text
+$ go test -count=1 ./internal/infra -run '^TestParametersJSONNormalizesVPrefixedKubernetesVersion$'
+--- FAIL: TestParametersJSONNormalizesVPrefixedKubernetesVersion (0.00s)
+    parameters_test.go:161: ParametersJSON() kubernetesVersion was not normalized:
+        "kubernetesVersion": {
+          "value": "v1.36"
+        }
+FAIL
+FAIL github.com/Azure/aks-burner/internal/infra 0.015s
+FAIL
+
+$ go test -count=1 ./cmd/perf-runner -run '^TestAddSuiteVPrefixedKubernetesVersionProducesNormalizedARMParameters$'
+--- FAIL: TestAddSuiteVPrefixedKubernetesVersionProducesNormalizedARMParameters (0.02s)
+    main_test.go:342: dry-run kubernetesVersion was not normalized:
+        "kubernetesVersion": {
+          "value": "v1.36"
+        }
+FAIL
+FAIL github.com/Azure/aks-burner/cmd/perf-runner 0.037s
+FAIL
+```
+
+GREEN:
+
+```text
+$ go test -count=1 ./internal/infra -run '^TestParametersJSON(NormalizesVPrefixedKubernetesVersion)?$'
+ok github.com/Azure/aks-burner/internal/infra 0.019s
+
+$ go test -count=1 ./cmd/perf-runner -run '^TestAddSuiteVPrefixedKubernetesVersionProducesNormalizedARMParameters$'
+ok github.com/Azure/aks-burner/cmd/perf-runner 0.035s
+```
+
+### Finding 4: Node pool labels could set the AKS-owned OS SKU label
+
+Fix: Semantic node-pool validation rejects `kubernetes.azure.com/os-sku` in `NodePool.Labels` even when its value equals `OSSKU`, and directs authors to `osSKU`.
+
+RED:
+
+```text
+$ go test -count=1 ./internal/infra -run '^TestValidateNodePoolsRejectsInvalidRelationships/reserved_OS_label_matches_OS_SKU$'
+--- FAIL: TestValidateNodePoolsRejectsInvalidRelationships (0.00s)
+    --- FAIL: TestValidateNodePoolsRejectsInvalidRelationships/reserved_OS_label_matches_OS_SKU (0.00s)
+        parameters_test.go:99: ValidateNodePools() error = <nil>, want "suite kata-io pool \"userpool\" labels must not set reserved label \"kubernetes.azure.com/os-sku\"; use osSKU instead"
+FAIL
+FAIL github.com/Azure/aks-burner/internal/infra 0.021s
+FAIL
+```
+
+GREEN:
+
+```text
+$ go test -count=1 ./internal/infra -run '^TestValidateNodePools'
+ok github.com/Azure/aks-burner/internal/infra 0.023s
+```
+
+### Final Verification
+
+```text
+$ go test -count=1 ./cmd/perf-runner ./internal/infra
+ok github.com/Azure/aks-burner/cmd/perf-runner 0.178s
+ok github.com/Azure/aks-burner/internal/infra 0.024s
+
+$ go test -count=1 ./...
+ok github.com/Azure/aks-burner/cmd/perf-runner 0.229s
+ok github.com/Azure/aks-burner/internal/acr 0.065s
+ok github.com/Azure/aks-burner/internal/artifacts 0.034s
+ok github.com/Azure/aks-burner/internal/config 0.028s
+ok github.com/Azure/aks-burner/internal/examples 0.201s
+ok github.com/Azure/aks-burner/internal/infra 0.031s
+ok github.com/Azure/aks-burner/internal/kubestatemetrics 0.006s
+ok github.com/Azure/aks-burner/internal/prometheus 0.023s
+ok github.com/Azure/aks-burner/internal/repo 0.012s
+ok github.com/Azure/aks-burner/internal/requirements 0.040s
+ok github.com/Azure/aks-burner/internal/run 0.104s
+ok github.com/Azure/aks-burner/internal/suite 0.065s
+
+$ az bicep build --file infra/aks/main.bicep --stdout
+PASS (exit 0); compiled resource uses Microsoft.ContainerService/managedClusters apiVersion 2025-09-02-preview and includes both Kata workload runtime values.
+
+$ go run ./cmd/perf-runner provision --suite kata-io --resource-group rg-aks-burner-kata-io --location westus2 --dry-run
+PASS (exit 0); generated parameters contained clusterName=akskataio, kubernetesVersion=1.36, two node pools, KataMshvVmIsolation, and deployContainerRegistry=true.
+
+$ git diff --check
+PASS (exit 0, no output)
+```
+
+Final code review: configured `code-reviewer` reviewed the complete uncommitted diff against all four requirements and reported no findings.
+
 ## Notes
 
 - Preserved unrelated untracked file `kube-burner-test-suite-proposal.md`; it was not modified, staged, or removed.
