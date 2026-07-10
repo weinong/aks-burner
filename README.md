@@ -10,6 +10,7 @@ TEST_SUITE=my-suite make add-suite
 make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
+TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-suite
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
 TEST_SUITE=kata-io TEST_MODE=smoke make run-suite
@@ -46,7 +47,10 @@ TEST_SUITE=kata-io make destroy
 
 ```bash
 TEST_SUITE=kata-perf TEST_MODE=smoke RESOURCE_GROUP=<existing-resource-group> make run-suite
+TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-suite
 ```
+
+With `KUBE_CONTEXT` set, `run-suite` skips `az aks get-credentials` and targets that context for every `kubectl` and kube-burner operation. Suites without image builds may omit `RESOURCE_GROUP` in this mode. Suites with image builds still require `RESOURCE_GROUP` for ACR and deployment access. A separate kubeconfig option is not supported.
 
 For `kata-perf`, the expected cluster name is `akskataperf` unless `suites/kata-perf/infra.bicepparam` is updated. Validate the existing cluster before running the suite: check Kubernetes version with `kubectl version -o json`, and check required node selectors with `kubectl get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
 

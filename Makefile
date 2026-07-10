@@ -1,6 +1,10 @@
 TEST_MODE ?= smoke
 AZURE_LOCATION ?= westus2
 RESOURCE_GROUP ?= rg-aks-burner-$(TEST_SUITE)
+KUBE_CONTEXT ?=
+RUN_SUITE_RESOURCE_GROUP = $(if $(and $(strip $(KUBE_CONTEXT)),$(filter file,$(origin RESOURCE_GROUP))),,$(RESOURCE_GROUP))
+RUN_SUITE_CONTEXT_ARGS = $(if $(strip $(KUBE_CONTEXT)),--kube-context "$(KUBE_CONTEXT)")
+RUN_SUITE_RESOURCE_GROUP_ARGS = $(if $(strip $(RUN_SUITE_RESOURCE_GROUP)),--resource-group "$(RUN_SUITE_RESOURCE_GROUP)")
 
 .DEFAULT_GOAL := test
 
@@ -53,7 +57,7 @@ provision:
 
 run-suite:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)
-	go run ./cmd/perf-runner run-suite --suite "$(TEST_SUITE)" --mode "$(TEST_MODE)" --resource-group "$(RESOURCE_GROUP)"
+	go run ./cmd/perf-runner run-suite --suite "$(TEST_SUITE)" --mode "$(TEST_MODE)" $(RUN_SUITE_RESOURCE_GROUP_ARGS) $(RUN_SUITE_CONTEXT_ARGS)
 
 destroy:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)

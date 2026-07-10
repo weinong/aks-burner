@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,6 +21,49 @@ import (
 )
 
 var testSourceRoot = mustTestSourceRoot()
+
+func TestMakeRunSuiteExplicitContextOmitsDefaultResourceGroup(t *testing.T) {
+	output := makeDryRun(t, "run-suite", "TEST_SUITE=kata-perf", "KUBE_CONTEXT=preview")
+	if !strings.Contains(output, `--kube-context "preview"`) {
+		t.Fatalf("make output missing context: %s", output)
+	}
+	if strings.Contains(output, "rg-aks-burner-kata-perf") {
+		t.Fatalf("make output forwarded default resource group: %s", output)
+	}
+}
+
+func TestMakeRunSuiteExplicitContextForwardsSuppliedResourceGroup(t *testing.T) {
+	output := makeDryRun(t, "run-suite", "TEST_SUITE=kata-io", "KUBE_CONTEXT=preview", "RESOURCE_GROUP=rg-build")
+	if !strings.Contains(output, `--resource-group "rg-build"`) {
+		t.Fatalf("make output missing supplied resource group: %s", output)
+	}
+}
+
+func TestMakeRunSuiteForwardsEnvironmentResourceGroup(t *testing.T) {
+	cmd := exec.Command("make", "-n", "run-suite", "TEST_SUITE=kata-io")
+	cmd.Dir = testSourceRoot
+	cmd.Env = append(filteredEnv(os.Environ(), "KUBE_CONTEXT", "RESOURCE_GROUP"), "KUBE_CONTEXT=preview", "RESOURCE_GROUP=rg-environment")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n run-suite: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), `--resource-group "rg-environment"`) {
+		t.Fatalf("make output missing environment resource group: %s", output)
+	}
+}
+
+func TestMakeLegacyAndLifecycleResourceGroupDefaultsRemain(t *testing.T) {
+	for _, target := range []string{"run-suite", "provision", "destroy"} {
+		args := []string{target, "TEST_SUITE=kata-perf"}
+		if target != "run-suite" {
+			args = append(args, "KUBE_CONTEXT=preview")
+		}
+		output := makeDryRun(t, args...)
+		if !strings.Contains(output, "rg-aks-burner-kata-perf") {
+			t.Fatalf("%s lost default resource group: %s", target, output)
+		}
+	}
+}
 
 func TestInfraBicepSupportsKataWorkloadRuntimeParameters(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(testSourceRoot, "infra", "aks", "main.bicep"))
@@ -1017,6 +1061,33 @@ func mustTestSourceRoot() string {
 		panic(err)
 	}
 	return filepath.Clean(filepath.Join(wd, "..", ".."))
+}
+
+func makeDryRun(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("make", append([]string{"-n"}, args...)...)
+	cmd.Dir = testSourceRoot
+	cmd.Env = filteredEnv(os.Environ(), "KUBE_CONTEXT", "RESOURCE_GROUP")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n %v: %v\n%s", args, err, output)
+	}
+	return string(output)
+}
+
+func filteredEnv(env []string, names ...string) []string {
+	blocked := map[string]bool{}
+	for _, name := range names {
+		blocked[name] = true
+	}
+	result := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if !blocked[name] {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 func withWorkingDir(t *testing.T, dir string) {
