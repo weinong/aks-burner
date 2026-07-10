@@ -11,6 +11,10 @@ make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
 TEST_SUITE=kata-perf make destroy
+TEST_SUITE=kata-io make provision
+TEST_SUITE=kata-io TEST_MODE=smoke make run-suite
+TEST_SUITE=kata-io TEST_MODE=full make run-suite
+TEST_SUITE=kata-io make destroy
 ```
 
 `TEST_MODE` defaults to `smoke`. `RESOURCE_GROUP` defaults to `rg-aks-burner-$(TEST_SUITE)`. `AZURE_LOCATION` defaults to `westus2`.
@@ -26,6 +30,10 @@ make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
 TEST_SUITE=kata-perf make destroy
+TEST_SUITE=kata-io make provision
+TEST_SUITE=kata-io TEST_MODE=smoke make run-suite
+TEST_SUITE=kata-io TEST_MODE=full make run-suite
+TEST_SUITE=kata-io make destroy
 ```
 
 `provision` creates the Azure resource group, AKS cluster, and suite ACR declared by the suite requirements. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group and waits for deletion to complete.
@@ -41,6 +49,8 @@ TEST_SUITE=kata-perf TEST_MODE=smoke RESOURCE_GROUP=<existing-resource-group> ma
 For `kata-perf`, the expected cluster name is `akskataperf` unless `suites/kata-perf/infra.bicepparam` is updated. Validate the existing cluster before running the suite: check Kubernetes version with `kubectl version -o json`, and check required node selectors with `kubectl get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
 
 When Prometheus is `required` and `install: true`, `run-suite` installs Prometheus before running the workload.
+
+`kata-io` provisions a Kata Pod Sandboxing-capable AKS workload pool, builds a benchmark image, installs Prometheus and kube-state-metrics, runs fio and Git clone workloads, and copies raw artifacts from the results PVC into the local run directory.
 
 `destroy` only deletes the default resource group name `rg-aks-burner-<suite>`. To delete a deliberately overridden suite resource group, call `perf-runner destroy` directly with `--allow-non-default-resource-group`.
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -14,8 +15,10 @@ import (
 	"time"
 
 	"github.com/Azure/aks-burner/internal/acr"
+	"github.com/Azure/aks-burner/internal/artifacts"
 	"github.com/Azure/aks-burner/internal/config"
 	"github.com/Azure/aks-burner/internal/infra"
+	"github.com/Azure/aks-burner/internal/kubestatemetrics"
 	"github.com/Azure/aks-burner/internal/prometheus"
 	"github.com/Azure/aks-burner/internal/repo"
 	runpkg "github.com/Azure/aks-burner/internal/run"
@@ -326,7 +329,7 @@ func suiteRequirements(opts addSuiteOptions) map[string]any {
 }
 
 func infraBicepParam(opts addSuiteOptions) string {
-	return fmt.Sprintf("using '../../infra/aks/main.bicep'\n\nparam clusterName = '%s'\nparam kubernetesVersion = '%s'\nparam userNodeCount = %d\nparam userNodeVmSize = '%s'\nparam userNodeLabels = {\n  'perf.azure.com/node-role': 'workload'\n}\n", opts.ClusterName, opts.KubernetesVersion, opts.NodeCount, opts.NodeVMSize)
+	return fmt.Sprintf("using '../../infra/aks/main.bicep'\n\nparam clusterName = '%s'\nparam kubernetesVersion = '%s'\nparam userNodeCount = %d\nparam userNodeVmSize = '%s'\nparam userNodeOsSKU = 'Ubuntu'\nparam userNodeWorkloadRuntime = 'OCIContainer'\nparam userNodeLabels = {\n  'perf.azure.com/node-role': 'workload'\n}\n", opts.ClusterName, opts.KubernetesVersion, opts.NodeCount, opts.NodeVMSize)
 }
 
 func suiteWorkload(opts addSuiteOptions) map[string]any {
@@ -424,8 +427,10 @@ func runSuite(args []string) error {
 			Images        acr.Requirements                 `yaml:"images"`
 			Kubernetes    runpkg.KubernetesRequirements    `yaml:"kubernetes"`
 			NodeSelectors []runpkg.NodeSelectorRequirement `yaml:"nodeSelectors"`
+			Artifacts     artifacts.Config                 `yaml:"artifacts"`
 			Observability struct {
-				Prometheus prometheus.Config `yaml:"prometheus"`
+				Prometheus       prometheus.Config       `yaml:"prometheus"`
+				KubeStateMetrics kubestatemetrics.Config `yaml:"kubeStateMetrics"`
 			} `yaml:"observability"`
 		} `yaml:"requires"`
 	}
@@ -461,14 +466,6 @@ func runSuite(args []string) error {
 		return err
 	}
 	suiteDir := filepath.Join(root, "suites", *suiteName)
-	var workload map[string]any
-	workloadFile, err := resolveSuitePath(root, *suiteName, "workload.yml")
-	if err != nil {
-		return err
-	}
-	if err := config.LoadYAML(workloadFile, &workload); err != nil {
-		return err
-	}
 	var mode runpkg.Mode
 	modePath, err := resolveSuitePath(root, *suiteName, filepath.Join("vars", *modeName+".yml"))
 	if err != nil {
@@ -478,6 +475,15 @@ func runSuite(args []string) error {
 		return err
 	}
 	if err := config.LoadYAML(modePath, &mode); err != nil {
+		return err
+	}
+	mode.RunTimestamp = runTimestamp
+	var workload map[string]any
+	workloadFile, err := resolveSuitePath(root, *suiteName, mode.SelectedWorkloadFile())
+	if err != nil {
+		return err
+	}
+	if err := config.LoadYAML(workloadFile, &workload); err != nil {
 		return err
 	}
 	if err := validateModeImageVars(mode.ImageVars, staticImages, req.Requires.Images.Builds); err != nil {
@@ -517,12 +523,24 @@ func runSuite(args []string) error {
 		}
 	}
 	images := mergeImages(staticImages, builtImageMap)
+	if req.Requires.Observability.KubeStateMetrics.Required && req.Requires.Observability.KubeStateMetrics.Install {
+		kubeStateMetricsImage, err := config.ResolveImage(images, req.Requires.Observability.KubeStateMetrics.ImageKey)
+		if err != nil {
+			return err
+		}
+		if err := kubestatemetrics.Install(ctx, filepath.Join(root, "observability", "kube-state-metrics", "kube-state-metrics.yaml"), kubeStateMetricsImage); err != nil {
+			return err
+		}
+		if err := kubestatemetrics.WaitRollout(ctx, req.Requires.Observability.KubeStateMetrics); err != nil {
+			return err
+		}
+	}
 	if req.Requires.Observability.Prometheus.Required && req.Requires.Observability.Prometheus.Install {
 		prometheusImage, err := config.ResolveImage(images, req.Requires.Observability.Prometheus.ImageKey)
 		if err != nil {
 			return err
 		}
-		if err := prometheus.Install(ctx, filepath.Join(root, "observability", "prometheus", "prometheus.yaml"), prometheusImage); err != nil {
+		if err := prometheus.InstallWithScrapeTarget(ctx, filepath.Join(root, "observability", "prometheus", "prometheus.yaml"), prometheusImage, kubeStateMetricsScrapeTarget(req.Requires.Observability.KubeStateMetrics)); err != nil {
 			return err
 		}
 	}
@@ -559,7 +577,89 @@ func runSuite(args []string) error {
 	if err := config.WriteYAML(workloadPath, rendered); err != nil {
 		return err
 	}
-	return runpkg.ExecuteKubeBurner(workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"))
+	return executeRunAndCopyArtifacts(ctx, workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"), req.Requires.Artifacts, images, filepath.Join(runDir, "artifacts"), artifactSubpathFromRenderedWorkload(rendered), runpkg.ExecuteKubeBurner, waitArtifactJobsComplete, copyArtifacts)
+}
+
+func kubeStateMetricsScrapeTarget(cfg kubestatemetrics.Config) string {
+	if !cfg.Required {
+		return ""
+	}
+	return fmt.Sprintf("%s.%s.svc:%d", cfg.ServiceName, cfg.Namespace, cfg.ServicePort)
+}
+
+type kubeBurnerExecutor func(workloadPath string, logPath string) error
+
+type artifactJobWaiter func(ctx context.Context, cfg artifacts.Config) error
+
+type artifactCopier func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error
+
+func executeRunAndCopyArtifacts(ctx context.Context, workloadPath string, logPath string, artifactCfg artifacts.Config, images map[string]string, artifactDestination string, artifactSubpath string, execute kubeBurnerExecutor, waitArtifactJobs artifactJobWaiter, copyArtifacts artifactCopier) error {
+	if artifactCfg.Enabled {
+		copyImage, err := config.ResolveImage(images, artifactCfg.CopyImage)
+		if err != nil {
+			return err
+		}
+		if artifactSubpath != "" {
+			if err := artifacts.ValidateSubpath(artifactSubpath); err != nil {
+				return err
+			}
+		}
+		artifactCfg.CopyImage = copyImage
+	}
+	executeErr := execute(workloadPath, logPath)
+	if executeErr == nil && artifactCfg.Enabled {
+		if err := waitArtifactJobs(ctx, artifactCfg); err != nil {
+			executeErr = err
+		}
+	}
+	artifactErr := copyArtifacts(ctx, artifactCfg, artifactDestination, artifactSubpath)
+	if executeErr != nil {
+		if artifactErr != nil {
+			return fmt.Errorf("kube-burner failed: %w; artifact copy also failed: %v", executeErr, artifactErr)
+		}
+		return executeErr
+	}
+	return artifactErr
+}
+
+func waitArtifactJobsComplete(ctx context.Context, cfg artifacts.Config) error {
+	if !cfg.Enabled || cfg.Namespace == "" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", "wait", "--for=condition=complete", "job", "--all", "-n", cfg.Namespace, "--timeout=15m")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func copyArtifacts(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	if subpath == "" {
+		return artifacts.Copy(ctx, cfg, destination)
+	}
+	return artifacts.CopySubpath(ctx, cfg, destination, subpath)
+}
+
+func artifactSubpathFromRenderedWorkload(rendered map[string]any) string {
+	jobs, _ := rendered["jobs"].([]any)
+	for _, item := range jobs {
+		job, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		objects, _ := job["objects"].([]any)
+		for _, objectItem := range objects {
+			object, ok := objectItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			inputVars, _ := object["inputVars"].(map[string]any)
+			runID, _ := inputVars["runID"].(string)
+			if runID != "" {
+				return runID
+			}
+		}
+	}
+	return ""
 }
 
 func shouldWaitPrometheusRollout(required bool, install bool) bool {

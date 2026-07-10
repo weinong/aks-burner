@@ -1,0 +1,61 @@
+suite: kata-io
+requires:
+  infrastructure:
+    provider: aks
+    bicep:
+      template: infra/aks/main.bicep
+      parameters: suites/kata-io/infra.bicepparam
+  kubernetes:
+    minVersion: "1.36"
+  nodeSelectors:
+    - name: workload
+      required: true
+      minNodes: 1
+      labels:
+        perf.azure.com/node-role: workload
+  images:
+    registry:
+      nameParameter: containerRegistryName
+    builds:
+      - key: benchmark
+        repository: kata-io/benchmark
+        context: images/benchmark
+        dockerfile: Dockerfile
+        platform: linux/amd64
+        timeoutSeconds: 3600
+  observability:
+    prometheus:
+      required: true
+      install: true
+      namespace: perf-monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+      requiredMetrics:
+        - container_cpu_usage_seconds_total
+        - container_memory_working_set_bytes
+        - container_fs_reads_bytes_total
+        - container_fs_writes_bytes_total
+        - container_network_receive_bytes_total
+        - container_network_transmit_bytes_total
+    kubeStateMetrics:
+      required: true
+      install: true
+      namespace: perf-monitoring
+      imageKey: kube-state-metrics
+      serviceName: kube-state-metrics
+      servicePort: 8080
+      requiredMetrics:
+        - kube_pod_created
+        - kube_pod_status_scheduled_time
+        - kube_pod_status_initialized_time
+        - kube_pod_container_state_started
+        - kube_pod_status_ready_time
+        - kube_pod_runtimeclass_name_info
+  artifacts:
+    enabled: true
+    namespace: kata-io
+    pvcName: kata-io-results
+    mountPath: /results
+    copyImage: artifact-copy

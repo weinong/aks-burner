@@ -45,6 +45,7 @@ data:
             regex: (.+)
             target_label: __metrics_path__
             replacement: /api/v1/nodes/${1}/proxy/metrics
+    {{KUBE_STATE_METRICS_SCRAPE_CONFIG}}
 ---
 apiVersion: v1
 kind: ServiceAccount

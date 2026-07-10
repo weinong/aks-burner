@@ -1,3 +1,5 @@
 images:
   pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2
   prometheus: mcr.microsoft.com/oss/v2/prometheus/prometheus:v3.11.3
+  kube-state-metrics: mcr.microsoft.com/oss/v2/kubernetes/kube-state-metrics:v2.19.0
+  artifact-copy: busybox:1.36.1

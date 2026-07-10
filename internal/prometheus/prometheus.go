@@ -21,6 +21,8 @@ type Config struct {
 	Metrics     []string `yaml:"requiredMetrics"`
 }
 
+const kubeStateMetricsScrapeConfigPlaceholder = "{{KUBE_STATE_METRICS_SCRAPE_CONFIG}}"
+
 func EndpointURL(cfg Config) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", cfg.LocalPort)
 }
@@ -34,15 +36,32 @@ func RolloutStatusArgs(cfg Config) []string {
 }
 
 func RenderManifest(manifest string, image string) string {
-	return strings.ReplaceAll(manifest, "{{PROMETHEUS_IMAGE}}", image)
+	return RenderManifestWithScrapeTarget(manifest, image, "")
+}
+
+func RenderManifestWithScrapeTarget(manifest string, image string, target string) string {
+	rendered := strings.ReplaceAll(manifest, "{{PROMETHEUS_IMAGE}}", image)
+	scrapeConfig := ""
+	if target != "" {
+		scrapeConfig = fmt.Sprintf(`  - job_name: kube-state-metrics
+        static_configs:
+          - targets:
+              - %s
+`, target)
+	}
+	return strings.ReplaceAll(rendered, kubeStateMetricsScrapeConfigPlaceholder, scrapeConfig)
 }
 
 func Install(ctx context.Context, manifestPath string, image string) error {
+	return InstallWithScrapeTarget(ctx, manifestPath, image, "")
+}
+
+func InstallWithScrapeTarget(ctx context.Context, manifestPath string, image string, target string) error {
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return err
 	}
-	rendered := RenderManifest(string(manifest), image)
+	rendered := RenderManifestWithScrapeTarget(string(manifest), image, target)
 	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(rendered)
 	cmd.Stdout = os.Stdout

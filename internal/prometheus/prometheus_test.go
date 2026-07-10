@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,34 @@ func TestRenderManifestReplacesPrometheusImage(t *testing.T) {
 	rendered := RenderManifest(manifest, "mcr.microsoft.com/oss/v2/prometheus/prometheus:v3.11.3")
 	if rendered != "image: mcr.microsoft.com/oss/v2/prometheus/prometheus:v3.11.3\n" {
 		t.Fatalf("unexpected manifest: %q", rendered)
+	}
+}
+
+func TestRenderManifestOmitsKubeStateMetricsByDefault(t *testing.T) {
+	manifest := `scrape_configs:
+      - job_name: kubernetes-nodes
+{{KUBE_STATE_METRICS_SCRAPE_CONFIG}}image: {{PROMETHEUS_IMAGE}}
+`
+	rendered := RenderManifest(manifest, "prometheus:test")
+	if strings.Contains(rendered, "kube-state-metrics") || strings.Contains(rendered, "{{KUBE_STATE_METRICS_SCRAPE_CONFIG}}") {
+		t.Fatalf("default manifest should not include kube-state-metrics scrape config:\n%s", rendered)
+	}
+}
+
+func TestRenderManifestWithScrapeTargetIncludesKubeStateMetrics(t *testing.T) {
+	manifest := `scrape_configs:
+      - job_name: kubernetes-nodes
+{{KUBE_STATE_METRICS_SCRAPE_CONFIG}}image: {{PROMETHEUS_IMAGE}}
+`
+	rendered := RenderManifestWithScrapeTarget(manifest, "prometheus:test", "kube-state-metrics.perf-monitoring.svc:8080")
+	for _, want := range []string{
+		"job_name: kube-state-metrics",
+		"kube-state-metrics.perf-monitoring.svc:8080",
+		"image: prometheus:test",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("manifest missing %q:\n%s", want, rendered)
+		}
 	}
 }
 

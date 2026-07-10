@@ -25,8 +25,17 @@ type Mode struct {
 	Cleanup                bool              `yaml:"cleanup"`
 	WaitWhenFinished       bool              `yaml:"waitWhenFinished"`
 	PreLoadImages          bool              `yaml:"preLoadImages"`
+	WorkloadFile           string            `yaml:"workloadFile,omitempty"`
+	RunTimestamp           time.Time         `yaml:"-"`
 	TemplateVars           map[string]any    `yaml:"templateVars"`
 	ImageVars              map[string]string `yaml:"imageVars"`
+}
+
+func (m Mode) SelectedWorkloadFile() string {
+	if m.WorkloadFile == "" {
+		return "workload.yml"
+	}
+	return m.WorkloadFile
 }
 
 type Requirements struct {
@@ -59,6 +68,11 @@ type Metadata struct {
 
 func RenderWorkload(workload map[string]any, mode Mode, images map[string]string, prometheusEndpoint string) (map[string]any, error) {
 	rendered := cloneMap(workload)
+	runTimestamp := mode.RunTimestamp
+	if runTimestamp.IsZero() {
+		runTimestamp = time.Now().UTC()
+	}
+	templateVars := renderTemplateVars(mode.TemplateVars, runTimestamp)
 	global := ensureMap(rendered, "global")
 	global["gc"] = mode.Cleanup
 	if prometheusEndpoint != "" {
@@ -77,13 +91,13 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 		if !ok {
 			continue
 		}
-		job["jobIterations"] = mode.Iterations
-		job["iterationsPerNamespace"] = mode.IterationsPerNamespace
-		job["qps"] = mode.QPS
-		job["burst"] = mode.Burst
-		job["cleanup"] = mode.Cleanup
-		job["waitWhenFinished"] = mode.WaitWhenFinished
-		job["preLoadImages"] = mode.PreLoadImages
+		setDefault(job, "jobIterations", mode.Iterations)
+		setDefault(job, "iterationsPerNamespace", mode.IterationsPerNamespace)
+		setDefault(job, "qps", mode.QPS)
+		setDefault(job, "burst", mode.Burst)
+		setDefault(job, "cleanup", mode.Cleanup)
+		setDefault(job, "waitWhenFinished", mode.WaitWhenFinished)
+		setDefault(job, "preLoadImages", mode.PreLoadImages)
 		objects, _ := job["objects"].([]any)
 		for _, objectItem := range objects {
 			object, ok := objectItem.(map[string]any)
@@ -91,7 +105,7 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 				continue
 			}
 			inputVars := ensureMap(object, "inputVars")
-			for key, value := range mode.TemplateVars {
+			for key, value := range templateVars {
 				inputVars[key] = value
 			}
 			for key, imageKey := range mode.ImageVars {
@@ -104,6 +118,19 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 		}
 	}
 	return rendered, nil
+}
+
+func renderTemplateVars(vars map[string]any, timestamp time.Time) map[string]any {
+	rendered := map[string]any{}
+	for key, value := range vars {
+		text, ok := value.(string)
+		if !ok {
+			rendered[key] = value
+			continue
+		}
+		rendered[key] = strings.ReplaceAll(text, "{{.runTimestamp}}", timestamp.UTC().Format("20060102T150405.000000000Z"))
+	}
+	return rendered
 }
 
 func CreateRunDir(suiteName string, mode string) (string, error) {
@@ -262,6 +289,13 @@ func ensureMap(parent map[string]any, key string) map[string]any {
 	created := map[string]any{}
 	parent[key] = created
 	return created
+}
+
+func setDefault(parent map[string]any, key string, value any) {
+	if _, exists := parent[key]; exists {
+		return
+	}
+	parent[key] = value
 }
 
 func cloneMap(input map[string]any) map[string]any {

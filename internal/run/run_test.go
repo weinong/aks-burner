@@ -11,6 +11,20 @@ import (
 	"github.com/Azure/aks-burner/internal/acr"
 )
 
+func TestModeSelectedWorkloadFileDefaultsToWorkloadYAML(t *testing.T) {
+	mode := Mode{}
+	if got := mode.SelectedWorkloadFile(); got != "workload.yml" {
+		t.Fatalf("SelectedWorkloadFile() = %q, want workload.yml", got)
+	}
+}
+
+func TestModeSelectedWorkloadFileUsesConfiguredFile(t *testing.T) {
+	mode := Mode{WorkloadFile: "workload-smoke.yml"}
+	if got := mode.SelectedWorkloadFile(); got != "workload-smoke.yml" {
+		t.Fatalf("SelectedWorkloadFile() = %q, want workload-smoke.yml", got)
+	}
+}
+
 func TestRenderWorkloadInjectsPrometheusEndpoint(t *testing.T) {
 	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
 	mode := Mode{Iterations: 20, IterationsPerNamespace: 20, QPS: 20, Burst: 20, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, TemplateVars: map[string]any{"app": "test"}, ImageVars: map[string]string{"image": "pause"}}
@@ -58,6 +72,105 @@ func TestRenderWorkloadKeepsWaitWhenFinishedJobScoped(t *testing.T) {
 	job := rendered["jobs"].([]any)[0].(map[string]any)
 	if job["waitWhenFinished"] != true {
 		t.Fatalf("job waitWhenFinished = %#v, want true", job["waitWhenFinished"])
+	}
+}
+
+func TestRenderWorkloadPreservesExplicitJobScheduling(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"name":                   "explicit-concurrency",
+				"jobIterations":          10,
+				"iterationsPerNamespace": 10,
+				"qps":                    10,
+				"burst":                  10,
+				"cleanup":                false,
+				"waitWhenFinished":       true,
+				"preLoadImages":          false,
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/job.yml", "replicas": 1, "inputVars": map[string]any{}},
+				},
+			},
+		},
+	}
+	mode := Mode{Iterations: 1, IterationsPerNamespace: 1, QPS: 1, Burst: 1, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true}
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := rendered["jobs"].([]any)[0].(map[string]any)
+	checks := map[string]any{
+		"jobIterations":          10,
+		"iterationsPerNamespace": 10,
+		"qps":                    10,
+		"burst":                  10,
+		"cleanup":                false,
+		"waitWhenFinished":       true,
+		"preLoadImages":          false,
+	}
+	for key, want := range checks {
+		if got := job[key]; got != want {
+			t.Fatalf("job[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestRenderWorkloadReplacesRunTimestampPlaceholder(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/job.yml", "replicas": 1, "inputVars": map[string]any{}},
+				},
+			},
+		},
+	}
+	mode := Mode{TemplateVars: map[string]any{"runID": "kata-io-full-{{.runTimestamp}}"}}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	objects := rendered["jobs"].([]any)[0].(map[string]any)["objects"].([]any)
+	inputVars := objects[0].(map[string]any)["inputVars"].(map[string]any)
+	runID, ok := inputVars["runID"].(string)
+	if !ok {
+		t.Fatalf("runID = %#v, want string", inputVars["runID"])
+	}
+	if !strings.HasPrefix(runID, "kata-io-full-") {
+		t.Fatalf("runID = %q, want kata-io-full prefix", runID)
+	}
+	timestamp := strings.TrimPrefix(runID, "kata-io-full-")
+	if _, err := time.Parse("20060102T150405.000000000Z", timestamp); err != nil {
+		t.Fatalf("runID timestamp %q is not parseable: %v", timestamp, err)
+	}
+}
+
+func TestRenderWorkloadUsesModeRunTimestampForPlaceholder(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/job.yml", "replicas": 1, "inputVars": map[string]any{}},
+				},
+			},
+		},
+	}
+	mode := Mode{
+		RunTimestamp: time.Date(2026, 7, 9, 1, 2, 3, 4, time.UTC),
+		TemplateVars: map[string]any{"runID": "kata-io-full-{{.runTimestamp}}"},
+	}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	objects := rendered["jobs"].([]any)[0].(map[string]any)["objects"].([]any)
+	inputVars := objects[0].(map[string]any)["inputVars"].(map[string]any)
+	if got, want := inputVars["runID"], "kata-io-full-20260709T010203.000000004Z"; got != want {
+		t.Fatalf("runID = %q, want %q", got, want)
 	}
 }
 

@@ -15,6 +15,7 @@ param userNodeOsSKU string = 'Ubuntu'
 @allowed([
   'OCIContainer'
   'KataMshvVmIsolation'
+  'KataVmIsolation'
 ])
 param userNodeWorkloadRuntime string = 'OCIContainer'
 param userNodeLabels object = {

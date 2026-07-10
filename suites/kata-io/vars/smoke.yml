@@ -1,0 +1,20 @@
+iterations: 1
+iterationsPerNamespace: 1
+qps: 1
+burst: 1
+cleanup: false
+waitWhenFinished: true
+preLoadImages: true
+workloadFile: workload-smoke.yml
+templateVars:
+  namespace: kata-io
+  runID: kata-io-smoke-{{.runTimestamp}}
+  repoURL: https://github.com/kubernetes/kubernetes
+  kataRuntimeClassName: kata-vm-isolation
+  azureDiskStorageClass: managed-csi
+  azureFilesStorageClass: azurefile-csi
+  resultsStorageClass: azurefile-csi
+  workVolumeSize: 128Gi
+  resultsVolumeSize: 128Gi
+imageVars:
+  benchmarkImage: benchmark
