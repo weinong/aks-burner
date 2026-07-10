@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{.jobName}}-{{.Iteration}}
+  namespace: {{.namespace}}
+  labels:
+    app: kata-io
+    benchmark: io
+    runtime: {{.runtime}}
+    storage-type: {{.storageType}}
+    workload-type: git
+    clone-mode: {{.cloneMode}}
+    concurrency: "{{.concurrency}}"
+  annotations:
+    scenario: {{.scenario}}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: kata-io
+        benchmark: io
+        runtime: {{.runtime}}
+        storage-type: {{.storageType}}
+        workload-type: git
+        clone-mode: {{.cloneMode}}
+        concurrency: "{{.concurrency}}"
+      annotations:
+        scenario: {{.scenario}}
+    spec:
+      restartPolicy: Never
+      runtimeClassName: {{.kataRuntimeClassName}}
+      nodeSelector:
+        perf.azure.com/node-role: workload
+      containers:
+        - name: git-clone
+          image: {{.benchmarkImage}}
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/run-git-clone.sh]
+          env:
+            - name: RUN_ID
+              value: {{.runID}}
+            - name: SCENARIO
+              value: {{.scenario}}
+            - name: SAMPLE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REPO_URL
+              value: {{.repoURL}}
+            - name: CLONE_MODE
+              value: {{.cloneMode}}
+            - name: WORK_DIR
+              value: /work
+            - name: RESULTS_DIR
+              value: /results
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "2"
+              memory: 8Gi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: {{.workVolumeSize}}
+        - name: results
+          persistentVolumeClaim:
+            claimName: kata-io-results

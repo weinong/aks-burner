@@ -1,0 +1,13 @@
+[global]
+ioengine=sync
+direct=0
+time_based=1
+runtime=60
+size=512M
+bs=4k
+numjobs=4
+fsync=1
+group_reporting=1
+
+[fsync-heavy]
+rw=write

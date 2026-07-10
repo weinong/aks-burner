@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,10 +10,30 @@ import (
 	"testing"
 
 	"github.com/Azure/aks-burner/internal/acr"
+	"github.com/Azure/aks-burner/internal/artifacts"
 	"github.com/Azure/aks-burner/internal/config"
+	"github.com/Azure/aks-burner/internal/kubestatemetrics"
 )
 
 var testSourceRoot = mustTestSourceRoot()
+
+func TestInfraBicepSupportsKataWorkloadRuntimeParameters(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testSourceRoot, "infra", "aks", "main.bicep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"param userNodeOsSKU string = 'Ubuntu'",
+		"param userNodeWorkloadRuntime string = 'OCIContainer'",
+		"osSKU: userNodeOsSKU",
+		"workloadRuntime: userNodeWorkloadRuntime",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("main.bicep missing %q", want)
+		}
+	}
+}
 
 func TestRunDispatchesRunSuite(t *testing.T) {
 	err := run([]string{"run-suite"})
@@ -40,6 +62,62 @@ func TestShouldWaitPrometheusRolloutOnlyWhenInstalledByRunner(t *testing.T) {
 	}
 }
 
+func TestKubeStateMetricsScrapeTargetOnlyWhenRequired(t *testing.T) {
+	if got := kubeStateMetricsScrapeTarget(kubestatemetrics.Config{}); got != "" {
+		t.Fatalf("kubeStateMetricsScrapeTarget() = %q, want empty for existing kata-perf requirements", got)
+	}
+	got := kubeStateMetricsScrapeTarget(kubestatemetrics.Config{Required: true, Namespace: "perf-monitoring", ServiceName: "kube-state-metrics", ServicePort: 8080})
+	want := "kube-state-metrics.perf-monitoring.svc:8080"
+	if got != want {
+		t.Fatalf("kubeStateMetricsScrapeTarget() = %q, want %q", got, want)
+	}
+}
+
+func TestRequirementsSchemaAcceptsKubeStateMetricsAndArtifacts(t *testing.T) {
+	root := testRepoRoot(t)
+	path := filepath.Join(root, "requirements.yml")
+	data := []byte(`suite: kata-io
+requires:
+  infrastructure:
+    provider: aks
+    bicep:
+      template: infra/aks/main.bicep
+      parameters: suites/kata-io/infra.bicepparam
+  kubernetes:
+    minVersion: "1.36"
+  observability:
+    prometheus:
+      required: true
+      install: true
+      namespace: perf-monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+      requiredMetrics:
+        - container_cpu_usage_seconds_total
+    kubeStateMetrics:
+      required: true
+      install: true
+      namespace: perf-monitoring
+      imageKey: kube-state-metrics
+      serviceName: kube-state-metrics
+      servicePort: 8080
+  artifacts:
+    enabled: true
+    namespace: kata-io
+    pvcName: kata-io-results
+    mountPath: /results
+    copyImage: artifact-copy
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), path); err != nil {
+		t.Fatalf("requirements schema rejected kube-state-metrics/artifacts: %v", err)
+	}
+}
+
 func TestValidateDestroyTargetRequiresDefaultResourceGroup(t *testing.T) {
 	err := validateDestroyTarget("kata-perf", "rg-not-owned", false)
 	if err == nil || !strings.Contains(err.Error(), "rg-aks-burner-kata-perf") {
@@ -65,6 +143,18 @@ func TestResolveSuitePathAcceptsRepoRelativeSuitePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(root, "suites", "kata-perf", "infra.bicepparam")
+	if got != want {
+		t.Fatalf("resolveSuitePath() = %q, want %q", got, want)
+	}
+}
+
+func TestModeWorkloadFileResolvesInsideSuite(t *testing.T) {
+	root := t.TempDir()
+	got, err := resolveSuitePath(root, "kata-io", "workload-smoke.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "suites", "kata-io", "workload-smoke.yml")
 	if got != want {
 		t.Fatalf("resolveSuitePath() = %q, want %q", got, want)
 	}
@@ -225,6 +315,150 @@ func TestValidateModeImageVarsRejectsUnknownImageKeyBeforeBuild(t *testing.T) {
 	err := validateModeImageVars(map[string]string{"image": "missing"}, map[string]string{"prometheus": "mcr/prometheus"}, []acr.ImageBuild{{Key: "kata-pause"}})
 	if err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("validateModeImageVars() error = %v, want missing image key", err)
+	}
+}
+
+func TestExecuteRunAndCopyArtifactsResolvesCopyImageBeforeExecute(t *testing.T) {
+	order := []string{}
+	execute := func(workloadPath string, logPath string) error {
+		order = append(order, "execute")
+		return nil
+	}
+	copyArtifacts := func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+		order = append(order, "copy:"+cfg.CopyImage)
+		return nil
+	}
+	waitArtifacts := func(ctx context.Context, cfg artifacts.Config) error {
+		order = append(order, "wait:"+cfg.Namespace)
+		return nil
+	}
+
+	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, Namespace: "kata-io", CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", execute, waitArtifacts, copyArtifacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"execute", "wait:kata-io", "copy:busybox:test"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %#v, want %#v", order, want)
+	}
+}
+
+func TestExecuteRunAndCopyArtifactsSkipsJobWaitWhenArtifactsDisabled(t *testing.T) {
+	waited := false
+	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config) error {
+		waited = true
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited {
+		t.Fatalf("waitArtifactJobs called when artifacts are disabled")
+	}
+}
+
+func TestExecuteRunAndCopyArtifactsCopiesCurrentRunIDSubpath(t *testing.T) {
+	copiedSubpath := ""
+	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "kata-io-full-20260709T010203.000000004Z", func(workloadPath string, logPath string) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+		copiedSubpath = subpath
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copiedSubpath != "kata-io-full-20260709T010203.000000004Z" {
+		t.Fatalf("copied subpath = %q, want current runID", copiedSubpath)
+	}
+}
+
+func TestExecuteRunAndCopyArtifactsKeepsLegacyCopyWhenRunIDEmpty(t *testing.T) {
+	copiedSubpath := "not-called"
+	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+		copiedSubpath = subpath
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copiedSubpath != "" {
+		t.Fatalf("copied subpath = %q, want empty legacy subpath", copiedSubpath)
+	}
+}
+
+func TestExecuteRunAndCopyArtifactsRejectsUnsafeRunIDBeforeExecute(t *testing.T) {
+	executed := false
+	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "../old-run", func(workloadPath string, logPath string) error {
+		executed = true
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid artifact subpath") {
+		t.Fatalf("executeRunAndCopyArtifacts() error = %v, want invalid artifact subpath", err)
+	}
+	if executed {
+		t.Fatalf("ExecuteKubeBurner ran after unsafe runID")
+	}
+}
+
+func TestArtifactSubpathFromRenderedWorkloadUsesFirstRunID(t *testing.T) {
+	rendered := map[string]any{"jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{"runID": "kata-io-smoke-20260709T010203.000000004Z"}}}}}}
+	if got := artifactSubpathFromRenderedWorkload(rendered); got != "kata-io-smoke-20260709T010203.000000004Z" {
+		t.Fatalf("artifactSubpathFromRenderedWorkload() = %q, want runID", got)
+	}
+}
+
+func TestArtifactSubpathFromRenderedWorkloadAllowsMissingRunID(t *testing.T) {
+	rendered := map[string]any{"jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{"app": "kata-perf"}}}}}}
+	if got := artifactSubpathFromRenderedWorkload(rendered); got != "" {
+		t.Fatalf("artifactSubpathFromRenderedWorkload() = %q, want empty legacy subpath", got)
+	}
+}
+
+func TestExecuteRunAndCopyArtifactsReturnsResolveErrorBeforeExecute(t *testing.T) {
+	executed := false
+	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "missing"}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string) error {
+		executed = true
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("executeRunAndCopyArtifacts() error = %v, want missing image error", err)
+	}
+	if executed {
+		t.Fatalf("ExecuteKubeBurner ran after artifact image resolution failed")
+	}
+}
+
+func TestExecuteRunAndCopyArtifactsPrefersKubeBurnerFailureOverArtifactCopy(t *testing.T) {
+	executeErr := errors.New("kube-burner failed")
+	copyErr := errors.New("artifact copy failed")
+	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string) error {
+		return executeErr
+	}, func(ctx context.Context, cfg artifacts.Config) error {
+		return nil
+	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+		return copyErr
+	})
+	if !errors.Is(err, executeErr) || !strings.Contains(err.Error(), "artifact copy also failed") {
+		t.Fatalf("executeRunAndCopyArtifacts() error = %v, want kube-burner error with artifact copy context", err)
 	}
 }
 

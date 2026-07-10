@@ -1,0 +1,13 @@
+[global]
+ioengine=libaio
+direct=1
+time_based=1
+runtime=60
+size=2G
+bs=1M
+iodepth=16
+numjobs=2
+group_reporting=1
+
+[seqwrite]
+rw=write

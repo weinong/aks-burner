@@ -236,7 +236,7 @@ If artifact copy fails, `run-suite` should return an error because raw artifacts
 
 The artifact PVC should live in the benchmark namespace, defaulting to `kata-io`, and the copy pod should be created in that same namespace so it can mount the PVC directly.
 
-The copy pod image must include `tar` because `kubectl cp` depends on `tar` inside the container. Use `mcr.microsoft.com/oss/busybox/busybox:1.36.1` or another configured utility image with `tar`; do not use the Kubernetes `pause` image for artifact copy.
+The copy pod image must include `tar` because `kubectl cp` depends on `tar` inside the container. Use a configured utility image with `tar`; do not use the Kubernetes `pause` image for artifact copy.
 
 ## Requirements Schema And Runner Changes
 

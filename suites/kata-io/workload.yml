@@ -1,0 +1,30 @@
+global:
+  measurements:
+    - name: podLatency
+jobs:
+  - name: kio-namespace
+    jobType: create
+    namespace: default
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: false
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/namespace.yml
+        replicas: 1
+        inputVars: {}
+  - name: kio-results-pvc
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: false
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/results-pvc.yml
+        replicas: 1
+        inputVars: {}

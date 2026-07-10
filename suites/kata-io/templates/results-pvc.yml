@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kata-io-results
+  namespace: {{.namespace}}
+  labels:
+    app: kata-io
+    benchmark: io
+    storage-type: results
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: {{.resultsStorageClass}}
+  resources:
+    requests:
+      storage: {{.resultsVolumeSize}}

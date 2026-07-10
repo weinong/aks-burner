@@ -1,0 +1,2160 @@
+global:
+  measurements:
+    - name: podLatency
+jobs:
+  - name: kio-namespace
+    jobType: create
+    namespace: default
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: false
+    waitWhenFinished: true
+    objects:
+      - objectTemplate: templates/namespace.yml
+        replicas: 1
+        inputVars: {}
+  - name: kata-io-results-pvc
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: false
+    waitWhenFinished: true
+    objects:
+      - objectTemplate: templates/results-pvc.yml
+        replicas: 1
+        inputVars: {}
+  - name: kio-1
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-1
+          scenario: runtime-standard-storage-emptydir-fio-randread-4k-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "1"
+  - name: kio-2
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-2
+          scenario: runtime-standard-storage-emptydir-fio-randwrite-4k-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "1"
+  - name: kio-3
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-3
+          scenario: runtime-standard-storage-emptydir-fio-seqread-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "1"
+  - name: kio-4
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-4
+          scenario: runtime-standard-storage-emptydir-fio-seqwrite-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "1"
+  - name: kio-5
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-5
+          scenario: runtime-standard-storage-emptydir-fio-fsync-heavy-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "1"
+  - name: kio-6
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-6
+          scenario: runtime-standard-storage-emptydir-git-full-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: full
+          concurrency: "1"
+  - name: kio-7
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-7
+          scenario: runtime-standard-storage-emptydir-git-blobless-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "1"
+  - name: kio-8
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-8
+          scenario: runtime-standard-storage-emptydir-fio-randread-4k-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "10"
+  - name: kio-9
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-9
+          scenario: runtime-standard-storage-emptydir-fio-randwrite-4k-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "10"
+  - name: kio-10
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-10
+          scenario: runtime-standard-storage-emptydir-fio-seqread-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "10"
+  - name: kio-11
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-11
+          scenario: runtime-standard-storage-emptydir-fio-seqwrite-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "10"
+  - name: kio-12
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-12
+          scenario: runtime-standard-storage-emptydir-fio-fsync-heavy-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "10"
+  - name: kio-13
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-13
+          scenario: runtime-standard-storage-emptydir-git-full-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: full
+          concurrency: "10"
+  - name: kio-14
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-14
+          scenario: runtime-standard-storage-emptydir-git-blobless-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "10"
+  - name: kio-15
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-15
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-15
+          scenario: runtime-standard-storage-azure-disk-fio-randread-4k-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "1"
+  - name: kio-16
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-16
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-16
+          scenario: runtime-standard-storage-azure-disk-fio-randwrite-4k-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "1"
+  - name: kio-17
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-17
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-17
+          scenario: runtime-standard-storage-azure-disk-fio-seqread-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "1"
+  - name: kio-18
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-18
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-18
+          scenario: runtime-standard-storage-azure-disk-fio-seqwrite-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "1"
+  - name: kio-19
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-19
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-19
+          scenario: runtime-standard-storage-azure-disk-fio-fsync-heavy-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "1"
+  - name: kio-20
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-20
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-20
+          scenario: runtime-standard-storage-azure-disk-git-full-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: full
+          concurrency: "1"
+  - name: kio-21
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-21
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-21
+          scenario: runtime-standard-storage-azure-disk-git-blobless-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "1"
+  - name: kio-22
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-22
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-22
+          scenario: runtime-standard-storage-azure-disk-fio-randread-4k-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "10"
+  - name: kio-23
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-23
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-23
+          scenario: runtime-standard-storage-azure-disk-fio-randwrite-4k-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "10"
+  - name: kio-24
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-24
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-24
+          scenario: runtime-standard-storage-azure-disk-fio-seqread-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "10"
+  - name: kio-25
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-25
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-25
+          scenario: runtime-standard-storage-azure-disk-fio-seqwrite-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "10"
+  - name: kio-26
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-26
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-26
+          scenario: runtime-standard-storage-azure-disk-fio-fsync-heavy-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "10"
+  - name: kio-27
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-27
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-27
+          scenario: runtime-standard-storage-azure-disk-git-full-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: full
+          concurrency: "10"
+  - name: kio-28
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-28
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-28
+          scenario: runtime-standard-storage-azure-disk-git-blobless-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "10"
+  - name: kio-29
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-29
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-29
+          scenario: runtime-standard-storage-azure-files-fio-randread-4k-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "1"
+  - name: kio-30
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-30
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-30
+          scenario: runtime-standard-storage-azure-files-fio-randwrite-4k-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "1"
+  - name: kio-31
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-31
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-31
+          scenario: runtime-standard-storage-azure-files-fio-seqread-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "1"
+  - name: kio-32
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-32
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-32
+          scenario: runtime-standard-storage-azure-files-fio-seqwrite-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "1"
+  - name: kio-33
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-33
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-33
+          scenario: runtime-standard-storage-azure-files-fio-fsync-heavy-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "1"
+  - name: kio-34
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-34
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-34
+          scenario: runtime-standard-storage-azure-files-git-full-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: full
+          concurrency: "1"
+  - name: kio-35
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-35
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-35
+          scenario: runtime-standard-storage-azure-files-git-blobless-concurrency-1
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "1"
+  - name: kio-36
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-36
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-36
+          scenario: runtime-standard-storage-azure-files-fio-randread-4k-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "10"
+  - name: kio-37
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-37
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-37
+          scenario: runtime-standard-storage-azure-files-fio-randwrite-4k-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "10"
+  - name: kio-38
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-38
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-38
+          scenario: runtime-standard-storage-azure-files-fio-seqread-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "10"
+  - name: kio-39
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-39
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-39
+          scenario: runtime-standard-storage-azure-files-fio-seqwrite-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "10"
+  - name: kio-40
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-40
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-40
+          scenario: runtime-standard-storage-azure-files-fio-fsync-heavy-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "10"
+  - name: kio-41
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-41
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-41
+          scenario: runtime-standard-storage-azure-files-git-full-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: full
+          concurrency: "10"
+  - name: kio-42
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-42
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-standard-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-42
+          scenario: runtime-standard-storage-azure-files-git-blobless-concurrency-10
+          runtime: runtime-standard
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "10"
+  - name: kio-43
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-43
+          scenario: runtime-kata-storage-emptydir-fio-randread-4k-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "1"
+  - name: kio-44
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-44
+          scenario: runtime-kata-storage-emptydir-fio-randwrite-4k-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "1"
+  - name: kio-45
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-45
+          scenario: runtime-kata-storage-emptydir-fio-seqread-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "1"
+  - name: kio-46
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-46
+          scenario: runtime-kata-storage-emptydir-fio-seqwrite-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "1"
+  - name: kio-47
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-47
+          scenario: runtime-kata-storage-emptydir-fio-fsync-heavy-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "1"
+  - name: kio-48
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-48
+          scenario: runtime-kata-storage-emptydir-git-full-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: full
+          concurrency: "1"
+  - name: kio-49
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-49
+          scenario: runtime-kata-storage-emptydir-git-blobless-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "1"
+  - name: kio-50
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-50
+          scenario: runtime-kata-storage-emptydir-fio-randread-4k-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "10"
+  - name: kio-51
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-51
+          scenario: runtime-kata-storage-emptydir-fio-randwrite-4k-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "10"
+  - name: kio-52
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-52
+          scenario: runtime-kata-storage-emptydir-fio-seqread-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "10"
+  - name: kio-53
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-53
+          scenario: runtime-kata-storage-emptydir-fio-seqwrite-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "10"
+  - name: kio-54
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/fio-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-54
+          scenario: runtime-kata-storage-emptydir-fio-fsync-heavy-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "10"
+  - name: kio-55
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-55
+          scenario: runtime-kata-storage-emptydir-git-full-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: full
+          concurrency: "10"
+  - name: kio-56
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/git-emptydir-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-56
+          scenario: runtime-kata-storage-emptydir-git-blobless-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-emptydir
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "10"
+  - name: kio-57
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-57
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-57
+          scenario: runtime-kata-storage-azure-disk-fio-randread-4k-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "1"
+  - name: kio-58
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-58
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-58
+          scenario: runtime-kata-storage-azure-disk-fio-randwrite-4k-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "1"
+  - name: kio-59
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-59
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-59
+          scenario: runtime-kata-storage-azure-disk-fio-seqread-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "1"
+  - name: kio-60
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-60
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-60
+          scenario: runtime-kata-storage-azure-disk-fio-seqwrite-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "1"
+  - name: kio-61
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-61
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-61
+          scenario: runtime-kata-storage-azure-disk-fio-fsync-heavy-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "1"
+  - name: kio-62
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-62
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-62
+          scenario: runtime-kata-storage-azure-disk-git-full-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: full
+          concurrency: "1"
+  - name: kio-63
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-63
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-63
+          scenario: runtime-kata-storage-azure-disk-git-blobless-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "1"
+  - name: kio-64
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-64
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-64
+          scenario: runtime-kata-storage-azure-disk-fio-randread-4k-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "10"
+  - name: kio-65
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-65
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-65
+          scenario: runtime-kata-storage-azure-disk-fio-randwrite-4k-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "10"
+  - name: kio-66
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-66
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-66
+          scenario: runtime-kata-storage-azure-disk-fio-seqread-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "10"
+  - name: kio-67
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-67
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-67
+          scenario: runtime-kata-storage-azure-disk-fio-seqwrite-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "10"
+  - name: kio-68
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-68
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-68
+          scenario: runtime-kata-storage-azure-disk-fio-fsync-heavy-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "10"
+  - name: kio-69
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-69
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-69
+          scenario: runtime-kata-storage-azure-disk-git-full-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: full
+          concurrency: "10"
+  - name: kio-70
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-70
+          storageType: storage-azure-disk
+          workStorageClass: managed-csi
+          workAccessMode: ReadWriteOnce
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-70
+          scenario: runtime-kata-storage-azure-disk-git-blobless-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-disk
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "10"
+  - name: kio-71
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-71
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-71
+          scenario: runtime-kata-storage-azure-files-fio-randread-4k-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "1"
+  - name: kio-72
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-72
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-72
+          scenario: runtime-kata-storage-azure-files-fio-randwrite-4k-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "1"
+  - name: kio-73
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-73
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-73
+          scenario: runtime-kata-storage-azure-files-fio-seqread-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "1"
+  - name: kio-74
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-74
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-74
+          scenario: runtime-kata-storage-azure-files-fio-seqwrite-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "1"
+  - name: kio-75
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-75
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-75
+          scenario: runtime-kata-storage-azure-files-fio-fsync-heavy-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "1"
+  - name: kio-76
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-76
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-76
+          scenario: runtime-kata-storage-azure-files-git-full-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: full
+          concurrency: "1"
+  - name: kio-77
+    jobType: create
+    namespace: kata-io
+    jobIterations: 1
+    qps: 1
+    burst: 1
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-77
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-77
+          scenario: runtime-kata-storage-azure-files-git-blobless-concurrency-1
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "1"
+  - name: kio-78
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-78
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-78
+          scenario: runtime-kata-storage-azure-files-fio-randread-4k-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randread-4k.fio
+          fioProfileName: randread-4k
+          concurrency: "10"
+  - name: kio-79
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-79
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-79
+          scenario: runtime-kata-storage-azure-files-fio-randwrite-4k-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/randwrite-4k.fio
+          fioProfileName: randwrite-4k
+          concurrency: "10"
+  - name: kio-80
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-80
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-80
+          scenario: runtime-kata-storage-azure-files-fio-seqread-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqread.fio
+          fioProfileName: seqread
+          concurrency: "10"
+  - name: kio-81
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-81
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-81
+          scenario: runtime-kata-storage-azure-files-fio-seqwrite-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/seqwrite.fio
+          fioProfileName: seqwrite
+          concurrency: "10"
+  - name: kio-82
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-82
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/fio-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-82
+          scenario: runtime-kata-storage-azure-files-fio-fsync-heavy-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: fio
+          fioProfile: /profiles/fsync-heavy.fio
+          fioProfileName: fsync-heavy
+          concurrency: "10"
+  - name: kio-83
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-83
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-83
+          scenario: runtime-kata-storage-azure-files-git-full-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: full
+          concurrency: "10"
+  - name: kio-84
+    jobType: create
+    namespace: kata-io
+    jobIterations: 10
+    qps: 10
+    burst: 10
+    cleanup: true
+    waitWhenFinished: true
+    preLoadImages: true
+    objects:
+      - objectTemplate: templates/work-pvc.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-84
+          storageType: storage-azure-files
+          workStorageClass: azurefile-csi
+          workAccessMode: ReadWriteMany
+      - objectTemplate: templates/git-pvc-kata-job.yml
+        replicas: 1
+        inputVars:
+          jobName: kio-84
+          scenario: runtime-kata-storage-azure-files-git-blobless-concurrency-10
+          runtime: runtime-kata
+          storageType: storage-azure-files
+          workloadType: git
+          cloneMode: blobless
+          concurrency: "10"
