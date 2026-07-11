@@ -22,6 +22,7 @@ import (
 	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/prometheus"
 	"github.com/Azure/aks-burner/internal/repo"
+	"github.com/Azure/aks-burner/internal/reporting"
 	"github.com/Azure/aks-burner/internal/requirements"
 	runpkg "github.com/Azure/aks-burner/internal/run"
 	"github.com/Azure/aks-burner/internal/suite"
@@ -534,6 +535,39 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err != nil {
 		return err
 	}
+	suiteDir := filepath.Join(root, "suites", *suiteName)
+	var mode runpkg.Mode
+	modePath, err := resolveSuitePath(root, *suiteName, filepath.Join("vars", *modeName+".yml"))
+	if err != nil {
+		return err
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), modePath); err != nil {
+		return err
+	}
+	if err := config.LoadYAML(modePath, &mode); err != nil {
+		return err
+	}
+	var workload map[string]any
+	workloadFile, err := resolveSuitePath(root, *suiteName, mode.SelectedWorkloadFile())
+	if err != nil {
+		return err
+	}
+	if err := config.LoadYAML(workloadFile, &workload); err != nil {
+		return err
+	}
+	metricNames, err := reporting.PrometheusMetricNames(filepath.Join(suiteDir, "metrics.yml"))
+	if err != nil {
+		return err
+	}
+	if err := reporting.ValidateConfig(&req.Requires.Reporting, req.Requires.Artifacts.Enabled, req.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
+		return err
+	}
+	if err := validateModeImageVars(mode.ImageVars, staticImages, imageBuilds); err != nil {
+		return err
+	}
+	if err := runpkg.ValidateKubeBurnerVersion(root); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	registryName, registryServer, err := prepareRunSuiteCluster(ctx, names.ResourceGroup, names.ClusterName, req.Requires.Images, *kubeContext == "", deps)
@@ -548,30 +582,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err != nil {
 		return err
 	}
-	suiteDir := filepath.Join(root, "suites", *suiteName)
-	var mode runpkg.Mode
-	modePath, err := resolveSuitePath(root, *suiteName, filepath.Join("vars", *modeName+".yml"))
-	if err != nil {
-		return err
-	}
-	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), modePath); err != nil {
-		return err
-	}
-	if err := config.LoadYAML(modePath, &mode); err != nil {
-		return err
-	}
 	mode.RunTimestamp = runTimestamp
-	var workload map[string]any
-	workloadFile, err := resolveSuitePath(root, *suiteName, mode.SelectedWorkloadFile())
-	if err != nil {
-		return err
-	}
-	if err := config.LoadYAML(workloadFile, &workload); err != nil {
-		return err
-	}
-	if err := validateModeImageVars(mode.ImageVars, staticImages, imageBuilds); err != nil {
-		return err
-	}
 	builtImages := []acr.BuiltImage(nil)
 	builtImageMap := map[string]string{}
 	if req.Requires.Images != nil && len(req.Requires.Images.Builds) > 0 {
@@ -642,7 +653,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := runpkg.CopyRenderAssets(suiteDir, runDir); err != nil {
 		return err
 	}
-	rendered, err := runpkg.RenderWorkload(workload, mode, images, prometheusURL)
+	rendered, err := runpkg.RenderWorkload(workload, mode, images, prometheusURL, req.Requires.Reporting.Sources.KubeBurner)
 	if err != nil {
 		return err
 	}

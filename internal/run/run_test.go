@@ -31,7 +31,7 @@ func TestModeSelectedWorkloadFileUsesConfiguredFile(t *testing.T) {
 func TestRenderWorkloadInjectsPrometheusEndpoint(t *testing.T) {
 	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
 	mode := Mode{Iterations: 20, IterationsPerNamespace: 20, QPS: 20, Burst: 20, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, TemplateVars: map[string]any{"app": "test"}, ImageVars: map[string]string{"image": "pause"}}
-	rendered, err := RenderWorkload(workload, mode, map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"}, "http://127.0.0.1:9090")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"}, "http://127.0.0.1:9090", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestRenderWorkloadWritesPrometheusMetricsToRunRoot(t *testing.T) {
 	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
 	mode := Mode{Iterations: 1, IterationsPerNamespace: 1, QPS: 1, Burst: 1, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true}
 
-	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "http://127.0.0.1:9090")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "http://127.0.0.1:9090", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,16 +64,29 @@ func TestRenderWorkloadWritesPrometheusMetricsToRunRoot(t *testing.T) {
 	}
 }
 
-func TestRenderWorkloadSkipsPrometheusEndpointWhenEmpty(t *testing.T) {
-	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
-	mode := Mode{Iterations: 20, IterationsPerNamespace: 20, QPS: 20, Burst: 20, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, TemplateVars: map[string]any{"app": "test"}, ImageVars: map[string]string{"image": "pause"}}
-
-	rendered, err := RenderWorkload(workload, mode, map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"}, "")
+func TestRenderWorkloadAddsLocalIndexerWithoutPrometheus(t *testing.T) {
+	workload := map[string]any{"jobs": []any{}}
+	rendered, err := RenderWorkload(workload, Mode{}, nil, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := rendered["metricsEndpoints"]; ok {
-		t.Fatalf("metrics endpoint injected for empty prometheus endpoint: %#v", rendered["metricsEndpoints"])
+	endpoint := rendered["metricsEndpoints"].([]any)[0].(map[string]any)
+	if _, exists := endpoint["endpoint"]; exists {
+		t.Fatalf("unexpected endpoint: %#v", endpoint)
+	}
+	indexer := endpoint["indexer"].(map[string]any)
+	if indexer["type"] != "local" || indexer["metricsDirectory"] != "../raw/metrics" {
+		t.Fatalf("indexer = %#v", indexer)
+	}
+}
+
+func TestRenderWorkloadOmitsMetricsEndpointsWhenReportingDisabled(t *testing.T) {
+	rendered, err := RenderWorkload(map[string]any{"jobs": []any{}}, Mode{}, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := rendered["metricsEndpoints"]; exists {
+		t.Fatalf("unexpected endpoint: %#v", rendered)
 	}
 }
 
@@ -81,7 +94,7 @@ func TestRenderWorkloadKeepsWaitWhenFinishedJobScoped(t *testing.T) {
 	workload := map[string]any{"global": map[string]any{}, "jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{}}}}}}
 	mode := Mode{Iterations: 20, IterationsPerNamespace: 20, QPS: 20, Burst: 20, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, TemplateVars: map[string]any{"app": "test"}, ImageVars: map[string]string{"image": "pause"}}
 
-	rendered, err := RenderWorkload(workload, mode, map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"}, "")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{"pause": "mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2"}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +127,7 @@ func TestRenderWorkloadPreservesExplicitJobScheduling(t *testing.T) {
 		},
 	}
 	mode := Mode{Iterations: 1, IterationsPerNamespace: 1, QPS: 1, Burst: 1, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true}
-	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +160,7 @@ func TestRenderWorkloadReplacesRunTimestampPlaceholder(t *testing.T) {
 	}
 	mode := Mode{TemplateVars: map[string]any{"runID": "kata-io-full-{{.runTimestamp}}"}}
 
-	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +195,7 @@ func TestRenderWorkloadUsesModeRunTimestampForPlaceholder(t *testing.T) {
 		TemplateVars: map[string]any{"runID": "kata-io-full-{{.runTimestamp}}"},
 	}
 
-	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +222,7 @@ func TestRenderWorkloadUsesDNSRunTimestampPlaceholder(t *testing.T) {
 		TemplateVars: map[string]any{"k8sRunID": "kio-smoke-{{.runTimestampDNS}}"},
 	}
 
-	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +249,7 @@ func TestRenderWorkloadReplacesInputVarTemplateVars(t *testing.T) {
 		TemplateVars: map[string]any{"runID": "kata-io-smoke-{{.runTimestamp}}"},
 	}
 
-	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "")
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

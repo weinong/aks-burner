@@ -638,7 +638,7 @@ func TestRunSuiteExplicitContextNoBuildSkipsAzure(t *testing.T) {
 	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
 	writeRecordingCommand(t, binDir, "az", azMarker, "")
 	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
-	writeRecordingCommand(t, binDir, "kube-burner", filepath.Join(t.TempDir(), "kube-burner.log"), "")
+	writeRecordingKubeBurner(t, binDir, filepath.Join(t.TempDir(), "kube-burner.log"), "2.7.3")
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
@@ -658,6 +658,64 @@ func TestRunSuiteExplicitContextNoBuildSkipsAzure(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "kubeContext: preview") || strings.Contains(string(data), "clusterName:") {
 		t.Fatalf("metadata = %s", data)
+	}
+}
+
+func TestRunSuiteRejectsUnsupportedKubeBurnerVersionBeforeSideEffects(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	binDir := t.TempDir()
+	azMarker := filepath.Join(t.TempDir(), "az.log")
+	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
+	writeRecordingCommand(t, binDir, "az", azMarker, "")
+	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, "")
+	writeRecordingKubeBurner(t, binDir, filepath.Join(t.TempDir(), "kube-burner.log"), "2.7.2")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	if err == nil || !strings.Contains(err.Error(), "2.7.3") || !strings.Contains(err.Error(), "2.7.2") {
+		t.Fatalf("run-suite error = %v, want kube-burner version error", err)
+	}
+	for _, marker := range []string{azMarker, kubectlMarker} {
+		if data, _ := os.ReadFile(marker); len(data) != 0 {
+			t.Fatalf("side effect before kube-burner version validation in %s: %s", marker, data)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
+		t.Fatalf("results directory exists before kube-burner version validation: %v", err)
+	}
+}
+
+func TestRunSuiteMissingWorkloadFailsBeforeSideEffects(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	if err := os.Remove(filepath.Join(root, "suites", "existing", "workload.yml")); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	markers := []string{
+		filepath.Join(t.TempDir(), "az.log"),
+		filepath.Join(t.TempDir(), "kubectl.log"),
+		filepath.Join(t.TempDir(), "kube-burner.log"),
+	}
+	writeRecordingCommand(t, binDir, "az", markers[0], "")
+	writeRecordingCommand(t, binDir, "kubectl", markers[1], "")
+	writeRecordingKubeBurner(t, binDir, markers[2], "2.7.3")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	if err == nil || !strings.Contains(err.Error(), "workload.yml") {
+		t.Fatalf("run-suite error = %v, want missing workload error", err)
+	}
+	for _, marker := range markers {
+		if data, _ := os.ReadFile(marker); len(data) != 0 {
+			t.Fatalf("side effect before workload validation in %s: %s", marker, data)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
+		t.Fatalf("results directory exists before workload validation: %v", err)
 	}
 }
 
@@ -698,7 +756,7 @@ func TestRunSuiteLegacyRefreshesCredentials(t *testing.T) {
 	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
 	writeRecordingCommand(t, binDir, "az", azMarker, "")
 	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
-	writeRecordingCommand(t, binDir, "kube-burner", filepath.Join(t.TempDir(), "kube-burner.log"), "")
+	writeRecordingKubeBurner(t, binDir, filepath.Join(t.TempDir(), "kube-burner.log"), "2.7.3")
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
@@ -727,7 +785,7 @@ func TestManagedRunSuiteOmittedResourceGroupUsesAliasQualifiedNamesEndToEnd(t *t
 	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
 	writeAzureIdentityAndCredentialsCommand(t, binDir, azMarker, "Jane.Doe@contoso.com")
 	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
-	writeRecordingCommand(t, binDir, "kube-burner", filepath.Join(t.TempDir(), "kube-burner.log"), "")
+	writeRecordingKubeBurner(t, binDir, filepath.Join(t.TempDir(), "kube-burner.log"), "2.7.3")
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
@@ -781,7 +839,7 @@ func TestRunSuiteExplicitContextWithBuildsUsesAzureWithoutCredentials(t *testing
 	kubeBurnerMarker := filepath.Join(t.TempDir(), "kube-burner.log")
 	writeAzureBuildCommand(t, binDir, azMarker)
 	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
-	writeRecordingCommand(t, binDir, "kube-burner", kubeBurnerMarker, "")
+	writeRecordingKubeBurner(t, binDir, kubeBurnerMarker, "2.7.3")
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
@@ -1240,12 +1298,7 @@ func TestProvisionRejectsPoolRelationshipsBeforeCommand(t *testing.T) {
 
 func TestRunSuiteClusterOverrideUsesOverrideForCredentials(t *testing.T) {
 	root := provisionTestRepo(t)
-	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("images:\n  pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeVersionedKubeBurner(t, filepath.Join(root, "bin", "kube-burner"), "2.7.3")
 	withWorkingDir(t, root)
 	stop := errors.New("stop after credentials")
 	var got string
@@ -1681,6 +1734,18 @@ requires:
       servicePort: 9090
       localPort: 9090
 `,
+		"workload.yml": "global:\n  measurements:\n    - name: podLatency\njobs: []\n",
+		"metrics.yml":  "[]\n",
+		filepath.Join("vars", "smoke.yml"): `iterations: 1
+iterationsPerNamespace: 1
+qps: 1
+burst: 1
+cleanup: true
+waitWhenFinished: true
+preLoadImages: false
+templateVars: {}
+imageVars: {}
+`,
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(suiteDir, name), []byte(content), 0o644); err != nil {
@@ -1691,6 +1756,12 @@ requires:
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "infra", "aks", "main.bicep"), []byte("param clusterName string\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root
@@ -1814,7 +1885,7 @@ requires:
       localPort: 9090
       requiredMetrics: []
 `,
-		"workload.yml": "jobs: []\n",
+		"workload.yml": "global:\n  measurements:\n    - name: podLatency\njobs: []\n",
 		"metrics.yml":  "[]\n",
 		filepath.Join("vars", "smoke.yml"): `iterations: 1
 iterationsPerNamespace: 1
@@ -1845,6 +1916,26 @@ func writeRecordingCommand(t *testing.T, dir, name, marker, stdout string) {
 	content := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n" +
 		"printf '%s' " + strconv.Quote(stdout) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeRecordingKubeBurner(t *testing.T, dir, marker, version string) {
+	t.Helper()
+	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: " + version + "\\n'; exit 0; fi\n" +
+		"printf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeVersionedKubeBurner(t *testing.T, path, version string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: " + version + "\\n'; fi\n"
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

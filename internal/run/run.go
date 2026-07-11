@@ -71,7 +71,7 @@ type Metadata struct {
 	Setup         suite.Setup       `yaml:"setup,omitempty"`
 }
 
-func RenderWorkload(workload map[string]any, mode Mode, images map[string]string, prometheusEndpoint string) (map[string]any, error) {
+func RenderWorkload(workload map[string]any, mode Mode, images map[string]string, prometheusEndpoint string, kubeBurnerReporting bool) (map[string]any, error) {
 	rendered := cloneMap(workload)
 	runTimestamp := mode.RunTimestamp
 	if runTimestamp.IsZero() {
@@ -80,15 +80,18 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 	templateVars := renderTemplateVars(mode.TemplateVars, runTimestamp)
 	global := ensureMap(rendered, "global")
 	global["gc"] = mode.Cleanup
-	if prometheusEndpoint != "" {
-		rendered["metricsEndpoints"] = []any{map[string]any{
-			"endpoint": prometheusEndpoint,
-			"metrics":  []any{"metrics.yml"},
+	if kubeBurnerReporting {
+		endpoint := map[string]any{
 			"indexer": map[string]any{
 				"type":             "local",
 				"metricsDirectory": "../raw/metrics",
 			},
-		}}
+		}
+		if prometheusEndpoint != "" {
+			endpoint["endpoint"] = prometheusEndpoint
+			endpoint["metrics"] = []any{"metrics.yml"}
+		}
+		rendered["metricsEndpoints"] = []any{endpoint}
 	}
 	jobs, _ := rendered["jobs"].([]any)
 	for _, item := range jobs {
@@ -181,28 +184,21 @@ func runDirName(suiteName string, mode string, timestamp time.Time) string {
 }
 
 func ExecuteKubeBurner(workloadPath string, logPath string, target kubetarget.Target) error {
+	root, err := repo.Root(filepath.Dir(workloadPath))
+	if err != nil {
+		return err
+	}
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return err
 	}
 	defer logFile.Close()
 	args := target.KubeBurnerArgs("init", "-c", filepath.Base(workloadPath))
-	cmd := exec.Command(kubeBurnerExecutable(workloadPath), args...)
+	cmd := exec.Command(KubeBurnerExecutable(root), args...)
 	cmd.Dir = filepath.Dir(workloadPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Run()
-}
-
-func kubeBurnerExecutable(workloadPath string) string {
-	root, err := repo.Root(filepath.Dir(workloadPath))
-	if err == nil {
-		candidate := filepath.Join(root, "bin", "kube-burner")
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			return candidate
-		}
-	}
-	return "kube-burner"
 }
 
 func ValidateRequirements(ctx context.Context, req Requirements, runner KubectlRunner) error {
