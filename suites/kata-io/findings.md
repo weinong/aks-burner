@@ -57,6 +57,30 @@ none            252G   29G  213G  12% /work
 
 The `df` artifacts show different filesystem sources for the two pods. Separate diagnostic inspection of equivalent pods showed standard `emptyDir` mounted from host ext4 and Kata `emptyDir` exposed through `virtiofs` from inside the guest VM.
 
+## Manual Azure Disk PVC Experiment
+
+A separate manual experiment, independent of the benchmark jobs, verified how a dynamically provisioned Azure Disk PVC reaches a Kata pod. The experiment used a `4Gi` `managed-csi` PVC, a pod with `runtimeClassName: kata-vm-isolation`, and direct inspection of both the AKS node and the Kata guest.
+
+On the AKS node, the Azure Disk CSI driver attached the PVC as a block device and mounted it as ext4:
+
+```text
+/var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~csi/<pvc-name>/mount ... - ext4 /dev/sdb rw
+/dev/sdb  disk  ext4  4G
+```
+
+Inside the Kata guest, the same volume was mounted at `/disk` as `virtiofs`, with no block-device source:
+
+```text
+TARGET SOURCE FSTYPE   OPTIONS
+/disk  none   virtiofs rw,relatime
+```
+
+The guest block-device inventory contained only the approximately `180MiB` `vda` guest root disk. It did not contain the `4GiB` Azure Disk as a guest block device. Node process inspection showed the Kata shim running `virtiofsd` with the sandbox shared directory alongside `cloud-hypervisor`.
+
+Data-path validation succeeded in both directions: a marker written through guest `/disk` was visible in the node-side CSI mount, and a marker written through the node-side mount was visible through guest `/disk`.
+
+This confirms the Azure Disk is attached and mounted on the AKS host by the CSI driver, then exposed into this Kata VM through `virtiofs`; it is not passed through as a block device for the guest to mount directly.
+
 ## Interpretation
 
 The split metrics separate two different effects:
