@@ -18,7 +18,7 @@ TEST_SUITE=kata-io TEST_MODE=git-fast make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
-`TEST_MODE` defaults to `smoke`. `RESOURCE_GROUP` defaults to `rg-aks-burner-$(TEST_SUITE)`. `AZURE_LOCATION` defaults to `westus2`. Set `CLUSTER_NAME` only when overriding the cluster name derived from `TEST_SUITE`.
+`TEST_MODE` defaults to `smoke` and `AZURE_LOCATION` defaults to `westus2`. When `RESOURCE_GROUP` is omitted, `perf-runner` reads the signed-in Azure user with `az account show --query user.name --output tsv`, normalizes the UPN alias, and uses `rg-aks-burner-<suite>-<alias>`. The default cluster name is derived from `<suite>-<alias>`. Set `RESOURCE_GROUP` or `CLUSTER_NAME` only to use explicit overrides; an explicit resource group retains the existing suite-only cluster-name derivation when `CLUSTER_NAME` is omitted.
 
 `make list-suites` prints each suite once with its available modes, so use the suite name for `TEST_SUITE` and one of the listed modes for `TEST_MODE`.
 
@@ -39,7 +39,7 @@ TEST_SUITE=kata-io TEST_MODE=git-fast make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
-`provision` loads `suites/<suite>/requirements.yml`, validates it, and generates the ARM deployment parameters that configure the AKS cluster, node pools, and optional suite ACR; resource-group creation is a separate provisioning step. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the suite resource group and waits for deletion to complete.
+`provision` loads `suites/<suite>/requirements.yml`, validates it, and generates the ARM deployment parameters that configure the AKS cluster, node pools, and optional suite ACR; resource-group creation is a separate provisioning step. `run-suite` builds any suite-declared images with `az acr build`, publishes immutable run-tagged images to the suite ACR, installs Prometheus when requested, starts a local `kubectl port-forward`, renders kube-burner with the local Prometheus URL, and stores results under `results/`. `destroy` deletes the current user's suite resource group and waits for deletion to complete.
 
 Node pools are declared once in `requirements.yml`; no checked-in Bicep parameter file is needed. Each selector names the pool that must satisfy it:
 
@@ -84,7 +84,7 @@ go run ./cmd/perf-runner provision --suite kata-perf --resource-group dry-run-un
 
 ## Existing AKS Cluster
 
-`run-suite` can target an existing AKS cluster without running `provision`. By default, the cluster name is derived from the suite name (for example, `kata-perf` becomes `akskataperf`); pass `--cluster-name` when the existing cluster uses another name.
+`run-suite` can target an existing AKS cluster without running `provision`. With an explicit resource group, the cluster name retains its suite-only derivation (for example, `kata-perf` becomes `akskataperf`); pass `--cluster-name` when the existing cluster uses another name. With the default resource group, the cluster name is derived from the suite and signed-in user alias.
 
 ```bash
 go run ./cmd/perf-runner run-suite --suite kata-perf --mode smoke --resource-group <existing-resource-group> --cluster-name <existing-cluster>
@@ -95,7 +95,7 @@ TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-su
 
 Without `KUBE_CONTEXT`, `run-suite` derives the cluster name from `TEST_SUITE`, applies an optional `CLUSTER_NAME` override, and refreshes credentials with `az aks get-credentials`. Metadata records `clusterName` and omits `kubeContext`.
 
-With `KUBE_CONTEXT` set, `run-suite` skips credential refresh and targets that context for every `kubectl` and kube-burner operation. Suites without image builds may omit `RESOURCE_GROUP`; suites with image builds still require it so `run-suite` can validate the deployment cluster's `AcrPull` relationship and retrieve registry outputs. Explicit-context metadata records `kubeContext` and omits `clusterName`, even if `CLUSTER_NAME` is supplied for image-build deployment validation. A separate kubeconfig option is not supported.
+With `KUBE_CONTEXT` set, `run-suite` skips credential refresh and targets that context for every `kubectl` and kube-burner operation. Suites without image builds do not need `RESOURCE_GROUP` and do not query Azure identity. Suites with image builds derive the per-user resource group when it is omitted so `run-suite` can validate the deployment cluster's `AcrPull` relationship and retrieve registry outputs. Explicit-context metadata records `kubeContext` and omits `clusterName`, even if `CLUSTER_NAME` is supplied for image-build deployment validation. A separate kubeconfig option is not supported.
 
 Both modes load and validate `requirements.yml`, including node-pool and selector relationships. For a legacy run, validate the refreshed current context with `kubectl version -o json` and `kubectl get nodes -l <labels> -o name`. For an explicit target, validate the same cluster with `kubectl --context <existing-context> version -o json` and `kubectl --context <existing-context> get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
 
@@ -103,7 +103,7 @@ When Prometheus is `required` and `install: true`, `run-suite` installs Promethe
 
 `kata-io` provisions a Kata Pod Sandboxing-capable AKS workload pool, builds a benchmark image, installs Prometheus and kube-state-metrics, runs fio and Git clone workloads, and copies raw artifacts from the results PVC into the local run directory.
 
-`destroy` only deletes the default resource group name `rg-aks-burner-<suite>`. To delete a deliberately overridden suite resource group, call `perf-runner destroy` directly with `--allow-non-default-resource-group`.
+`destroy` without `--resource-group` derives and deletes only the signed-in user's default `rg-aks-burner-<suite>-<alias>` resource group. An explicit resource group skips identity lookup and requires `--allow-non-default-resource-group`, including for legacy shared resource groups such as `rg-aks-burner-<suite>`.
 
 ## Suite Images
 

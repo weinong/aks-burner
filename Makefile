@@ -1,12 +1,11 @@
 TEST_MODE ?= smoke
 AZURE_LOCATION ?= westus2
-RESOURCE_GROUP ?= rg-aks-burner-$(TEST_SUITE)
+RESOURCE_GROUP ?=
+RESOURCE_GROUP_ARG = $(if $(filter command line environment environment override,$(origin RESOURCE_GROUP)), --resource-group "$(RESOURCE_GROUP)")
 CLUSTER_NAME ?=
 CLUSTER_NAME_ARG = $(if $(strip $(CLUSTER_NAME)), --cluster-name "$(CLUSTER_NAME)")
 KUBE_CONTEXT ?=
-RUN_SUITE_RESOURCE_GROUP = $(if $(and $(strip $(KUBE_CONTEXT)),$(filter file,$(origin RESOURCE_GROUP))),,$(RESOURCE_GROUP))
 RUN_SUITE_CONTEXT_ARGS = $(if $(strip $(KUBE_CONTEXT)),--kube-context "$(KUBE_CONTEXT)")
-RUN_SUITE_RESOURCE_GROUP_ARGS = $(if $(strip $(RUN_SUITE_RESOURCE_GROUP)),--resource-group "$(RUN_SUITE_RESOURCE_GROUP)")
 
 .DEFAULT_GOAL := test
 
@@ -35,7 +34,7 @@ help:
 	@printf '  %-20s %s\n' 'TEST_SUITE' 'Required for add-suite, provision, run-suite, and destroy.'
 	@printf '  %-20s %s\n' 'TEST_MODE' 'Defaults to smoke.'
 	@printf '  %-20s %s\n' 'AZURE_LOCATION' 'Defaults to westus2.'
-	@printf '  %-20s %s\n' 'RESOURCE_GROUP' 'Defaults to rg-aks-burner-$$(TEST_SUITE).'
+	@printf '  %-20s %s\n' 'RESOURCE_GROUP' 'Optionally overrides the per-user resource group derived by perf-runner.'
 	@printf '  %-20s %s\n' 'CLUSTER_NAME' 'Optionally overrides the derived AKS cluster name.'
 	@printf '  %-20s %s\n' 'KUBE_CONTEXT' 'Optionally targets an existing Kubernetes context for run-suite.'
 
@@ -57,15 +56,15 @@ add-suite-guided:
 
 provision:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)
-	go run ./cmd/perf-runner provision --suite "$(TEST_SUITE)" --resource-group "$(RESOURCE_GROUP)" --location "$(AZURE_LOCATION)"$(CLUSTER_NAME_ARG)
+	go run ./cmd/perf-runner provision --suite "$(TEST_SUITE)"$(RESOURCE_GROUP_ARG) --location "$(AZURE_LOCATION)"$(CLUSTER_NAME_ARG)
 
 run-suite:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)
-	go run ./cmd/perf-runner run-suite --suite "$(TEST_SUITE)" --mode "$(TEST_MODE)" $(RUN_SUITE_RESOURCE_GROUP_ARGS)$(CLUSTER_NAME_ARG) $(RUN_SUITE_CONTEXT_ARGS)
+	go run ./cmd/perf-runner run-suite --suite "$(TEST_SUITE)" --mode "$(TEST_MODE)"$(RESOURCE_GROUP_ARG)$(CLUSTER_NAME_ARG) $(RUN_SUITE_CONTEXT_ARGS)
 
 destroy:
 	@test -n "$(TEST_SUITE)" || (echo "TEST_SUITE is required" && exit 1)
-	go run ./cmd/perf-runner destroy --suite "$(TEST_SUITE)" --resource-group "$(RESOURCE_GROUP)"
+	go run ./cmd/perf-runner destroy --suite "$(TEST_SUITE)"$(RESOURCE_GROUP_ARG)
 
 clean-results:
 	rm -rf results/*

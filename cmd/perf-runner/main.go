@@ -54,6 +54,47 @@ func run(args []string) error {
 	}
 }
 
+type azureResourceNames struct {
+	ResourceGroup string
+	ClusterName   string
+}
+
+type azureUserAliasFunc func(context.Context) (string, error)
+
+var currentAzureUserAlias azureUserAliasFunc = func(ctx context.Context) (string, error) {
+	return infra.AzureUserAlias(ctx, nil)
+}
+
+func resolveAzureResourceNames(ctx context.Context, suiteName string, resourceGroup string, clusterNameOverride string, resourceGroupNeeded bool, userAlias azureUserAliasFunc) (azureResourceNames, error) {
+	clusterInput := suiteName
+	if resourceGroup == "" && resourceGroupNeeded {
+		alias, err := userAlias(ctx)
+		if err != nil {
+			return azureResourceNames{}, err
+		}
+		resourceGroup = "rg-aks-burner-" + suiteName + "-" + alias
+		if len(resourceGroup) > 90 {
+			return azureResourceNames{}, fmt.Errorf("generated resource group %q is %d characters; Azure resource group names must be 90 characters or fewer; supply an explicit resource group with --resource-group", resourceGroup, len(resourceGroup))
+		}
+		clusterInput += "-" + alias
+	}
+	clusterName, err := infra.ClusterName(clusterInput, clusterNameOverride)
+	if err != nil {
+		return azureResourceNames{}, err
+	}
+	return azureResourceNames{ResourceGroup: resourceGroup, ClusterName: clusterName}, nil
+}
+
+func flagProvided(fs *flag.FlagSet, name string) bool {
+	provided := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			provided = true
+		}
+	})
+	return provided
+}
+
 type addSuiteOptions struct {
 	SuiteName         string
 	Description       string
@@ -353,8 +394,12 @@ func destroy(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *suiteName == "" || *resourceGroup == "" {
-		return fmt.Errorf("usage: perf-runner destroy --suite SUITE --resource-group RG [--allow-non-default-resource-group]")
+	explicitResourceGroup := flagProvided(fs, "resource-group")
+	if explicitResourceGroup && *resourceGroup == "" {
+		return fmt.Errorf("resource-group must not be empty when explicitly supplied")
+	}
+	if *suiteName == "" {
+		return fmt.Errorf("usage: perf-runner destroy --suite SUITE [--resource-group RG] [--allow-non-default-resource-group]")
 	}
 	root, err := repo.Root(".")
 	if err != nil {
@@ -363,11 +408,17 @@ func destroy(args []string) error {
 	if _, err := suite.Load(root, *suiteName); err != nil {
 		return err
 	}
-	if err := validateDestroyTarget(*suiteName, *resourceGroup, *allowNonDefaultResourceGroup); err != nil {
+	names, err := resolveAzureResourceNames(context.Background(), *suiteName, *resourceGroup, "", true, currentAzureUserAlias)
+	if err != nil {
 		return err
 	}
-	return infra.Destroy(context.Background(), *resourceGroup)
+	if err := validateDestroyTarget(names.ResourceGroup, !explicitResourceGroup, *allowNonDefaultResourceGroup); err != nil {
+		return err
+	}
+	return destroyInfra(context.Background(), names.ResourceGroup)
 }
+
+var destroyInfra = infra.Destroy
 
 type deploymentOutputFunc func(context.Context, string, string, string) (string, error)
 type getCredentialsFunc func(context.Context, string, string) error
@@ -375,6 +426,7 @@ type getCredentialsFunc func(context.Context, string, string) error
 type runSuiteDependencies struct {
 	DeploymentOutput deploymentOutputFunc
 	GetCredentials   getCredentialsFunc
+	AzureUserAlias   azureUserAliasFunc
 }
 
 func prepareRunSuiteCluster(ctx context.Context, resourceGroup string, clusterName string, images *acr.Requirements, refreshCredentials bool, deps runSuiteDependencies) (string, string, error) {
@@ -424,6 +476,9 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if flagProvided(fs, "resource-group") && *resourceGroup == "" {
+		return fmt.Errorf("resource-group must not be empty when explicitly supplied")
+	}
 	if *suiteName == "" {
 		return fmt.Errorf("usage: perf-runner run-suite --suite SUITE --mode MODE [--resource-group RG] [--kube-context CONTEXT]")
 	}
@@ -457,10 +512,11 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if req.Requires.Images != nil {
 		imageBuilds = req.Requires.Images.Builds
 	}
-	if err := validateRunSuiteTarget(*kubeContext, *resourceGroup, imageBuilds); err != nil {
-		return err
+	if deps.AzureUserAlias == nil {
+		deps.AzureUserAlias = currentAzureUserAlias
 	}
-	clusterName, err := infra.ClusterName(*suiteName, *clusterNameOverride)
+	resourceGroupNeeded := *kubeContext == "" || len(imageBuilds) > 0
+	names, err := resolveAzureResourceNames(context.Background(), *suiteName, *resourceGroup, *clusterNameOverride, resourceGroupNeeded, deps.AzureUserAlias)
 	if err != nil {
 		return err
 	}
@@ -473,7 +529,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	registryName, registryServer, err := prepareRunSuiteCluster(ctx, *resourceGroup, clusterName, req.Requires.Images, *kubeContext == "", deps)
+	registryName, registryServer, err := prepareRunSuiteCluster(ctx, names.ResourceGroup, names.ClusterName, req.Requires.Images, *kubeContext == "", deps)
 	if err != nil {
 		return err
 	}
@@ -516,7 +572,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 			SuiteDir:       suiteDir,
 			RegistryName:   registryName,
 			RegistryServer: registryServer,
-			ResourceGroup:  *resourceGroup,
+			ResourceGroup:  names.ResourceGroup,
 			Tag:            acr.RunTag(*suiteName, *modeName, runTimestamp),
 			Builds:         req.Requires.Images.Builds,
 			LogsDir:        filepath.Join(runDir, "logs"),
@@ -529,11 +585,11 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := runpkg.ApplySetup(ctx, target, suiteDir, suiteCfg.Setup); err != nil {
 		return err
 	}
-	metadataClusterName := clusterName
+	metadataClusterName := names.ClusterName
 	if *kubeContext != "" {
 		metadataClusterName = ""
 	}
-	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: *resourceGroup, ClusterName: metadataClusterName, KubeContext: *kubeContext, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
+	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: names.ResourceGroup, ClusterName: metadataClusterName, KubeContext: *kubeContext, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
 		return err
 	}
 	if req.Requires.Observability.KubeStateMetrics.Required && req.Requires.Observability.KubeStateMetrics.Install {
@@ -588,16 +644,6 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 		return err
 	}
 	return executeRunAndCopyArtifacts(ctx, target, workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"), req.Requires.Artifacts, images, filepath.Join(runDir, "artifacts"), artifactSubpathFromRenderedWorkload(rendered), runpkg.ExecuteKubeBurner, waitArtifactJobsComplete, copyArtifacts)
-}
-
-func validateRunSuiteTarget(kubeContext, resourceGroup string, builds []acr.ImageBuild) error {
-	if resourceGroup == "" && (kubeContext == "" || len(builds) > 0) {
-		if kubeContext == "" {
-			return fmt.Errorf("resource-group is required when kube-context is omitted")
-		}
-		return fmt.Errorf("resource-group is required when suite image builds are configured")
-	}
-	return nil
 }
 
 func kubeStateMetricsScrapeTarget(cfg kubestatemetrics.Config) string {
@@ -689,11 +735,22 @@ func shouldWaitPrometheusRollout(required bool, install bool) bool {
 
 var provisionInfra = infra.Provision
 
+type provisionFunc func(context.Context, infra.ProvisionOptions) error
+
+type provisionDependencies struct {
+	AzureUserAlias azureUserAliasFunc
+	Provision      provisionFunc
+}
+
 func provision(args []string) error {
 	return provisionWithIO(args, os.Stdout)
 }
 
 func provisionWithIO(args []string, out io.Writer) error {
+	return provisionWithDependencies(args, out, provisionDependencies{})
+}
+
+func provisionWithDependencies(args []string, out io.Writer, deps provisionDependencies) error {
 	fs := flag.NewFlagSet("provision", flag.ContinueOnError)
 	suiteName := fs.String("suite", "", "suite name")
 	resourceGroup := fs.String("resource-group", "", "Azure resource group")
@@ -703,8 +760,11 @@ func provisionWithIO(args []string, out io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *suiteName == "" || *resourceGroup == "" || *location == "" {
-		return fmt.Errorf("usage: perf-runner provision --suite SUITE --resource-group RG --location LOCATION")
+	if flagProvided(fs, "resource-group") && *resourceGroup == "" {
+		return fmt.Errorf("resource-group must not be empty when explicitly supplied")
+	}
+	if *suiteName == "" || *location == "" {
+		return fmt.Errorf("usage: perf-runner provision --suite SUITE [--resource-group RG] --location LOCATION")
 	}
 	root, err := repo.Root(".")
 	if err != nil {
@@ -720,14 +780,20 @@ func provisionWithIO(args []string, out io.Writer) error {
 	if req.Requires.Infrastructure.Provider != "aks" {
 		return fmt.Errorf("unsupported infrastructure provider %q", req.Requires.Infrastructure.Provider)
 	}
-	clusterName, err := infra.ClusterName(*suiteName, *clusterNameOverride)
+	if deps.AzureUserAlias == nil {
+		deps.AzureUserAlias = currentAzureUserAlias
+	}
+	if deps.Provision == nil {
+		deps.Provision = provisionInfra
+	}
+	names, err := resolveAzureResourceNames(context.Background(), *suiteName, *resourceGroup, *clusterNameOverride, true, deps.AzureUserAlias)
 	if err != nil {
 		return err
 	}
 	if err := infra.ValidateNodePools(*suiteName, req.Requires.Infrastructure.NodePools, req.Requires.NodeSelectors); err != nil {
 		return err
 	}
-	parameterJSON, err := infra.ParametersJSON(clusterName, req.Requires.Kubernetes.MinVersion, req.Requires.Infrastructure.NodePools, shouldDeployContainerRegistry(req.Requires.Images))
+	parameterJSON, err := infra.ParametersJSON(names.ClusterName, req.Requires.Kubernetes.MinVersion, req.Requires.Infrastructure.NodePools, shouldDeployContainerRegistry(req.Requires.Images))
 	if err != nil {
 		return err
 	}
@@ -735,12 +801,12 @@ func provisionWithIO(args []string, out io.Writer) error {
 		_, err = out.Write(parameterJSON)
 		return err
 	}
-	return provisionInfra(context.Background(), infra.ProvisionOptions{
-		ResourceGroup:  *resourceGroup,
+	return deps.Provision(context.Background(), infra.ProvisionOptions{
+		ResourceGroup:  names.ResourceGroup,
 		Location:       *location,
 		TemplateFile:   filepath.Join(root, "infra", "aks", "main.bicep"),
 		ParametersJSON: parameterJSON,
-		ClusterName:    clusterName,
+		ClusterName:    names.ClusterName,
 	})
 }
 
@@ -748,16 +814,11 @@ func shouldDeployContainerRegistry(images *acr.Requirements) bool {
 	return images != nil
 }
 
-func validateDestroyTarget(suiteName string, resourceGroup string, allowNonDefaultResourceGroup bool) error {
-	defaultResourceGroup := defaultResourceGroup(suiteName)
-	if resourceGroup != defaultResourceGroup && !allowNonDefaultResourceGroup {
-		return fmt.Errorf("refusing to delete resource group %q for suite %q; expected %q or pass --allow-non-default-resource-group", resourceGroup, suiteName, defaultResourceGroup)
+func validateDestroyTarget(resourceGroup string, derivedDefault bool, allowNonDefaultResourceGroup bool) error {
+	if !derivedDefault && !allowNonDefaultResourceGroup {
+		return fmt.Errorf("refusing to delete explicit resource group %q; omit --resource-group to delete the current user's default or pass --allow-non-default-resource-group", resourceGroup)
 	}
 	return nil
-}
-
-func defaultResourceGroup(suiteName string) string {
-	return "rg-aks-burner-" + suiteName
 }
 
 func mergeImages(base map[string]string, overlay map[string]string) map[string]string {

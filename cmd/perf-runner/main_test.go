@@ -24,6 +24,41 @@ import (
 
 var testSourceRoot = mustTestSourceRoot()
 
+func TestResolveAzureResourceNames(t *testing.T) {
+	tests := []struct {
+		name                string
+		resourceGroup       string
+		clusterName         string
+		resourceGroupNeeded bool
+		wantResourceGroup   string
+		wantClusterName     string
+		wantIdentityLookups int
+	}{
+		{name: "default names include alias", resourceGroupNeeded: true, wantResourceGroup: "rg-aks-burner-kata-perf-jane-doe", wantClusterName: "akskataperfjanedoe", wantIdentityLookups: 1},
+		{name: "explicit resource group keeps suite-only cluster", resourceGroup: "rg-custom", resourceGroupNeeded: true, wantResourceGroup: "rg-custom", wantClusterName: "akskataperf"},
+		{name: "explicit cluster is unchanged with default resource group", clusterName: "existing-aks", resourceGroupNeeded: true, wantResourceGroup: "rg-aks-burner-kata-perf-jane-doe", wantClusterName: "existing-aks", wantIdentityLookups: 1},
+		{name: "Azure-independent run skips identity", clusterName: "existing-aks", wantClusterName: "existing-aks"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lookups := 0
+			got, err := resolveAzureResourceNames(context.Background(), "kata-perf", test.resourceGroup, test.clusterName, test.resourceGroupNeeded, func(context.Context) (string, error) {
+				lookups++
+				return "jane-doe", nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ResourceGroup != test.wantResourceGroup || got.ClusterName != test.wantClusterName {
+				t.Fatalf("resolveAzureResourceNames() = %#v, want resource group %q and cluster %q", got, test.wantResourceGroup, test.wantClusterName)
+			}
+			if lookups != test.wantIdentityLookups {
+				t.Fatalf("identity lookups = %d, want %d", lookups, test.wantIdentityLookups)
+			}
+		})
+	}
+}
+
 func TestMakeRunSuiteExplicitContextOmitsDefaultResourceGroup(t *testing.T) {
 	output := makeDryRun(t, "run-suite", "TEST_SUITE=kata-perf", "KUBE_CONTEXT=preview", "CLUSTER_NAME=existing-aks")
 	if !strings.Contains(output, `--kube-context "preview"`) {
@@ -57,15 +92,29 @@ func TestMakeRunSuiteForwardsEnvironmentResourceGroup(t *testing.T) {
 	}
 }
 
-func TestMakeLegacyAndLifecycleResourceGroupDefaultsRemain(t *testing.T) {
+func TestMakeLifecycleTargetsOmitImplicitResourceGroup(t *testing.T) {
 	for _, target := range []string{"run-suite", "provision", "destroy"} {
-		args := []string{target, "TEST_SUITE=kata-perf"}
-		if target != "run-suite" {
-			args = append(args, "KUBE_CONTEXT=preview")
+		output := makeDryRun(t, target, "TEST_SUITE=kata-perf")
+		if strings.Contains(output, "--resource-group") || strings.Contains(output, "rg-aks-burner-kata-perf") {
+			t.Fatalf("%s materialized an implicit resource group: %s", target, output)
 		}
-		output := makeDryRun(t, args...)
-		if !strings.Contains(output, "rg-aks-burner-kata-perf") {
-			t.Fatalf("%s lost default resource group: %s", target, output)
+	}
+}
+
+func TestMakeLifecycleTargetsForwardExplicitResourceGroup(t *testing.T) {
+	for _, target := range []string{"run-suite", "provision", "destroy"} {
+		output := makeDryRun(t, target, "TEST_SUITE=kata-perf", "RESOURCE_GROUP=rg-custom")
+		if !strings.Contains(output, `--resource-group "rg-custom"`) {
+			t.Fatalf("%s did not forward explicit resource group: %s", target, output)
+		}
+	}
+}
+
+func TestMakeLifecycleTargetsForwardExplicitEmptyResourceGroup(t *testing.T) {
+	for _, target := range []string{"run-suite", "provision", "destroy"} {
+		output := makeDryRun(t, target, "TEST_SUITE=kata-perf", "RESOURCE_GROUP=")
+		if !strings.Contains(output, `--resource-group ""`) {
+			t.Fatalf("%s did not forward explicit empty resource group: %s", target, output)
 		}
 	}
 }
@@ -94,6 +143,20 @@ func TestInfraBicepSupportsKataWorkloadRuntimeParameters(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("main.bicep missing %q", want)
 		}
+	}
+}
+
+func TestAzureResourceDerivationInputsRemainStable(t *testing.T) {
+	if infra.DeploymentName != "aks-burner" {
+		t.Fatalf("DeploymentName = %q, want aks-burner", infra.DeploymentName)
+	}
+	data, err := os.ReadFile(filepath.Join(testSourceRoot, "infra", "aks", "main.bicep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "'acr${take(uniqueString(resourceGroup().id, clusterName), 18)}'"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("main.bicep missing unchanged ACR derivation %s", want)
 	}
 }
 
@@ -315,34 +378,151 @@ requires:
 }
 
 func TestValidateDestroyTargetRequiresDefaultResourceGroup(t *testing.T) {
-	err := validateDestroyTarget("kata-perf", "rg-not-owned", false)
-	if err == nil || !strings.Contains(err.Error(), "rg-aks-burner-kata-perf") {
-		t.Fatalf("validateDestroyTarget() error = %v, want default resource group error", err)
+	err := validateDestroyTarget("rg-not-owned", false, false)
+	if err == nil || !strings.Contains(err.Error(), "--allow-non-default-resource-group") {
+		t.Fatalf("validateDestroyTarget() error = %v, want override guidance", err)
 	}
-	if err := validateDestroyTarget("kata-perf", "rg-not-owned", true); err != nil {
+	if err := validateDestroyTarget("rg-not-owned", false, true); err != nil {
 		t.Fatalf("validateDestroyTarget() with override returned error: %v", err)
+	}
+	if err := validateDestroyTarget("rg-aks-burner-kata-perf-jane", true, false); err != nil {
+		t.Fatalf("validateDestroyTarget() rejected derived default: %v", err)
 	}
 }
 
-func TestValidateRunSuiteTargetResourceGroupRules(t *testing.T) {
-	builds := []acr.ImageBuild{{Key: "benchmark"}}
-	for _, tc := range []struct {
-		name, context, resourceGroup string
-		builds                       []acr.ImageBuild
-		wantErr                      bool
-	}{
-		{name: "legacy requires group", wantErr: true},
-		{name: "legacy with group", resourceGroup: "rg-test"},
-		{name: "explicit no builds", context: "preview"},
-		{name: "explicit builds require group", context: "preview", builds: builds, wantErr: true},
-		{name: "explicit builds with group", context: "preview", resourceGroup: "rg-build", builds: builds},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateRunSuiteTarget(tc.context, tc.resourceGroup, tc.builds)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("error = %v, wantErr %v", err, tc.wantErr)
-			}
-		})
+func TestDestroyDerivesCurrentUserResourceGroup(t *testing.T) {
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "demo", "vars")
+	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "suites", "demo", "suite.yml"), []byte("name: demo\ndescription: Demo\ntests: [smoke]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	stubAzureUserAlias(t, func(context.Context) (string, error) { return "jane-doe", nil })
+	oldDestroy := destroyInfra
+	var got string
+	destroyInfra = func(_ context.Context, resourceGroup string) error { got = resourceGroup; return nil }
+	t.Cleanup(func() { destroyInfra = oldDestroy })
+
+	if err := destroy([]string{"--suite", "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "rg-aks-burner-demo-jane-doe" {
+		t.Fatalf("destroy resource group = %q", got)
+	}
+}
+
+func TestDestroyExplicitResourceGroupSkipsIdentityAndRequiresOverride(t *testing.T) {
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "demo", "vars")
+	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "suites", "demo", "suite.yml"), []byte("name: demo\ndescription: Demo\ntests: [smoke]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	stubAzureUserAlias(t, func(context.Context) (string, error) { return "", errors.New("identity lookup must not run") })
+	oldDestroy := destroyInfra
+	called := false
+	destroyInfra = func(context.Context, string) error { called = true; return nil }
+	t.Cleanup(func() { destroyInfra = oldDestroy })
+
+	err := destroy([]string{"--suite", "demo", "--resource-group", "rg-custom"})
+	if err == nil || !strings.Contains(err.Error(), "--allow-non-default-resource-group") {
+		t.Fatalf("destroy error = %v, want override guidance", err)
+	}
+	if called {
+		t.Fatal("destroy ran without explicit resource group override")
+	}
+}
+
+func TestDestroyRejectsExplicitEmptyResourceGroupBeforeIdentityOrDelete(t *testing.T) {
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "demo", "vars")
+	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "suites", "demo", "suite.yml"), []byte("name: demo\ndescription: Demo\ntests: [smoke]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	identityLookups := 0
+	stubAzureUserAlias(t, func(context.Context) (string, error) {
+		identityLookups++
+		return "jane-doe", nil
+	})
+	oldDestroy := destroyInfra
+	destroyCalled := false
+	destroyInfra = func(context.Context, string) error { destroyCalled = true; return nil }
+	t.Cleanup(func() { destroyInfra = oldDestroy })
+
+	err := destroy([]string{"--suite", "demo", "--resource-group", ""})
+	if err == nil || !strings.Contains(err.Error(), "resource-group must not be empty") {
+		t.Fatalf("destroy error = %v, want explicit-empty validation", err)
+	}
+	if identityLookups != 0 {
+		t.Fatalf("identity lookups = %d, want 0", identityLookups)
+	}
+	if destroyCalled {
+		t.Fatal("destroy ran for an explicitly empty resource group")
+	}
+}
+
+func TestDestroyExplicitResourceGroupWithOverrideSkipsIdentityAndDeletesExactTarget(t *testing.T) {
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "demo", "vars")
+	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "suites", "demo", "suite.yml"), []byte("name: demo\ndescription: Demo\ntests: [smoke]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	stubAzureUserAlias(t, func(context.Context) (string, error) {
+		return "", errors.New("identity lookup must not run")
+	})
+	oldDestroy := destroyInfra
+	var deletedResourceGroup string
+	destroyInfra = func(_ context.Context, resourceGroup string) error {
+		deletedResourceGroup = resourceGroup
+		return nil
+	}
+	t.Cleanup(func() { destroyInfra = oldDestroy })
+
+	if err := destroy([]string{"--suite", "demo", "--resource-group", "rg-custom", "--allow-non-default-resource-group"}); err != nil {
+		t.Fatal(err)
+	}
+	if deletedResourceGroup != "rg-custom" {
+		t.Fatalf("deleted resource group = %q, want rg-custom", deletedResourceGroup)
+	}
+}
+
+func TestDestroyIdentityFailurePreventsDelete(t *testing.T) {
+	root := testRepoRoot(t)
+	suiteDir := filepath.Join(root, "suites", "demo", "vars")
+	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "suites", "demo", "suite.yml"), []byte("name: demo\ndescription: Demo\ntests: [smoke]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	identityErr := errors.New("identity unavailable")
+	stubAzureUserAlias(t, func(context.Context) (string, error) { return "", identityErr })
+	oldDestroy := destroyInfra
+	destroyCalled := false
+	destroyInfra = func(context.Context, string) error { destroyCalled = true; return nil }
+	t.Cleanup(func() { destroyInfra = oldDestroy })
+
+	err := destroy([]string{"--suite", "demo"})
+	if !errors.Is(err, identityErr) {
+		t.Fatalf("destroy error = %v, want identity failure", err)
+	}
+	if destroyCalled {
+		t.Fatal("destroy ran after identity lookup failed")
 	}
 }
 
@@ -435,32 +615,56 @@ func TestRunSuiteLegacyRefreshesCredentials(t *testing.T) {
 	}
 }
 
-func TestRunSuiteExplicitContextBuildsRequireResourceGroupBeforeSideEffects(t *testing.T) {
+func TestManagedRunSuiteOmittedResourceGroupUsesAliasQualifiedNamesEndToEnd(t *testing.T) {
 	root := testRepoRoot(t)
-	writeBuildContextSuite(t, root)
+	writeLegacyContextSuite(t, root)
 	binDir := t.TempDir()
-	markers := []string{
-		filepath.Join(t.TempDir(), "az.log"),
-		filepath.Join(t.TempDir(), "kubectl.log"),
-		filepath.Join(t.TempDir(), "kube-burner.log"),
-	}
-	writeRecordingCommand(t, binDir, "az", markers[0], "")
-	writeRecordingCommand(t, binDir, "kubectl", markers[1], "")
-	writeRecordingCommand(t, binDir, "kube-burner", markers[2], "")
+	azMarker := filepath.Join(t.TempDir(), "az.log")
+	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
+	writeAzureIdentityAndCredentialsCommand(t, binDir, azMarker, "Jane.Doe@contoso.com")
+	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeRecordingCommand(t, binDir, "kube-burner", filepath.Join(t.TempDir(), "kube-burner.log"), "")
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
-	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
-	if err == nil || !strings.Contains(err.Error(), "resource-group") {
-		t.Fatalf("run-suite error = %v, want resource-group validation", err)
+	if err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke"}); err != nil {
+		t.Fatalf("run-suite error = %v", err)
 	}
-	for _, marker := range markers {
-		if data, _ := os.ReadFile(marker); len(data) != 0 {
-			t.Fatalf("side effect before validation in %s: %s", marker, data)
-		}
+	assertFileContains(t, azMarker, "account show --query user.name --output tsv")
+	assertFileContains(t, azMarker, "aks get-credentials --resource-group rg-aks-burner-existing-jane-doe --name aksexistingjanedoe --overwrite-existing")
+	data, err := os.ReadFile(singleRunMetadataPath(t, filepath.Join(root, "results")))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
-		t.Fatalf("results directory exists before validation: %v", err)
+	if !strings.Contains(string(data), "resourceGroup: rg-aks-burner-existing-jane-doe") || !strings.Contains(string(data), "clusterName: aksexistingjanedoe") {
+		t.Fatalf("managed metadata = %s", data)
+	}
+}
+
+func TestRunSuiteExplicitContextBuildsDeriveResourceNames(t *testing.T) {
+	root := testRepoRoot(t)
+	writeBuildContextSuite(t, root)
+	withWorkingDir(t, root)
+	stubAzureUserAlias(t, func(context.Context) (string, error) { return "jane-doe", nil })
+	stop := errors.New("stop after derived deployment lookup")
+	var gotResourceGroup string
+	var gotClusterName string
+
+	err := runSuiteWithDependencies([]string{"--suite", "existing", "--mode", "smoke", "--kube-context", "preview"}, runSuiteDependencies{
+		DeploymentOutput: func(_ context.Context, resourceGroup, _, output string) (string, error) {
+			gotResourceGroup = resourceGroup
+			if output == "clusterName" {
+				gotClusterName = "aksexistingjanedoe"
+				return gotClusterName, nil
+			}
+			return "", stop
+		},
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("run-suite error = %v, want sentinel", err)
+	}
+	if gotResourceGroup != "rg-aks-burner-existing-jane-doe" || gotClusterName != "aksexistingjanedoe" {
+		t.Fatalf("derived names = %q/%q", gotResourceGroup, gotClusterName)
 	}
 }
 
@@ -751,6 +955,161 @@ func TestProvisionPassesGeneratedParametersToInfra(t *testing.T) {
 	}
 }
 
+func TestProvisionDerivesPerUserResourceNames(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	stubAzureUserAlias(t, func(context.Context) (string, error) { return "jane-doe", nil })
+	oldProvision := provisionInfra
+	var got infra.ProvisionOptions
+	provisionInfra = func(_ context.Context, opts infra.ProvisionOptions) error { got = opts; return nil }
+	t.Cleanup(func() { provisionInfra = oldProvision })
+
+	if err := provisionWithIO([]string{"--suite", "demo", "--location", "westus2"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got.ResourceGroup != "rg-aks-burner-demo-jane-doe" || got.ClusterName != "aksdemojanedoe" {
+		t.Fatalf("provision options = %#v", got)
+	}
+}
+
+func TestProvisionExplicitResourceGroupSkipsIdentityLookup(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	stubAzureUserAlias(t, func(context.Context) (string, error) { return "", errors.New("identity lookup must not run") })
+	oldProvision := provisionInfra
+	var got infra.ProvisionOptions
+	provisionInfra = func(_ context.Context, opts infra.ProvisionOptions) error { got = opts; return nil }
+	t.Cleanup(func() { provisionInfra = oldProvision })
+
+	if err := provisionWithIO([]string{"--suite", "demo", "--resource-group", "rg-custom", "--location", "westus2"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got.ResourceGroup != "rg-custom" || got.ClusterName != "aksdemo" {
+		t.Fatalf("provision options = %#v", got)
+	}
+}
+
+func TestProvisionAllowsGeneratedResourceGroupAtLengthLimit(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	alias := strings.Repeat("a", 71)
+	wantResourceGroup := "rg-aks-burner-demo-" + alias
+	if len(wantResourceGroup) != 90 {
+		t.Fatalf("test resource group length = %d, want 90", len(wantResourceGroup))
+	}
+	var gotResourceGroup string
+
+	err := provisionWithDependencies([]string{"--suite", "demo", "--location", "westus2"}, io.Discard, provisionDependencies{
+		AzureUserAlias: func(context.Context) (string, error) { return alias, nil },
+		Provision: func(_ context.Context, opts infra.ProvisionOptions) error {
+			gotResourceGroup = opts.ResourceGroup
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotResourceGroup != wantResourceGroup {
+		t.Fatalf("provision resource group = %q, want %q", gotResourceGroup, wantResourceGroup)
+	}
+}
+
+func TestProvisionRejectsGeneratedResourceGroupOverLengthLimitBeforeProvision(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	alias := strings.Repeat("a", 72)
+	generatedResourceGroup := "rg-aks-burner-demo-" + alias
+	if len(generatedResourceGroup) != 91 {
+		t.Fatalf("test resource group length = %d, want 91", len(generatedResourceGroup))
+	}
+	provisionCalled := false
+
+	err := provisionWithDependencies([]string{"--suite", "demo", "--location", "westus2"}, io.Discard, provisionDependencies{
+		AzureUserAlias: func(context.Context) (string, error) { return alias, nil },
+		Provision: func(context.Context, infra.ProvisionOptions) error {
+			provisionCalled = true
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "90 characters") || !strings.Contains(err.Error(), "--resource-group") {
+		t.Fatalf("provision error = %v, want length limit and explicit --resource-group guidance", err)
+	}
+	if provisionCalled {
+		t.Fatal("provision ran for an overlength generated resource group")
+	}
+}
+
+func TestProvisionKeepsOverlengthExplicitResourceGroupVerbatim(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	explicitResourceGroup := strings.Repeat("x", 91)
+	var gotResourceGroup string
+
+	err := provisionWithDependencies([]string{"--suite", "demo", "--resource-group", explicitResourceGroup, "--location", "westus2"}, io.Discard, provisionDependencies{
+		AzureUserAlias: func(context.Context) (string, error) { return "", errors.New("identity lookup must not run") },
+		Provision: func(_ context.Context, opts infra.ProvisionOptions) error {
+			gotResourceGroup = opts.ResourceGroup
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotResourceGroup != explicitResourceGroup {
+		t.Fatalf("provision resource group = %q, want explicit value verbatim", gotResourceGroup)
+	}
+}
+
+func TestProvisionRejectsExplicitEmptyResourceGroupBeforeIdentityOrProvision(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	identityLookups := 0
+	stubAzureUserAlias(t, func(context.Context) (string, error) {
+		identityLookups++
+		return "jane-doe", nil
+	})
+	oldProvision := provisionInfra
+	provisionCalled := false
+	provisionInfra = func(context.Context, infra.ProvisionOptions) error { provisionCalled = true; return nil }
+	t.Cleanup(func() { provisionInfra = oldProvision })
+
+	err := provisionWithIO([]string{"--suite", "demo", "--resource-group", "", "--location", "westus2"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "resource-group must not be empty") {
+		t.Fatalf("provision error = %v, want explicit-empty validation", err)
+	}
+	if identityLookups != 0 {
+		t.Fatalf("identity lookups = %d, want 0", identityLookups)
+	}
+	if provisionCalled {
+		t.Fatal("provision ran for an explicitly empty resource group")
+	}
+}
+
+func TestProvisionIdentityFailurePreventsProvisionAndOutput(t *testing.T) {
+	root := provisionTestRepo(t)
+	withWorkingDir(t, root)
+	identityErr := errors.New("identity unavailable")
+	provisionCalled := false
+	var out bytes.Buffer
+
+	err := provisionWithDependencies([]string{"--suite", "demo", "--location", "westus2"}, &out, provisionDependencies{
+		AzureUserAlias: func(context.Context) (string, error) { return "", identityErr },
+		Provision: func(context.Context, infra.ProvisionOptions) error {
+			provisionCalled = true
+			return nil
+		},
+	})
+	if !errors.Is(err, identityErr) {
+		t.Fatalf("provision error = %v, want identity failure", err)
+	}
+	if provisionCalled {
+		t.Fatal("provision ran after identity lookup failed")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("provision output = %q, want empty", out.String())
+	}
+}
+
 func TestProvisionRejectsPoolRelationshipsBeforeCommand(t *testing.T) {
 	root := provisionTestRepo(t)
 	path := filepath.Join(root, "suites", "demo", "requirements.yml")
@@ -794,6 +1153,100 @@ func TestRunSuiteClusterOverrideUsesOverrideForCredentials(t *testing.T) {
 	}
 	if got != "existing-aks" {
 		t.Fatalf("credentials cluster = %q, want existing-aks", got)
+	}
+}
+
+func TestManagedRunSuiteRejectsExplicitEmptyResourceGroupBeforeIdentityOrAzureAccess(t *testing.T) {
+	root := provisionTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("images:\n  pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	identityLookups := 0
+	stubAzureUserAlias(t, func(context.Context) (string, error) {
+		identityLookups++
+		return "jane-doe", nil
+	})
+	credentialsCalled := false
+
+	err := runSuiteWithDependencies([]string{"--suite", "demo", "--mode", "smoke", "--resource-group", ""}, runSuiteDependencies{
+		GetCredentials: func(context.Context, string, string) error { credentialsCalled = true; return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "resource-group must not be empty") {
+		t.Fatalf("run-suite error = %v, want explicit-empty validation", err)
+	}
+	if identityLookups != 0 {
+		t.Fatalf("identity lookups = %d, want 0", identityLookups)
+	}
+	if credentialsCalled {
+		t.Fatal("run-suite refreshed credentials for an explicitly empty resource group")
+	}
+}
+
+func TestManagedRunSuiteIdentityFailurePreventsAzureAndResultMutations(t *testing.T) {
+	root := provisionTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("images:\n  pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	identityErr := errors.New("identity unavailable")
+	deploymentOutputCalled := false
+	credentialsCalled := false
+
+	err := runSuiteWithDependencies([]string{"--suite", "demo", "--mode", "smoke"}, runSuiteDependencies{
+		AzureUserAlias: func(context.Context) (string, error) { return "", identityErr },
+		DeploymentOutput: func(context.Context, string, string, string) (string, error) {
+			deploymentOutputCalled = true
+			return "", nil
+		},
+		GetCredentials: func(context.Context, string, string) error { credentialsCalled = true; return nil },
+	})
+	if !errors.Is(err, identityErr) {
+		t.Fatalf("run-suite error = %v, want identity failure", err)
+	}
+	if deploymentOutputCalled {
+		t.Fatal("run-suite read deployment output after identity lookup failed")
+	}
+	if credentialsCalled {
+		t.Fatal("run-suite refreshed credentials after identity lookup failed")
+	}
+	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
+		t.Fatalf("results directory exists after identity lookup failed: %v", err)
+	}
+}
+
+func TestManagedRunSuiteOmittedResourceGroupDerivesAliasQualifiedNames(t *testing.T) {
+	root := provisionTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("images:\n  pause: mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withWorkingDir(t, root)
+	stop := errors.New("stop after credentials")
+	var gotResourceGroup string
+	var gotClusterName string
+
+	err := runSuiteWithDependencies([]string{"--suite", "demo", "--mode", "smoke"}, runSuiteDependencies{
+		AzureUserAlias: func(context.Context) (string, error) { return "jane-doe", nil },
+		GetCredentials: func(_ context.Context, resourceGroup, clusterName string) error {
+			gotResourceGroup = resourceGroup
+			gotClusterName = clusterName
+			return stop
+		},
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("run-suite error = %v, want credential sentinel", err)
+	}
+	if gotResourceGroup != "rg-aks-burner-demo-jane-doe" || gotClusterName != "aksdemojanedoe" {
+		t.Fatalf("managed names = %q/%q, want alias-qualified resource group and cluster", gotResourceGroup, gotClusterName)
 	}
 }
 
@@ -1296,6 +1749,18 @@ esac
 	}
 }
 
+func writeAzureIdentityAndCredentialsCommand(t *testing.T, dir, marker, accountName string) {
+	t.Helper()
+	content := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + `
+case "$*" in
+  "account show --query user.name --output tsv") printf '%s' ` + strconv.Quote(accountName) + ` ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "az"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func singleRunMetadataPath(t *testing.T, resultsDir string) string {
 	t.Helper()
 	entries, err := os.ReadDir(resultsDir)
@@ -1358,6 +1823,13 @@ func makeDryRun(t *testing.T, args ...string) string {
 		t.Fatalf("make -n %v: %v\n%s", args, err, output)
 	}
 	return string(output)
+}
+
+func stubAzureUserAlias(t *testing.T, stub azureUserAliasFunc) {
+	t.Helper()
+	old := currentAzureUserAlias
+	currentAzureUserAlias = stub
+	t.Cleanup(func() { currentAzureUserAlias = old })
 }
 
 func filteredEnv(env []string, names ...string) []string {
