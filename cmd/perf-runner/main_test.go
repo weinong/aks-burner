@@ -913,6 +913,7 @@ func TestManagedRunSuiteOmittedResourceGroupUsesAliasQualifiedNamesEndToEnd(t *t
 func TestRunSuiteExplicitContextBuildsDeriveResourceNames(t *testing.T) {
 	root := testRepoRoot(t)
 	writeBuildContextSuite(t, root)
+	writeVersionedKubeBurner(t, filepath.Join(root, "bin", "kube-burner"), "2.7.3")
 	withWorkingDir(t, root)
 	stubAzureUserAlias(t, func(context.Context) (string, error) { return "jane-doe", nil })
 	stop := errors.New("stop after derived deployment lookup")
@@ -1664,6 +1665,7 @@ func TestManagedRunSuiteIdentityFailurePreventsAzureAndResultMutations(t *testin
 
 func TestManagedRunSuiteOmittedResourceGroupDerivesAliasQualifiedNames(t *testing.T) {
 	root := provisionTestRepo(t)
+	writeVersionedKubeBurner(t, filepath.Join(root, "bin", "kube-burner"), "2.7.3")
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
