@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,9 +18,64 @@ import (
 	"github.com/Azure/aks-burner/internal/config"
 	"github.com/Azure/aks-burner/internal/infra"
 	"github.com/Azure/aks-burner/internal/kubestatemetrics"
+	"github.com/Azure/aks-burner/internal/kubetarget"
+	runpkg "github.com/Azure/aks-burner/internal/run"
 )
 
 var testSourceRoot = mustTestSourceRoot()
+
+func TestMakeRunSuiteExplicitContextOmitsDefaultResourceGroup(t *testing.T) {
+	output := makeDryRun(t, "run-suite", "TEST_SUITE=kata-perf", "KUBE_CONTEXT=preview", "CLUSTER_NAME=existing-aks")
+	if !strings.Contains(output, `--kube-context "preview"`) {
+		t.Fatalf("make output missing context: %s", output)
+	}
+	if !strings.Contains(output, `--cluster-name "existing-aks"`) {
+		t.Fatalf("make output missing cluster name: %s", output)
+	}
+	if strings.Contains(output, "rg-aks-burner-kata-perf") {
+		t.Fatalf("make output forwarded default resource group: %s", output)
+	}
+}
+
+func TestMakeRunSuiteExplicitContextForwardsSuppliedResourceGroup(t *testing.T) {
+	output := makeDryRun(t, "run-suite", "TEST_SUITE=kata-io", "KUBE_CONTEXT=preview", "RESOURCE_GROUP=rg-build")
+	if !strings.Contains(output, `--resource-group "rg-build"`) {
+		t.Fatalf("make output missing supplied resource group: %s", output)
+	}
+}
+
+func TestMakeRunSuiteForwardsEnvironmentResourceGroup(t *testing.T) {
+	cmd := exec.Command("make", "-n", "run-suite", "TEST_SUITE=kata-io")
+	cmd.Dir = testSourceRoot
+	cmd.Env = append(filteredEnv(os.Environ(), "KUBE_CONTEXT", "RESOURCE_GROUP"), "KUBE_CONTEXT=preview", "RESOURCE_GROUP=rg-environment")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n run-suite: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), `--resource-group "rg-environment"`) {
+		t.Fatalf("make output missing environment resource group: %s", output)
+	}
+}
+
+func TestMakeLegacyAndLifecycleResourceGroupDefaultsRemain(t *testing.T) {
+	for _, target := range []string{"run-suite", "provision", "destroy"} {
+		args := []string{target, "TEST_SUITE=kata-perf"}
+		if target != "run-suite" {
+			args = append(args, "KUBE_CONTEXT=preview")
+		}
+		output := makeDryRun(t, args...)
+		if !strings.Contains(output, "rg-aks-burner-kata-perf") {
+			t.Fatalf("%s lost default resource group: %s", target, output)
+		}
+	}
+}
+
+func TestMakeProvisionForwardsClusterName(t *testing.T) {
+	output := makeDryRun(t, "provision", "TEST_SUITE=kata-perf", "CLUSTER_NAME=custom-aks")
+	if !strings.Contains(output, `--cluster-name "custom-aks"`) {
+		t.Fatalf("make output missing cluster name: %s", output)
+	}
+}
 
 func TestInfraBicepSupportsKataWorkloadRuntimeParameters(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(testSourceRoot, "infra", "aks", "main.bicep"))
@@ -264,6 +321,213 @@ func TestValidateDestroyTargetRequiresDefaultResourceGroup(t *testing.T) {
 	}
 	if err := validateDestroyTarget("kata-perf", "rg-not-owned", true); err != nil {
 		t.Fatalf("validateDestroyTarget() with override returned error: %v", err)
+	}
+}
+
+func TestValidateRunSuiteTargetResourceGroupRules(t *testing.T) {
+	builds := []acr.ImageBuild{{Key: "benchmark"}}
+	for _, tc := range []struct {
+		name, context, resourceGroup string
+		builds                       []acr.ImageBuild
+		wantErr                      bool
+	}{
+		{name: "legacy requires group", wantErr: true},
+		{name: "legacy with group", resourceGroup: "rg-test"},
+		{name: "explicit no builds", context: "preview"},
+		{name: "explicit builds require group", context: "preview", builds: builds, wantErr: true},
+		{name: "explicit builds with group", context: "preview", resourceGroup: "rg-build", builds: builds},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateRunSuiteTarget(tc.context, tc.resourceGroup, tc.builds)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestRunSuiteExplicitContextNoBuildSkipsAzure(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	binDir := t.TempDir()
+	azMarker := filepath.Join(t.TempDir(), "az.log")
+	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
+	writeRecordingCommand(t, binDir, "az", azMarker, "")
+	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeRecordingCommand(t, binDir, "kube-burner", filepath.Join(t.TempDir(), "kube-burner.log"), "")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	if err != nil {
+		t.Fatalf("run-suite error = %v", err)
+	}
+	if data, _ := os.ReadFile(azMarker); len(data) != 0 {
+		t.Fatalf("explicit run invoked az: %s", data)
+	}
+	assertFileContains(t, kubectlMarker, "--context preview version -o json")
+	assertFileContains(t, kubectlMarker, "--context preview get nodes -l kubernetes.azure.com/os-sku=AzureLinux -o name")
+	runMetadata := singleRunMetadataPath(t, filepath.Join(root, "results"))
+	data, err := os.ReadFile(runMetadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "kubeContext: preview") || strings.Contains(string(data), "clusterName:") {
+		t.Fatalf("metadata = %s", data)
+	}
+}
+
+func TestRunSuiteExplicitContextValidatesNodePoolsBeforeSideEffects(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	requirementsPath := filepath.Join(root, "suites", "existing", "requirements.yml")
+	data, err := os.ReadFile(requirementsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(requirementsPath, bytes.Replace(data, []byte("pool: userpool"), []byte("pool: missing"), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	markers := []string{filepath.Join(t.TempDir(), "az.log"), filepath.Join(t.TempDir(), "kubectl.log")}
+	writeRecordingCommand(t, binDir, "az", markers[0], "")
+	writeRecordingCommand(t, binDir, "kubectl", markers[1], "")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err = run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	if err == nil || !strings.Contains(err.Error(), "references missing pool") {
+		t.Fatalf("run-suite error = %v, want pool relationship validation", err)
+	}
+	for _, marker := range markers {
+		if data, _ := os.ReadFile(marker); len(data) != 0 {
+			t.Fatalf("side effect before node-pool validation in %s: %s", marker, data)
+		}
+	}
+}
+
+func TestRunSuiteLegacyRefreshesCredentials(t *testing.T) {
+	root := testRepoRoot(t)
+	writeLegacyContextSuite(t, root)
+	binDir := t.TempDir()
+	azMarker := filepath.Join(t.TempDir(), "az.log")
+	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
+	writeRecordingCommand(t, binDir, "az", azMarker, "")
+	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeRecordingCommand(t, binDir, "kube-burner", filepath.Join(t.TempDir(), "kube-burner.log"), "")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	if err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--resource-group", "rg-test"}); err != nil {
+		t.Fatalf("run-suite error = %v", err)
+	}
+	assertFileContains(t, azMarker, "aks get-credentials --resource-group rg-test --name aksexisting --overwrite-existing")
+	assertFileContains(t, kubectlMarker, "version -o json")
+	if data, err := os.ReadFile(kubectlMarker); err != nil || strings.Contains(string(data), "--context") {
+		t.Fatalf("legacy kubectl marker = %q, error = %v", data, err)
+	}
+	data, err := os.ReadFile(singleRunMetadataPath(t, filepath.Join(root, "results")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "clusterName: aksexisting") || strings.Contains(string(data), "kubeContext:") {
+		t.Fatalf("legacy metadata = %s", data)
+	}
+}
+
+func TestRunSuiteExplicitContextBuildsRequireResourceGroupBeforeSideEffects(t *testing.T) {
+	root := testRepoRoot(t)
+	writeBuildContextSuite(t, root)
+	binDir := t.TempDir()
+	markers := []string{
+		filepath.Join(t.TempDir(), "az.log"),
+		filepath.Join(t.TempDir(), "kubectl.log"),
+		filepath.Join(t.TempDir(), "kube-burner.log"),
+	}
+	writeRecordingCommand(t, binDir, "az", markers[0], "")
+	writeRecordingCommand(t, binDir, "kubectl", markers[1], "")
+	writeRecordingCommand(t, binDir, "kube-burner", markers[2], "")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	if err == nil || !strings.Contains(err.Error(), "resource-group") {
+		t.Fatalf("run-suite error = %v, want resource-group validation", err)
+	}
+	for _, marker := range markers {
+		if data, _ := os.ReadFile(marker); len(data) != 0 {
+			t.Fatalf("side effect before validation in %s: %s", marker, data)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
+		t.Fatalf("results directory exists before validation: %v", err)
+	}
+}
+
+func TestRunSuiteExplicitContextWithBuildsUsesAzureWithoutCredentials(t *testing.T) {
+	root := testRepoRoot(t)
+	writeBuildContextSuite(t, root)
+	binDir := t.TempDir()
+	azMarker := filepath.Join(t.TempDir(), "az.log")
+	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
+	kubeBurnerMarker := filepath.Join(t.TempDir(), "kube-burner.log")
+	writeAzureBuildCommand(t, binDir, azMarker)
+	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeRecordingCommand(t, binDir, "kube-burner", kubeBurnerMarker, "")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	if err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview", "--resource-group", "rg-build"}); err != nil {
+		t.Fatalf("run-suite error = %v", err)
+	}
+	assertFileContains(t, azMarker, "deployment group show --resource-group rg-build")
+	assertFileContains(t, azMarker, "properties.outputs.containerRegistryName.value")
+	assertFileContains(t, azMarker, "properties.outputs.containerRegistryLoginServer.value")
+	assertFileContains(t, azMarker, "acr build --registry acrbuild --resource-group rg-build")
+	if data, err := os.ReadFile(azMarker); err != nil || strings.Contains(string(data), "aks get-credentials") {
+		t.Fatalf("explicit build Azure marker = %q, error = %v", data, err)
+	}
+	assertEveryLineContains(t, kubectlMarker, "--context preview")
+	assertEveryLineContains(t, kubeBurnerMarker, "--kube-context preview")
+	data, err := os.ReadFile(singleRunMetadataPath(t, filepath.Join(root, "results")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "kubeContext: preview") || strings.Contains(string(data), "clusterName:") {
+		t.Fatalf("explicit build metadata = %s", data)
+	}
+}
+
+func TestValidateRequirementsUsesOneRunnerForVersionAndNodeSelector(t *testing.T) {
+	var got [][]string
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		got = append(got, append([]string(nil), args...))
+		if args[0] == "version" {
+			return []byte(`{"serverVersion":{"gitVersion":"v9.99.0"}}`), nil
+		}
+		return []byte("node/test\n"), nil
+	}
+	req := runpkg.Requirements{
+		Kubernetes: runpkg.KubernetesRequirements{MinVersion: "9.99"},
+		NodeSelectors: []runpkg.NodeSelectorRequirement{{
+			Name: "azure-linux", Required: true, MinNodes: 1,
+			Labels: map[string]string{"kubernetes.azure.com/os-sku": "AzureLinux"},
+		}},
+	}
+	if err := runpkg.ValidateRequirements(context.Background(), req, runner); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"version", "-o", "json"},
+		{"get", "nodes", "-l", "kubernetes.azure.com/os-sku=AzureLinux", "-o", "name"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("runner calls = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if strings.Join(got[i], "\x00") != strings.Join(want[i], "\x00") {
+			t.Fatalf("runner call %d = %#v, want %#v", i, got[i], want[i])
+		}
 	}
 }
 
@@ -535,7 +799,7 @@ func TestRunSuiteClusterOverrideUsesOverrideForCredentials(t *testing.T) {
 
 func TestRunSuiteRegistryOutputsPrecedeCredentials(t *testing.T) {
 	order := []string{}
-	registryName, registryServer, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, runSuiteDependencies{
+	registryName, registryServer, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, true, runSuiteDependencies{
 		DeploymentOutput: func(_ context.Context, _, _, output string) (string, error) {
 			order = append(order, "output:"+output)
 			switch output {
@@ -561,9 +825,39 @@ func TestRunSuiteRegistryOutputsPrecedeCredentials(t *testing.T) {
 	}
 }
 
+func TestRunSuiteRegistryOutputsCanSkipCredentialRefresh(t *testing.T) {
+	outputs := []string{}
+	registryName, registryServer, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, false, runSuiteDependencies{
+		DeploymentOutput: func(_ context.Context, _, _, output string) (string, error) {
+			outputs = append(outputs, output)
+			switch output {
+			case "clusterName":
+				return "aksdemo", nil
+			case "containerRegistryName":
+				return "acrdemo", nil
+			default:
+				return "acrdemo.azurecr.io", nil
+			}
+		},
+		GetCredentials: func(context.Context, string, string) error {
+			t.Fatal("credentials called when refresh disabled")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registryName != "acrdemo" || registryServer != "acrdemo.azurecr.io" {
+		t.Fatalf("registry = %q/%q", registryName, registryServer)
+	}
+	if got, want := strings.Join(outputs, ","), "clusterName,containerRegistryName,containerRegistryLoginServer"; got != want {
+		t.Fatalf("deployment outputs = %q, want %q", got, want)
+	}
+}
+
 func TestRunSuiteRejectsImageBuildClusterMismatchBeforeRegistryAndCredentials(t *testing.T) {
 	outputs := []string{}
-	_, _, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "requested-aks", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, runSuiteDependencies{
+	_, _, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "requested-aks", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, true, runSuiteDependencies{
 		DeploymentOutput: func(_ context.Context, _, _, output string) (string, error) {
 			outputs = append(outputs, output)
 			return "deployed-aks", nil
@@ -582,7 +876,7 @@ func TestRunSuiteRejectsImageBuildClusterMismatchBeforeRegistryAndCredentials(t 
 }
 
 func TestRunSuiteRegistryOutputFailureExplainsManagedDeployment(t *testing.T) {
-	_, _, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, runSuiteDependencies{
+	_, _, err := prepareRunSuiteCluster(context.Background(), "rg-demo", "aksdemo", &acr.Requirements{Builds: []acr.ImageBuild{{Key: "app"}}}, true, runSuiteDependencies{
 		DeploymentOutput: func(context.Context, string, string, string) (string, error) { return "", errors.New("missing") },
 		GetCredentials:   func(context.Context, string, string) error { t.Fatal("credentials called"); return nil },
 	})
@@ -614,20 +908,30 @@ func TestValidateModeImageVarsRejectsUnknownImageKeyBeforeBuild(t *testing.T) {
 
 func TestExecuteRunAndCopyArtifactsResolvesCopyImageBeforeExecute(t *testing.T) {
 	order := []string{}
-	execute := func(workloadPath string, logPath string) error {
+	target := kubetarget.Target{Context: "preview"}
+	execute := func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
+		if gotTarget != target {
+			t.Fatalf("executor target = %#v, want %#v", gotTarget, target)
+		}
 		order = append(order, "execute")
 		return nil
 	}
-	copyArtifacts := func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	copyArtifacts := func(ctx context.Context, gotTarget kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
+		if gotTarget != target {
+			t.Fatalf("copy target = %#v, want %#v", gotTarget, target)
+		}
 		order = append(order, "copy:"+cfg.CopyImage)
 		return nil
 	}
-	waitArtifacts := func(ctx context.Context, cfg artifacts.Config) error {
+	waitArtifacts := func(ctx context.Context, gotTarget kubetarget.Target, cfg artifacts.Config) error {
+		if gotTarget != target {
+			t.Fatalf("wait target = %#v, want %#v", gotTarget, target)
+		}
 		order = append(order, "wait:"+cfg.Namespace)
 		return nil
 	}
 
-	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, Namespace: "kata-io", CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", execute, waitArtifacts, copyArtifacts)
+	err := executeRunAndCopyArtifacts(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, Namespace: "kata-io", CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", execute, waitArtifacts, copyArtifacts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,12 +943,12 @@ func TestExecuteRunAndCopyArtifactsResolvesCopyImageBeforeExecute(t *testing.T) 
 
 func TestExecuteRunAndCopyArtifactsSkipsJobWaitWhenArtifactsDisabled(t *testing.T) {
 	waited := false
-	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string) error {
+	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string, target kubetarget.Target) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		waited = true
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		return nil
 	})
 	if err != nil {
@@ -657,11 +961,11 @@ func TestExecuteRunAndCopyArtifactsSkipsJobWaitWhenArtifactsDisabled(t *testing.
 
 func TestExecuteRunAndCopyArtifactsCopiesCurrentRunIDSubpath(t *testing.T) {
 	copiedSubpath := ""
-	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "kata-io-full-20260709T010203.000000004Z", func(workloadPath string, logPath string) error {
+	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "kata-io-full-20260709T010203.000000004Z", func(workloadPath string, logPath string, target kubetarget.Target) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		copiedSubpath = subpath
 		return nil
 	})
@@ -675,11 +979,11 @@ func TestExecuteRunAndCopyArtifactsCopiesCurrentRunIDSubpath(t *testing.T) {
 
 func TestExecuteRunAndCopyArtifactsKeepsLegacyCopyWhenRunIDEmpty(t *testing.T) {
 	copiedSubpath := "not-called"
-	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string) error {
+	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string, target kubetarget.Target) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		copiedSubpath = subpath
 		return nil
 	})
@@ -693,12 +997,12 @@ func TestExecuteRunAndCopyArtifactsKeepsLegacyCopyWhenRunIDEmpty(t *testing.T) {
 
 func TestExecuteRunAndCopyArtifactsRejectsUnsafeRunIDBeforeExecute(t *testing.T) {
 	executed := false
-	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "../old-run", func(workloadPath string, logPath string) error {
+	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "../old-run", func(workloadPath string, logPath string, target kubetarget.Target) error {
 		executed = true
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid artifact subpath") {
@@ -725,12 +1029,12 @@ func TestArtifactSubpathFromRenderedWorkloadAllowsMissingRunID(t *testing.T) {
 
 func TestExecuteRunAndCopyArtifactsReturnsResolveErrorBeforeExecute(t *testing.T) {
 	executed := false
-	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "missing"}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string) error {
+	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "missing"}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string, target kubetarget.Target) error {
 		executed = true
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing") {
@@ -744,11 +1048,18 @@ func TestExecuteRunAndCopyArtifactsReturnsResolveErrorBeforeExecute(t *testing.T
 func TestExecuteRunAndCopyArtifactsPrefersKubeBurnerFailureOverArtifactCopy(t *testing.T) {
 	executeErr := errors.New("kube-burner failed")
 	copyErr := errors.New("artifact copy failed")
-	err := executeRunAndCopyArtifacts(context.Background(), "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string) error {
+	target := kubetarget.Target{Context: "preview"}
+	err := executeRunAndCopyArtifacts(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
+		if gotTarget != target {
+			t.Fatalf("executor target = %#v", gotTarget)
+		}
 		return executeErr
-	}, func(ctx context.Context, cfg artifacts.Config) error {
+	}, func(ctx context.Context, gotTarget kubetarget.Target, cfg artifacts.Config) error {
 		return nil
-	}, func(ctx context.Context, cfg artifacts.Config, destination string, subpath string) error {
+	}, func(ctx context.Context, gotTarget kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
+		if gotTarget != target {
+			t.Fatalf("copy target = %#v", gotTarget)
+		}
 		return copyErr
 	})
 	if !errors.Is(err, executeErr) || !strings.Contains(err.Error(), "artifact copy also failed") {
@@ -823,6 +1134,21 @@ requires:
 	return root
 }
 
+func TestWaitArtifactJobsCompleteUsesTargetContext(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "kubectl.log")
+	writeRecordingCommand(t, binDir, "kubectl", marker, "")
+	t.Setenv("PATH", binDir)
+
+	err := waitArtifactJobsComplete(context.Background(), kubetarget.Target{Context: "preview"}, artifacts.Config{Enabled: true, Namespace: "kata-io"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || strings.TrimSpace(string(data)) != "--context preview wait --for=condition=complete job --all -n kata-io --timeout=15m" {
+		t.Fatalf("kubectl marker = %q, error = %v", data, err)
+	}
+}
+
 func testRepoRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -836,6 +1162,167 @@ func testRepoRoot(t *testing.T) string {
 	copySchema(t, root, "requirements.schema.json")
 	copySchema(t, root, "mode.schema.json")
 	return root
+}
+
+func writeNoBuildContextSuite(t *testing.T, root string) {
+	t.Helper()
+	writeContextSuite(t, root, `  nodeSelectors:
+    - name: azure-linux
+      pool: userpool
+      required: true
+      minNodes: 1
+      labels:
+        kubernetes.azure.com/os-sku: AzureLinux
+`, "")
+}
+
+func writeLegacyContextSuite(t *testing.T, root string) {
+	t.Helper()
+	writeContextSuite(t, root, "  nodeSelectors: []\n", "")
+}
+
+func writeBuildContextSuite(t *testing.T, root string) {
+	t.Helper()
+	images := `  images:
+    builds:
+      - key: benchmark
+        repository: benchmark/app
+        context: build
+        dockerfile: Dockerfile
+`
+	writeContextSuite(t, root, "  nodeSelectors: []\n", images)
+	suiteDir := filepath.Join(root, "suites", "existing")
+	buildDir := filepath.Join(suiteDir, "build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeContextSuite(t *testing.T, root string, nodeSelectors string, images string) {
+	t.Helper()
+	suiteDir := filepath.Join(root, "suites", "existing")
+	for _, dir := range []string{filepath.Join(suiteDir, "vars"), filepath.Join(suiteDir, "templates")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		"suite.yml": "name: existing\ndescription: Existing cluster suite\ntests:\n  - startup\n",
+		"requirements.yml": `suite: existing
+requires:
+  infrastructure:
+    provider: aks
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+      - name: userpool
+        mode: User
+        count: 1
+        vmSize: Standard_D8s_v5
+        osType: Linux
+        osSKU: AzureLinux
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+  kubernetes:
+    minVersion: "9.99"
+` + nodeSelectors + images + `  observability:
+    prometheus:
+      required: false
+      install: false
+      namespace: perf-monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+      requiredMetrics: []
+`,
+		"workload.yml": "jobs: []\n",
+		"metrics.yml":  "[]\n",
+		filepath.Join("vars", "smoke.yml"): `iterations: 1
+iterationsPerNamespace: 1
+qps: 1
+burst: 1
+cleanup: true
+waitWhenFinished: true
+preLoadImages: false
+templateVars: {}
+imageVars: {}
+`,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(suiteDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("pause: pause:test\nprometheus: prometheus:test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeRecordingCommand(t *testing.T, dir, name, marker, stdout string) {
+	t.Helper()
+	content := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n" +
+		"printf '%s' " + strconv.Quote(stdout) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeAzureBuildCommand(t *testing.T, dir, marker string) {
+	t.Helper()
+	content := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + `
+case "$*" in
+  *clusterName.value*) printf '%s' aksexisting ;;
+  *containerRegistryName.value*) printf '%s' acrbuild ;;
+  *containerRegistryLoginServer.value*) printf '%s' acrbuild.azurecr.io ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "az"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func singleRunMetadataPath(t *testing.T, resultsDir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("results entries = %#v, want one run directory", entries)
+	}
+	return filepath.Join(resultsDir, entries[0].Name(), "metadata", "run.yml")
+}
+
+func assertEveryLineContains(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatalf("%s has no recorded commands", path)
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, want) {
+			t.Fatalf("%s line %q does not contain %q", path, line, want)
+		}
+	}
 }
 
 func copySchema(t *testing.T, root string, name string) {
@@ -859,6 +1346,33 @@ func mustTestSourceRoot() string {
 		panic(err)
 	}
 	return filepath.Clean(filepath.Join(wd, "..", ".."))
+}
+
+func makeDryRun(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("make", append([]string{"-n"}, args...)...)
+	cmd.Dir = testSourceRoot
+	cmd.Env = filteredEnv(os.Environ(), "KUBE_CONTEXT", "RESOURCE_GROUP")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n %v: %v\n%s", args, err, output)
+	}
+	return string(output)
+}
+
+func filteredEnv(env []string, names ...string) []string {
+	blocked := map[string]bool{}
+	for _, name := range names {
+		blocked[name] = true
+	}
+	result := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if !blocked[name] {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 func withWorkingDir(t *testing.T, dir string) {

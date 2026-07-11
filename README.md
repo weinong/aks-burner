@@ -10,6 +10,7 @@ TEST_SUITE=my-suite make add-suite
 make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
+TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-suite
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
 TEST_SUITE=kata-io TEST_MODE=smoke make run-suite
@@ -89,9 +90,14 @@ go run ./cmd/perf-runner provision --suite kata-perf --resource-group dry-run-un
 go run ./cmd/perf-runner run-suite --suite kata-perf --mode smoke --resource-group <existing-resource-group> --cluster-name <existing-cluster>
 # Or through Make:
 TEST_SUITE=kata-perf RESOURCE_GROUP=<existing-resource-group> CLUSTER_NAME=<existing-cluster> make run-suite
+TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-suite
 ```
 
-Validate the existing cluster before running the suite: check Kubernetes version with `kubectl version -o json`, and check required node selectors with `kubectl get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
+Without `KUBE_CONTEXT`, `run-suite` derives the cluster name from `TEST_SUITE`, applies an optional `CLUSTER_NAME` override, and refreshes credentials with `az aks get-credentials`. Metadata records `clusterName` and omits `kubeContext`.
+
+With `KUBE_CONTEXT` set, `run-suite` skips credential refresh and targets that context for every `kubectl` and kube-burner operation. Suites without image builds may omit `RESOURCE_GROUP`; suites with image builds still require it so `run-suite` can validate the deployment cluster's `AcrPull` relationship and retrieve registry outputs. Explicit-context metadata records `kubeContext` and omits `clusterName`, even if `CLUSTER_NAME` is supplied for image-build deployment validation. A separate kubeconfig option is not supported.
+
+Both modes load and validate `requirements.yml`, including node-pool and selector relationships. For a legacy run, validate the refreshed current context with `kubectl version -o json` and `kubectl get nodes -l <labels> -o name`. For an explicit target, validate the same cluster with `kubectl --context <existing-context> version -o json` and `kubectl --context <existing-context> get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
 
 When Prometheus is `required` and `install: true`, `run-suite` installs Prometheus before running the workload.
 

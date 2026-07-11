@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Azure/aks-burner/internal/kubetarget"
 )
 
 type Config struct {
@@ -21,19 +23,19 @@ type Config struct {
 
 type Runner func(ctx context.Context, stdin string, args ...string) error
 
-func Copy(ctx context.Context, cfg Config, destination string) error {
-	return copyWithRunnerAndPodName(ctx, cfg, destination, kubectlRunner, uniqueCopyPodName())
+func Copy(ctx context.Context, target kubetarget.Target, cfg Config, destination string) error {
+	return copyWithTargetRunnerAndPodName(ctx, target, cfg, destination, kubectlRunner, uniqueCopyPodName())
 }
 
 func CopyWithRunner(ctx context.Context, cfg Config, destination string, runner Runner) error {
 	return copyWithRunnerAndPodName(ctx, cfg, destination, runner, uniqueCopyPodName())
 }
 
-func CopySubpath(ctx context.Context, cfg Config, destination string, subpath string) error {
+func CopySubpath(ctx context.Context, target kubetarget.Target, cfg Config, destination string, subpath string) error {
 	if err := ValidateSubpath(subpath); err != nil {
 		return err
 	}
-	return copySubpathWithRunnerAndPodName(ctx, cfg, destination, subpath, kubectlRunner, uniqueCopyPodName())
+	return copySubpathWithTargetRunnerAndPodName(ctx, target, cfg, destination, subpath, kubectlRunner, uniqueCopyPodName())
 }
 
 func CopySubpathWithRunner(ctx context.Context, cfg Config, destination string, subpath string, runner Runner) error {
@@ -45,6 +47,17 @@ func CopySubpathWithRunner(ctx context.Context, cfg Config, destination string, 
 
 func copyWithRunnerAndPodName(ctx context.Context, cfg Config, destination string, runner Runner, podName string) error {
 	return copySubpathWithRunnerAndPodName(ctx, cfg, destination, "", runner, podName)
+}
+
+func copyWithTargetRunnerAndPodName(ctx context.Context, target kubetarget.Target, cfg Config, destination string, runner Runner, podName string) error {
+	return copySubpathWithTargetRunnerAndPodName(ctx, target, cfg, destination, "", runner, podName)
+}
+
+func copySubpathWithTargetRunnerAndPodName(ctx context.Context, target kubetarget.Target, cfg Config, destination, subpath string, runner Runner, podName string) error {
+	targetRunner := func(ctx context.Context, stdin string, args ...string) error {
+		return runner(ctx, stdin, target.KubectlCommand(args...)...)
+	}
+	return copySubpathWithRunnerAndPodName(ctx, cfg, destination, subpath, targetRunner, podName)
 }
 
 func copySubpathWithRunnerAndPodName(ctx context.Context, cfg Config, destination string, subpath string, runner Runner, podName string) error {
@@ -129,7 +142,7 @@ spec:
 }
 
 func kubectlRunner(ctx context.Context, stdin string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	if stdin != "" {
 		pipe, err := cmd.StdinPipe()
 		if err != nil {

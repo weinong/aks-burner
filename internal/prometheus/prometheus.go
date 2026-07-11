@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Azure/aks-burner/internal/kubetarget"
 )
 
 type Config struct {
@@ -27,12 +29,12 @@ func EndpointURL(cfg Config) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", cfg.LocalPort)
 }
 
-func PortForwardArgs(cfg Config) []string {
-	return []string{"kubectl", "-n", cfg.Namespace, "port-forward", "service/" + cfg.ServiceName, fmt.Sprintf("%d:%d", cfg.LocalPort, cfg.ServicePort)}
+func PortForwardArgs(target kubetarget.Target, cfg Config) []string {
+	return target.KubectlCommand("-n", cfg.Namespace, "port-forward", "service/"+cfg.ServiceName, fmt.Sprintf("%d:%d", cfg.LocalPort, cfg.ServicePort))
 }
 
-func RolloutStatusArgs(cfg Config) []string {
-	return []string{"kubectl", "rollout", "status", "deployment/prometheus", "-n", cfg.Namespace, "--timeout=2m"}
+func RolloutStatusArgs(target kubetarget.Target, cfg Config) []string {
+	return target.KubectlCommand("rollout", "status", "deployment/prometheus", "-n", cfg.Namespace, "--timeout=2m")
 }
 
 func RenderManifest(manifest string, image string) string {
@@ -52,33 +54,43 @@ func RenderManifestWithScrapeTarget(manifest string, image string, target string
 	return strings.ReplaceAll(rendered, kubeStateMetricsScrapeConfigPlaceholder, scrapeConfig)
 }
 
-func Install(ctx context.Context, manifestPath string, image string) error {
-	return InstallWithScrapeTarget(ctx, manifestPath, image, "")
+func Install(ctx context.Context, target kubetarget.Target, manifestPath string, image string) error {
+	return InstallWithScrapeTarget(ctx, target, manifestPath, image, "")
 }
 
-func InstallWithScrapeTarget(ctx context.Context, manifestPath string, image string, target string) error {
+func InstallWithScrapeTarget(ctx context.Context, target kubetarget.Target, manifestPath string, image string, scrapeTarget string) error {
+	return installWithRunner(ctx, target, manifestPath, image, scrapeTarget, commandRunner)
+}
+
+type Runner func(context.Context, string, ...string) error
+
+func installWithRunner(ctx context.Context, target kubetarget.Target, manifestPath string, image string, scrapeTarget string, runner Runner) error {
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return err
 	}
-	rendered := RenderManifestWithScrapeTarget(string(manifest), image, target)
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(rendered)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	rendered := RenderManifestWithScrapeTarget(string(manifest), image, scrapeTarget)
+	return runner(ctx, rendered, target.KubectlCommand("apply", "-f", "-")...)
 }
 
-func WaitRollout(ctx context.Context, cfg Config) error {
-	args := RolloutStatusArgs(cfg)
+func WaitRollout(ctx context.Context, target kubetarget.Target, cfg Config) error {
+	args := RolloutStatusArgs(target, cfg)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-func PortForward(ctx context.Context, cfg Config) (*exec.Cmd, string, error) {
-	args := PortForwardArgs(cfg)
+func commandRunner(ctx context.Context, stdin string, command ...string) error {
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func PortForward(ctx context.Context, target kubetarget.Target, cfg Config) (*exec.Cmd, string, error) {
+	args := PortForwardArgs(target, cfg)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

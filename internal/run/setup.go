@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/suite"
 )
 
@@ -82,7 +84,11 @@ func WaitRuleArgs(rule suite.WaitRule) ([]string, error) {
 	return args, nil
 }
 
-func ApplySetup(ctx context.Context, suiteDir string, setup suite.Setup, runner KubectlRunner) error {
+func ApplySetup(ctx context.Context, target kubetarget.Target, suiteDir string, setup suite.Setup) error {
+	return applySetup(ctx, target, suiteDir, setup, commandOutput)
+}
+
+func applySetup(ctx context.Context, target kubetarget.Target, suiteDir string, setup suite.Setup, runner KubectlRunner) error {
 	for _, resource := range setup.Resources {
 		manifestPath, err := ResolveSetupPath(suiteDir, resource)
 		if err != nil {
@@ -103,9 +109,8 @@ func ApplySetup(ctx context.Context, suiteDir string, setup suite.Setup, runner 
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 			return fmt.Errorf("invalid setup path for %q: %q", resource.Name, resource.Path)
 		}
-		// The suite directory is assumed stable during a run. This check prevents
-		// configured paths and symlink targets from escaping the suite at apply time.
-		if _, err := runner(ctx, "apply", "-f", resolvedManifestPath); err != nil {
+		command := target.KubectlCommand("apply", "-f", resolvedManifestPath)
+		if _, err := runner(ctx, command...); err != nil {
 			return fmt.Errorf("apply setup resource %s: %w", resource.Name, err)
 		}
 		for _, wait := range resource.Wait {
@@ -113,10 +118,15 @@ func ApplySetup(ctx context.Context, suiteDir string, setup suite.Setup, runner 
 			if err != nil {
 				return err
 			}
-			if _, err := runner(ctx, args...); err != nil {
+			command := target.KubectlCommand(args...)
+			if _, err := runner(ctx, command...); err != nil {
 				return fmt.Errorf("wait for setup resource %s: %w", resource.Name, err)
 			}
 		}
 	}
 	return nil
+}
+
+func commandOutput(ctx context.Context, command ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, command[0], command[1:]...).Output()
 }

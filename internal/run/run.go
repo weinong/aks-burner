@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Azure/aks-burner/internal/acr"
+	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/repo"
 	"github.com/Azure/aks-burner/internal/suite"
 	"gopkg.in/yaml.v3"
@@ -63,7 +64,8 @@ type Metadata struct {
 	Mode          string            `yaml:"mode"`
 	Timestamp     string            `yaml:"timestamp"`
 	ResourceGroup string            `yaml:"resourceGroup"`
-	ClusterName   string            `yaml:"clusterName"`
+	ClusterName   string            `yaml:"clusterName,omitempty"`
+	KubeContext   string            `yaml:"kubeContext,omitempty"`
 	Images        map[string]string `yaml:"images"`
 	BuiltImages   []acr.BuiltImage  `yaml:"builtImages,omitempty"`
 	Setup         suite.Setup       `yaml:"setup,omitempty"`
@@ -178,13 +180,14 @@ func runDirName(suiteName string, mode string, timestamp time.Time) string {
 	return safeTimestamp + "_" + safeSuite + "_" + mode
 }
 
-func ExecuteKubeBurner(workloadPath string, logPath string) error {
+func ExecuteKubeBurner(workloadPath string, logPath string, target kubetarget.Target) error {
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return err
 	}
 	defer logFile.Close()
-	cmd := exec.Command(kubeBurnerExecutable(workloadPath), "init", "-c", filepath.Base(workloadPath))
+	args := target.KubeBurnerArgs("init", "-c", filepath.Base(workloadPath))
+	cmd := exec.Command(kubeBurnerExecutable(workloadPath), args...)
 	cmd.Dir = filepath.Dir(workloadPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
