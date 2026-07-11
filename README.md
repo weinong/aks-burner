@@ -14,7 +14,9 @@ TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-su
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
 TEST_SUITE=kata-io TEST_MODE=fio-fast make run-suite
+TEST_SUITE=kata-io TEST_MODE=fio make run-suite
 TEST_SUITE=kata-io TEST_MODE=git-fast make run-suite
+TEST_SUITE=kata-io TEST_MODE=git make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
@@ -35,7 +37,9 @@ TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
 TEST_SUITE=kata-io TEST_MODE=fio-fast make run-suite
+TEST_SUITE=kata-io TEST_MODE=fio make run-suite
 TEST_SUITE=kata-io TEST_MODE=git-fast make run-suite
+TEST_SUITE=kata-io TEST_MODE=git make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
@@ -104,6 +108,48 @@ When Prometheus is `required` and `install: true`, `run-suite` installs Promethe
 `kata-io` provisions a Kata Pod Sandboxing-capable AKS workload pool, builds a benchmark image, installs Prometheus and kube-state-metrics, runs fio and Git clone workloads, and copies raw artifacts from the results PVC into the local run directory.
 
 `destroy` without `--resource-group` derives and deletes only the signed-in user's default `rg-aks-burner-<suite>-<alias>` resource group. An explicit resource group skips identity lookup and requires `--allow-non-default-resource-group`, including for legacy shared resource groups such as `rg-aks-burner-<suite>`.
+
+## Test Results
+
+Every successful `run-suite` invocation must produce at least one valid measurement. The runner writes all normalized measurements to `summary/results.csv` and prints a preview of at most 10 rows:
+
+```text
+Test results: kata-io / fio-fast / 2026-07-11T00:00:00Z
+Sources: 2  Measurements: 20
+source                                      runtime  storage   workload  metric       value   unit
+artifacts/fio/example/summary.json          kata     emptydir  fio       read_iops    104113  operations/second
+raw/metrics/podLatencyQuantilesMeasurement.json                         pod_latency_p50  2897  milliseconds
+10 additional rows omitted
+Results CSV: results/RUN_DIRECTORY/summary/results.csv
+```
+
+Declare result inputs under `requires.reporting` in the suite's `requirements.yml`:
+
+```yaml
+reporting:
+  sources:
+    standardSummary: true
+    kubeBurner: true
+  prometheusMetricUnits:
+    podCPUUsage: cores
+    podMemoryWorkingSet: bytes
+```
+
+`standardSummary` discovers artifact files named `summary.json`. Each file uses this format:
+
+```json
+{
+  "schemaVersion": 1,
+  "dimensions": {"runtime": "kata", "storage": "emptydir", "workload": "fio"},
+  "metrics": [
+    {"name": "read_iops", "value": 104113.481442, "unit": "operations/second"}
+  ]
+}
+```
+
+`kubeBurner` reads the local indexer output under `raw/metrics`. `prometheusMetricUnits` supplies the unit for every Prometheus metric declared in `metrics.yml`; kube-burner's pod-latency measurements have built-in units. The runner requires kube-burner `2.7.3` because the parser is tied to that version's local-indexer document shapes.
+
+The CSV contains raw result rows only. The runner sorts and normalizes rows but performs no aggregation; benchmark scripts and kube-burner remain responsible for calculating summaries and quantiles. A run fails if its declared sources contain no valid measurements, if a result document is invalid, or if the CSV or terminal preview cannot be written.
 
 ## Suite Images
 

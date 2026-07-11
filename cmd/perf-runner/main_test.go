@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,6 +23,7 @@ import (
 	"github.com/Azure/aks-burner/internal/infra"
 	"github.com/Azure/aks-burner/internal/kubestatemetrics"
 	"github.com/Azure/aks-burner/internal/kubetarget"
+	"github.com/Azure/aks-burner/internal/reporting"
 	runpkg "github.com/Azure/aks-burner/internal/run"
 )
 
@@ -663,6 +666,98 @@ func TestRunSuiteExplicitContextNoBuildSkipsAzure(t *testing.T) {
 	}
 }
 
+func TestRunSuiteKubeBurnerReportingCreatesCSVWithoutArtifacts(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	binDir := t.TempDir()
+	writeRecordingCommand(t, binDir, "az", filepath.Join(t.TempDir(), "az.log"), "")
+	writeRecordingCommand(t, binDir, "kubectl", filepath.Join(t.TempDir(), "kubectl.log"), `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeRecordingKubeBurner(t, binDir, filepath.Join(t.TempDir(), "kube-burner.log"), "2.7.3")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	})
+	if err != nil {
+		t.Fatalf("run-suite error = %v; log = %q", err, singleRunLog(t, filepath.Join(root, "results")))
+	}
+	runDir := singleRunDir(t, filepath.Join(root, "results"))
+	assertFileContains(t, filepath.Join(runDir, "summary", "results.csv"), "pod_latency_p50")
+	for _, want := range []string{"Test results: existing / smoke / ", "Results CSV: results/", "/summary/results.csv"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("run-suite output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRunSuiteStandardSummaryReportingCreatesCSVAndLimitsPreview(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	requirementsPath := filepath.Join(root, "suites", "existing", "requirements.yml")
+	replaceFileText(t, requirementsPath, "      standardSummary: false", "      standardSummary: true")
+	replaceFileText(t, requirementsPath, "  observability:\n", "  artifacts:\n    enabled: true\n    namespace: artifacts\n    pvcName: results\n    mountPath: /results\n    copyImage: artifact-copy\n  observability:\n")
+	replaceFileText(t, filepath.Join(root, "config", "images.yml"), "  prometheus: prometheus:test", "  prometheus: prometheus:test\n  artifact-copy: artifact-copy:test")
+	binDir := t.TempDir()
+	writeRecordingCommand(t, binDir, "az", filepath.Join(t.TempDir(), "az.log"), "")
+	writeRecordingCommand(t, binDir, "kubectl", filepath.Join(t.TempDir(), "kubectl.log"), `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeStandardSummaryKubeBurner(t, binDir)
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	})
+	if err != nil {
+		t.Fatalf("run-suite error = %v; log = %q", err, singleRunLog(t, filepath.Join(root, "results")))
+	}
+	runDir := singleRunDir(t, filepath.Join(root, "results"))
+	assertFileContains(t, filepath.Join(runDir, "summary", "results.csv"), "metric-11")
+	if got := strings.Count(output, "metric-"); got != 10 {
+		t.Fatalf("preview metrics = %d, want 10:\n%s", got, output)
+	}
+	if !strings.Contains(output, "2 additional rows omitted") || !strings.Contains(output, "Results CSV: results/") {
+		t.Fatalf("run-suite output missing omission or CSV path:\n%s", output)
+	}
+}
+
+func TestRunSuiteSuccessfulWorkloadWithoutResultsReportsSearchedLocations(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	binDir := t.TempDir()
+	writeRecordingCommand(t, binDir, "az", filepath.Join(t.TempDir(), "az.log"), "")
+	writeRecordingCommand(t, binDir, "kubectl", filepath.Join(t.TempDir(), "kubectl.log"), `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeVersionedKubeBurner(t, filepath.Join(binDir, "kube-burner"), "2.7.3")
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	if err == nil || !strings.Contains(err.Error(), "/artifacts") || !strings.Contains(err.Error(), "/raw/metrics") {
+		t.Fatalf("run-suite error = %v, want both searched result locations", err)
+	}
+}
+
+func TestRunSuiteKubeBurnerFailureDoesNotPrintReport(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	binDir := t.TempDir()
+	writeRecordingCommand(t, binDir, "az", filepath.Join(t.TempDir(), "az.log"), "")
+	writeRecordingCommand(t, binDir, "kubectl", filepath.Join(t.TempDir(), "kubectl.log"), `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writeFailingKubeBurner(t, binDir)
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	})
+	if err == nil {
+		t.Fatal("run-suite returned nil error")
+	}
+	if strings.Contains(output, "Test results:") || strings.Contains(output, "Results CSV:") {
+		t.Fatalf("run-suite printed a report after kube-burner failure:\n%s", output)
+	}
+}
+
 func TestRunSuiteRejectsUnsupportedKubeBurnerVersionBeforeSideEffects(t *testing.T) {
 	root := testRepoRoot(t)
 	writeNoBuildContextSuite(t, root)
@@ -687,6 +782,13 @@ func TestRunSuiteRejectsUnsupportedKubeBurnerVersionBeforeSideEffects(t *testing
 	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
 		t.Fatalf("results directory exists before kube-burner version validation: %v", err)
 	}
+}
+
+func TestRunSuiteReportingValidationFailsBeforeWorkloadSideEffects(t *testing.T) {
+	root := testRepoRoot(t)
+	writeBuildContextSuite(t, root)
+	replaceFileText(t, filepath.Join(root, "suites", "existing", "requirements.yml"), "      kubeBurner: true", "      kubeBurner: false")
+	assertRunSuiteLocalPreflightFailure(t, root, "reporting source")
 }
 
 func TestRunSuiteMissingWorkloadFailsBeforeSideEffects(t *testing.T) {
@@ -1695,9 +1797,12 @@ func TestValidateModeImageVarsRejectsUnknownImageKeyBeforeBuild(t *testing.T) {
 	}
 }
 
-func TestExecuteRunAndCopyArtifactsResolvesCopyImageBeforeExecute(t *testing.T) {
+func TestExecuteRunCopyAndReportOrdersArtifactStages(t *testing.T) {
 	order := []string{}
 	target := kubetarget.Target{Context: "preview"}
+	reportingCfg := reporting.Config{Sources: reporting.Sources{StandardSummary: true}}
+	runInfo := reporting.RunInfo{Suite: "kata-io", Mode: "fio-fast", Timestamp: "2026-07-11T00:00:00.000000004Z", WorkspaceRoot: "/workspace"}
+	var reportOutput bytes.Buffer
 	execute := func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
 		if gotTarget != target {
 			t.Fatalf("executor target = %#v, want %#v", gotTarget, target)
@@ -1719,45 +1824,59 @@ func TestExecuteRunAndCopyArtifactsResolvesCopyImageBeforeExecute(t *testing.T) 
 		order = append(order, "wait:"+cfg.Namespace)
 		return nil
 	}
+	report := func(runDir string, cfg reporting.Config, info reporting.RunInfo, out io.Writer) (reporting.Result, error) {
+		if runDir != "run" || !reflect.DeepEqual(cfg, reportingCfg) || info != runInfo {
+			t.Fatalf("report arguments = %q, %#v, %#v", runDir, cfg, info)
+		}
+		if out != &reportOutput {
+			t.Fatal("report writer was not propagated")
+		}
+		order = append(order, "report")
+		return reporting.Result{}, nil
+	}
 
-	err := executeRunAndCopyArtifacts(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, Namespace: "kata-io", CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", execute, waitArtifacts, copyArtifacts)
+	err := executeRunCopyAndReport(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, Namespace: "kata-io", CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reportingCfg, runInfo, &reportOutput, execute, waitArtifacts, copyArtifacts, report)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"execute", "wait:kata-io", "copy:busybox:test"}
+	want := []string{"execute", "wait:kata-io", "copy:busybox:test", "report"}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
 		t.Fatalf("order = %#v, want %#v", order, want)
 	}
 }
 
-func TestExecuteRunAndCopyArtifactsSkipsJobWaitWhenArtifactsDisabled(t *testing.T) {
-	waited := false
-	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string, target kubetarget.Target) error {
+func TestExecuteRunCopyAndReportOrdersArtifactFreeStages(t *testing.T) {
+	order := []string{}
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, map[string]string{}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, target kubetarget.Target) error {
+		order = append(order, "execute")
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
-		waited = true
+		t.Fatal("waitArtifactJobs called when artifacts are disabled")
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		return nil
+	}, func(runDir string, cfg reporting.Config, info reporting.RunInfo, out io.Writer) (reporting.Result, error) {
+		order = append(order, "report")
+		return reporting.Result{}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if waited {
-		t.Fatalf("waitArtifactJobs called when artifacts are disabled")
+	if got, want := strings.Join(order, ","), "execute,report"; got != want {
+		t.Fatalf("order = %q, want %q", got, want)
 	}
 }
 
-func TestExecuteRunAndCopyArtifactsCopiesCurrentRunIDSubpath(t *testing.T) {
+func TestExecuteRunCopyAndReportCopiesCurrentRunIDSubpath(t *testing.T) {
 	copiedSubpath := ""
-	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "kata-io-full-20260709T010203.000000004Z", func(workloadPath string, logPath string, target kubetarget.Target) error {
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "kata-io-full-20260709T010203.000000004Z", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, target kubetarget.Target) error {
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		copiedSubpath = subpath
 		return nil
-	})
+	}, successfulReporter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1766,16 +1885,16 @@ func TestExecuteRunAndCopyArtifactsCopiesCurrentRunIDSubpath(t *testing.T) {
 	}
 }
 
-func TestExecuteRunAndCopyArtifactsKeepsLegacyCopyWhenRunIDEmpty(t *testing.T) {
+func TestExecuteRunCopyAndReportKeepsLegacyCopyWhenRunIDEmpty(t *testing.T) {
 	copiedSubpath := "not-called"
-	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string, target kubetarget.Target) error {
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, target kubetarget.Target) error {
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		copiedSubpath = subpath
 		return nil
-	})
+	}, successfulReporter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1784,18 +1903,18 @@ func TestExecuteRunAndCopyArtifactsKeepsLegacyCopyWhenRunIDEmpty(t *testing.T) {
 	}
 }
 
-func TestExecuteRunAndCopyArtifactsRejectsUnsafeRunIDBeforeExecute(t *testing.T) {
+func TestExecuteRunCopyAndReportRejectsUnsafeRunIDBeforeExecute(t *testing.T) {
 	executed := false
-	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "../old-run", func(workloadPath string, logPath string, target kubetarget.Target) error {
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "../old-run", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, target kubetarget.Target) error {
 		executed = true
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		return nil
-	})
+	}, successfulReporter)
 	if err == nil || !strings.Contains(err.Error(), "invalid artifact subpath") {
-		t.Fatalf("executeRunAndCopyArtifacts() error = %v, want invalid artifact subpath", err)
+		t.Fatalf("executeRunCopyAndReport() error = %v, want invalid artifact subpath", err)
 	}
 	if executed {
 		t.Fatalf("ExecuteKubeBurner ran after unsafe runID")
@@ -1816,29 +1935,29 @@ func TestArtifactSubpathFromRenderedWorkloadAllowsMissingRunID(t *testing.T) {
 	}
 }
 
-func TestExecuteRunAndCopyArtifactsReturnsResolveErrorBeforeExecute(t *testing.T) {
+func TestExecuteRunCopyAndReportReturnsResolveErrorBeforeExecute(t *testing.T) {
 	executed := false
-	err := executeRunAndCopyArtifacts(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "missing"}, map[string]string{}, "artifacts", "", func(workloadPath string, logPath string, target kubetarget.Target) error {
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "missing"}, map[string]string{}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, target kubetarget.Target) error {
 		executed = true
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
 		return nil
-	})
+	}, successfulReporter)
 	if err == nil || !strings.Contains(err.Error(), "missing") {
-		t.Fatalf("executeRunAndCopyArtifacts() error = %v, want missing image error", err)
+		t.Fatalf("executeRunCopyAndReport() error = %v, want missing image error", err)
 	}
 	if executed {
 		t.Fatalf("ExecuteKubeBurner ran after artifact image resolution failed")
 	}
 }
 
-func TestExecuteRunAndCopyArtifactsPrefersKubeBurnerFailureOverArtifactCopy(t *testing.T) {
+func TestExecuteRunCopyAndReportPrefersKubeBurnerFailureOverArtifactCopy(t *testing.T) {
 	executeErr := errors.New("kube-burner failed")
 	copyErr := errors.New("artifact copy failed")
 	target := kubetarget.Target{Context: "preview"}
-	err := executeRunAndCopyArtifacts(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
+	err := executeRunCopyAndReport(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
 		if gotTarget != target {
 			t.Fatalf("executor target = %#v", gotTarget)
 		}
@@ -1850,10 +1969,32 @@ func TestExecuteRunAndCopyArtifactsPrefersKubeBurnerFailureOverArtifactCopy(t *t
 			t.Fatalf("copy target = %#v", gotTarget)
 		}
 		return copyErr
+	}, func(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
+		t.Fatal("report called after kube-burner failure")
+		return reporting.Result{}, nil
 	})
 	if !errors.Is(err, executeErr) || !strings.Contains(err.Error(), "artifact copy also failed") {
-		t.Fatalf("executeRunAndCopyArtifacts() error = %v, want kube-burner error with artifact copy context", err)
+		t.Fatalf("executeRunCopyAndReport() error = %v, want kube-burner error with artifact copy context", err)
 	}
+}
+
+func TestExecuteRunCopyAndReportReturnsReportingFailureAfterWorkloadSuccess(t *testing.T) {
+	reportErr := errors.New("report failed")
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, nil, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard,
+		func(string, string, kubetarget.Target) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return nil },
+		func(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
+			return reporting.Result{}, reportErr
+		},
+	)
+	if !errors.Is(err, reportErr) {
+		t.Fatalf("executeRunCopyAndReport() error = %v, want reporting failure", err)
+	}
+}
+
+func successfulReporter(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
+	return reporting.Result{}, nil
 }
 
 func provisionTestRepo(t *testing.T) string {
@@ -2102,7 +2243,34 @@ func writeRecordingCommand(t *testing.T, dir, name, marker, stdout string) {
 func writeRecordingKubeBurner(t *testing.T, dir, marker, version string) {
 	t.Helper()
 	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: " + version + "\\n'; exit 0; fi\n" +
-		"printf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n"
+		"printf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n" +
+		"/bin/mkdir -p ../raw/metrics\n" +
+		"printf '%s' " + strconv.Quote(minimalKubeBurnerResult) + " > ../raw/metrics/podLatencyQuantilesMeasurement.json\n"
+	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const minimalKubeBurnerResult = `[{"quantileName":"Ready","P99":4,"P95":3,"P50":2,"min":1,"max":4,"avg":2.5,"timestamp":"2026-07-11T00:00:00Z","metricName":"podLatencyQuantilesMeasurement","jobName":"startup-smoke"}]`
+
+func writeStandardSummaryKubeBurner(t *testing.T, dir string) {
+	t.Helper()
+	metrics := make([]string, 12)
+	for i := range metrics {
+		metrics[i] = fmt.Sprintf(`{"name":"metric-%02d","value":%d,"unit":"count"}`, i, i)
+	}
+	document := fmt.Sprintf(`{"schemaVersion":1,"dimensions":{"workload":"fio"},"metrics":[%s]}`, strings.Join(metrics, ","))
+	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: 2.7.3\\n'; exit 0; fi\n" +
+		"/bin/mkdir -p ../artifacts/fixture\n" +
+		"printf '%s' " + strconv.Quote(document) + " > ../artifacts/fixture/summary.json\n"
+	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFailingKubeBurner(t *testing.T, dir string) {
+	t.Helper()
+	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: 2.7.3\\n'; exit 0; fi\nexit 23\n"
 	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2206,6 +2374,27 @@ func writeVersionedKubeBurner(t *testing.T, path, version string) {
 	}
 }
 
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	callErr := fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = oldStdout
+	t.Cleanup(func() { os.Stdout = oldStdout })
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data), callErr
+}
+
 func writeAzureBuildCommand(t *testing.T, dir, marker string) {
 	t.Helper()
 	content := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + `
@@ -2234,6 +2423,11 @@ esac
 
 func singleRunMetadataPath(t *testing.T, resultsDir string) string {
 	t.Helper()
+	return filepath.Join(singleRunDir(t, resultsDir), "metadata", "run.yml")
+}
+
+func singleRunDir(t *testing.T, resultsDir string) string {
+	t.Helper()
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
 		t.Fatal(err)
@@ -2241,7 +2435,16 @@ func singleRunMetadataPath(t *testing.T, resultsDir string) string {
 	if len(entries) != 1 || !entries[0].IsDir() {
 		t.Fatalf("results entries = %#v, want one run directory", entries)
 	}
-	return filepath.Join(resultsDir, entries[0].Name(), "metadata", "run.yml")
+	return filepath.Join(resultsDir, entries[0].Name())
+}
+
+func singleRunLog(t *testing.T, resultsDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(singleRunDir(t, resultsDir), "logs", "kube-burner.log"))
+	if err != nil {
+		return err.Error()
+	}
+	return string(data)
 }
 
 func assertEveryLineContains(t *testing.T, path, want string) {

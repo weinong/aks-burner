@@ -674,7 +674,24 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := config.WriteYAML(workloadPath, rendered); err != nil {
 		return err
 	}
-	return executeRunAndCopyArtifacts(ctx, target, workloadPath, filepath.Join(runDir, "logs", "kube-burner.log"), req.Requires.Artifacts, images, filepath.Join(runDir, "artifacts"), artifactSubpathFromRenderedWorkload(rendered), runpkg.ExecuteKubeBurner, waitArtifactJobsComplete, copyArtifacts)
+	return executeRunCopyAndReport(
+		ctx,
+		target,
+		workloadPath,
+		filepath.Join(runDir, "logs", "kube-burner.log"),
+		req.Requires.Artifacts,
+		images,
+		filepath.Join(runDir, "artifacts"),
+		artifactSubpathFromRenderedWorkload(rendered),
+		runDir,
+		req.Requires.Reporting,
+		reporting.RunInfo{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339Nano), WorkspaceRoot: root},
+		os.Stdout,
+		runpkg.ExecuteKubeBurner,
+		waitArtifactJobsComplete,
+		copyArtifacts,
+		reporting.Generate,
+	)
 }
 
 func kubeStateMetricsScrapeTarget(cfg kubestatemetrics.Config) string {
@@ -690,7 +707,26 @@ type targetArtifactJobWaiter func(ctx context.Context, target kubetarget.Target,
 
 type targetArtifactCopier func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error
 
-func executeRunAndCopyArtifacts(ctx context.Context, target kubetarget.Target, workloadPath string, logPath string, artifactCfg artifacts.Config, images map[string]string, artifactDestination string, artifactSubpath string, execute targetKubeBurnerExecutor, waitArtifactJobs targetArtifactJobWaiter, copyArtifacts targetArtifactCopier) error {
+type resultReporter func(runDir string, cfg reporting.Config, info reporting.RunInfo, out io.Writer) (reporting.Result, error)
+
+func executeRunCopyAndReport(
+	ctx context.Context,
+	target kubetarget.Target,
+	workloadPath string,
+	logPath string,
+	artifactCfg artifacts.Config,
+	images map[string]string,
+	artifactDestination string,
+	artifactSubpath string,
+	runDir string,
+	reportingCfg reporting.Config,
+	runInfo reporting.RunInfo,
+	out io.Writer,
+	execute targetKubeBurnerExecutor,
+	waitArtifactJobs targetArtifactJobWaiter,
+	copyArtifacts targetArtifactCopier,
+	report resultReporter,
+) error {
 	if artifactCfg.Enabled {
 		copyImage, err := config.ResolveImage(images, artifactCfg.CopyImage)
 		if err != nil {
@@ -716,7 +752,11 @@ func executeRunAndCopyArtifacts(ctx context.Context, target kubetarget.Target, w
 		}
 		return executeErr
 	}
-	return artifactErr
+	if artifactErr != nil {
+		return artifactErr
+	}
+	_, err := report(runDir, reportingCfg, runInfo, out)
+	return err
 }
 
 func waitArtifactJobsComplete(ctx context.Context, target kubetarget.Target, cfg artifacts.Config) error {
