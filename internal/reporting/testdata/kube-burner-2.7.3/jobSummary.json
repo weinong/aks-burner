@@ -1,0 +1,11 @@
+[
+  {
+    "metricName": "jobSummary",
+    "elapsedTime": 4.25,
+    "passed": true,
+    "jobConfig": {
+      "name": "startup-smoke",
+      "jobIterations": 1
+    }
+  }
+]

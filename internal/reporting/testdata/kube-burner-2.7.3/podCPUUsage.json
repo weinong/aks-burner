@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": "2026-07-11T00:00:00Z",
+    "labels": {"pod": "demo-0", "namespace": "demo"},
+    "value": 0.3300880234732172,
+    "uuid": "23c0b5fd-c17e-4326-a389-b3aebc774c82",
+    "query": "sum(rate(container_cpu_usage_seconds_total[2m])) by (pod, namespace)",
+    "metricName": "podCPUUsage",
+    "jobName": "startup-smoke"
+  },
+  {
+    "timestamp": "2026-07-11T00:00:30Z",
+    "labels": {"pod": "demo-0", "namespace": "demo"},
+    "value": 0.31978102677038506,
+    "uuid": "23c0b5fd-c17e-4326-a389-b3aebc774c82",
+    "query": "sum(rate(container_cpu_usage_seconds_total[2m])) by (pod, namespace)",
+    "metricName": "podCPUUsage",
+    "jobName": "startup-smoke"
+  }
+]

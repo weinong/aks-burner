@@ -1,0 +1,19 @@
+[
+  {
+    "timestamp": "2026-07-11T00:00:00Z",
+    "schedulingLatency": 73,
+    "initializedLatency": 135,
+    "containersReadyLatency": 2840,
+    "podReadyLatency": 2897,
+    "containersStartedLatency": 2710,
+    "readyToStartContainersLatency": 2630,
+    "metricName": "podLatencyMeasurement",
+    "uuid": "23c0b5fd-c17e-4326-a389-b3aebc774c82",
+    "jobName": "startup-smoke",
+    "jobIteration": 0,
+    "replica": 0,
+    "namespace": "demo",
+    "podName": "demo-0",
+    "nodeName": "node-0"
+  }
+]

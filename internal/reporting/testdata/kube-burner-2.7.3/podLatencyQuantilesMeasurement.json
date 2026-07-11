@@ -1,0 +1,15 @@
+[
+  {
+    "quantileName": "Ready",
+    "uuid": "23c0b5fd-c17e-4326-a389-b3aebc774c82",
+    "P99": 3774,
+    "P95": 3510,
+    "P50": 2897,
+    "min": 2801,
+    "max": 3774,
+    "avg": 2876,
+    "timestamp": "2026-07-11T00:00:00Z",
+    "metricName": "podLatencyQuantilesMeasurement",
+    "jobName": "startup-smoke"
+  }
+]
