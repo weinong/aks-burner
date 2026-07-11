@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "dimensions": {
+    "metric": "fio"
+  },
+  "metrics": [
+    {"name": "read_iops", "value": 1, "unit": "operations/second"}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "dimensions": {
+    "runtime": "kata",
+    "storage": "emptydir",
+    "workload": "fio"
+  },
+  "metrics": [
+    {"name": "read_iops", "value": 104113.481442, "unit": "operations/second"},
+    {"name": "exit_code", "value": 0, "unit": "code"}
+  ]
+}
