@@ -562,7 +562,17 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := reporting.ValidateConfig(&req.Requires.Reporting, req.Requires.Artifacts.Enabled, req.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
 		return err
 	}
-	if err := validateModeImageVars(mode.ImageVars, staticImages, imageBuilds); err != nil {
+	if _, _, err := acr.BuildCommands(acr.BuildOptions{
+		SuiteDir:       suiteDir,
+		RegistryName:   "preflight",
+		RegistryServer: "preflight.invalid",
+		ResourceGroup:  "preflight",
+		Tag:            "preflight",
+		Builds:         imageBuilds,
+	}); err != nil {
+		return err
+	}
+	if err := validateRunSuiteImageKeys(mode.ImageVars, staticImages, imageBuilds, req); err != nil {
 		return err
 	}
 	if err := runpkg.ValidateKubeBurnerVersion(root); err != nil {
@@ -851,6 +861,27 @@ func mergeImages(base map[string]string, overlay map[string]string) map[string]s
 }
 
 func validateModeImageVars(imageVars map[string]string, staticImages map[string]string, builds []acr.ImageBuild) error {
+	return validateImageKeys(imageVars, staticImages, builds)
+}
+
+func validateRunSuiteImageKeys(imageVars map[string]string, staticImages map[string]string, builds []acr.ImageBuild, req requirements.Document) error {
+	keys := map[string]string{}
+	for name, key := range imageVars {
+		keys["mode image variable "+name] = key
+	}
+	if req.Requires.Observability.Prometheus.Required && req.Requires.Observability.Prometheus.Install {
+		keys["Prometheus install"] = req.Requires.Observability.Prometheus.ImageKey
+	}
+	if req.Requires.Observability.KubeStateMetrics.Required && req.Requires.Observability.KubeStateMetrics.Install {
+		keys["kube-state-metrics install"] = req.Requires.Observability.KubeStateMetrics.ImageKey
+	}
+	if req.Requires.Artifacts.Enabled {
+		keys["artifact copy"] = req.Requires.Artifacts.CopyImage
+	}
+	return validateImageKeys(keys, staticImages, builds)
+}
+
+func validateImageKeys(imageKeys map[string]string, staticImages map[string]string, builds []acr.ImageBuild) error {
 	known := map[string]bool{}
 	for key := range staticImages {
 		known[key] = true
@@ -858,9 +889,9 @@ func validateModeImageVars(imageVars map[string]string, staticImages map[string]
 	for _, build := range builds {
 		known[build.Key] = true
 	}
-	for _, imageKey := range imageVars {
+	for consumer, imageKey := range imageKeys {
 		if !known[imageKey] {
-			return fmt.Errorf("image key %q not found", imageKey)
+			return fmt.Errorf("%s image key %q not found", consumer, imageKey)
 		}
 	}
 	return nil

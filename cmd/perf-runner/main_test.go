@@ -864,6 +864,97 @@ func TestRunSuiteExplicitContextWithBuildsUsesAzureWithoutCredentials(t *testing
 	}
 }
 
+func TestRunSuiteRejectsInvalidImageBuildsBeforeSideEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		old     string
+		new     string
+		wantErr string
+	}{
+		{
+			name: "duplicate build key",
+			old:  "        dockerfile: Dockerfile\n",
+			new: "        dockerfile: Dockerfile\n" +
+				"      - key: benchmark\n        repository: benchmark/other\n        context: build\n        dockerfile: Dockerfile\n",
+			wantErr: "duplicate",
+		},
+		{name: "invalid build key", old: "key: benchmark", new: "key: bad/key", wantErr: "key"},
+		{name: "context outside suite", old: "context: build", new: "context: ../outside", wantErr: "outside suite directory"},
+		{name: "dockerfile outside context", old: "dockerfile: Dockerfile", new: "dockerfile: ../Dockerfile", wantErr: "dockerfile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testRepoRoot(t)
+			writeBuildContextSuite(t, root)
+			replaceFileText(t, filepath.Join(root, "suites", "existing", "requirements.yml"), tc.old, tc.new)
+			assertRunSuiteLocalPreflightFailure(t, root, tc.wantErr)
+		})
+	}
+}
+
+func TestRunSuiteRejectsUnknownEnabledImageKeysBeforeSideEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*testing.T, string)
+		wantErr string
+	}{
+		{
+			name: "mode image",
+			mutate: func(t *testing.T, root string) {
+				replaceFileText(t, filepath.Join(root, "suites", "existing", "vars", "smoke.yml"), "imageVars: {}", "imageVars:\n  image: missing")
+			},
+			wantErr: "missing",
+		},
+		{
+			name: "Prometheus install image",
+			mutate: func(t *testing.T, root string) {
+				path := filepath.Join(root, "suites", "existing", "requirements.yml")
+				replaceFileText(t, path, "      required: false\n      install: false", "      required: true\n      install: true")
+				replaceFileText(t, path, "imageKey: prometheus", "imageKey: missing")
+			},
+			wantErr: "missing",
+		},
+		{
+			name: "kube-state-metrics install image",
+			mutate: func(t *testing.T, root string) {
+				path := filepath.Join(root, "suites", "existing", "requirements.yml")
+				replaceFileText(t, path, "      requiredMetrics: []\n", `      requiredMetrics: []
+    kubeStateMetrics:
+      required: true
+      install: true
+      namespace: perf-monitoring
+      imageKey: missing
+      serviceName: kube-state-metrics
+      servicePort: 8080
+      requiredMetrics: []
+`)
+			},
+			wantErr: "missing",
+		},
+		{
+			name: "artifact copy image",
+			mutate: func(t *testing.T, root string) {
+				path := filepath.Join(root, "suites", "existing", "requirements.yml")
+				replaceFileText(t, path, "      requiredMetrics: []\n", `      requiredMetrics: []
+  artifacts:
+    enabled: true
+    namespace: artifacts
+    pvcName: results
+    mountPath: /results
+    copyImage: missing
+`)
+			},
+			wantErr: "missing",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testRepoRoot(t)
+			writeNoBuildContextSuite(t, root)
+			tc.mutate(t, root)
+			assertRunSuiteLocalPreflightFailure(t, root, tc.wantErr)
+		})
+	}
+}
+
 func TestValidateRequirementsUsesOneRunnerForVersionAndNodeSelector(t *testing.T) {
 	var got [][]string
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
@@ -1925,6 +2016,57 @@ func writeRecordingKubeBurner(t *testing.T, dir, marker, version string) {
 	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: " + version + "\\n'; exit 0; fi\n" +
 		"printf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeVersionRecordingKubeBurner(t *testing.T, dir, marker string) {
+	t.Helper()
+	content := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n" +
+		"if [ \"$1\" = version ]; then printf 'Version: 2.7.3\\n'; fi\n"
+	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertRunSuiteLocalPreflightFailure(t *testing.T, root, wantErr string) {
+	t.Helper()
+	binDir := t.TempDir()
+	markers := []string{
+		filepath.Join(t.TempDir(), "az.log"),
+		filepath.Join(t.TempDir(), "kubectl.log"),
+		filepath.Join(t.TempDir(), "kube-burner.log"),
+	}
+	writeRecordingCommand(t, binDir, "az", markers[0], "")
+	writeRecordingCommand(t, binDir, "kubectl", markers[1], "")
+	writeVersionRecordingKubeBurner(t, binDir, markers[2])
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview", "--resource-group", "rg-test"})
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("run-suite error = %v, want %q", err, wantErr)
+	}
+	for _, marker := range markers {
+		if data, _ := os.ReadFile(marker); len(data) != 0 {
+			t.Fatalf("side effect before local preflight completed in %s: %s", marker, data)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
+		t.Fatalf("results directory exists before local preflight completed: %v", err)
+	}
+}
+
+func replaceFileText(t *testing.T, path, old, new string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(old)) {
+		t.Fatalf("%s does not contain %q", path, old)
+	}
+	if err := os.WriteFile(path, bytes.Replace(data, []byte(old), []byte(new), 1), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
