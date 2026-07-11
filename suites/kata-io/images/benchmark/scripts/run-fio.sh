@@ -38,6 +38,8 @@ read_bw_bytes="0"
 write_bw_bytes="0"
 read_clat_p99_ns="0"
 write_clat_p99_ns="0"
+read_runtime_seconds="0"
+write_runtime_seconds="0"
 if [ -s "$OUT_DIR/fio.json" ]; then
   read_iops="$(jq '[.jobs[].read.iops // 0] | add' "$OUT_DIR/fio.json")"
   write_iops="$(jq '[.jobs[].write.iops // 0] | add' "$OUT_DIR/fio.json")"
@@ -45,11 +47,23 @@ if [ -s "$OUT_DIR/fio.json" ]; then
   write_bw_bytes="$(jq '[.jobs[].write.bw_bytes // 0] | add' "$OUT_DIR/fio.json")"
   read_clat_p99_ns="$(jq '[.jobs[].read.clat_ns.percentile."99.000000" // 0] | max' "$OUT_DIR/fio.json")"
   write_clat_p99_ns="$(jq '[.jobs[].write.clat_ns.percentile."99.000000" // 0] | max' "$OUT_DIR/fio.json")"
+  read_runtime_seconds="$(jq '[.jobs[].read.runtime // 0] | max / 1000' "$OUT_DIR/fio.json")"
+  write_runtime_seconds="$(jq '[.jobs[].write.runtime // 0] | max / 1000' "$OUT_DIR/fio.json")"
 fi
+active_runtime_seconds="$(awk "BEGIN { print (${read_runtime_seconds} > ${write_runtime_seconds}) ? ${read_runtime_seconds} : ${write_runtime_seconds} }")"
+setup_overhead_seconds="$(awk "BEGIN { value = ${duration_seconds} - ${active_runtime_seconds}; print value > 0 ? value : 0 }")"
 
 cat > "$OUT_DIR/summary.prom" <<EOF
-# TYPE fio_duration_seconds gauge
-fio_duration_seconds{run_id="$RUN_ID",scenario="$SCENARIO"} $duration_seconds
+# TYPE fio_total_duration_seconds gauge
+fio_total_duration_seconds{run_id="$RUN_ID",scenario="$SCENARIO"} $duration_seconds
+# TYPE fio_active_runtime_seconds gauge
+fio_active_runtime_seconds{run_id="$RUN_ID",scenario="$SCENARIO"} $active_runtime_seconds
+# TYPE fio_read_runtime_seconds gauge
+fio_read_runtime_seconds{run_id="$RUN_ID",scenario="$SCENARIO"} $read_runtime_seconds
+# TYPE fio_write_runtime_seconds gauge
+fio_write_runtime_seconds{run_id="$RUN_ID",scenario="$SCENARIO"} $write_runtime_seconds
+# TYPE fio_setup_overhead_seconds gauge
+fio_setup_overhead_seconds{run_id="$RUN_ID",scenario="$SCENARIO"} $setup_overhead_seconds
 # TYPE fio_exit_code gauge
 fio_exit_code{run_id="$RUN_ID",scenario="$SCENARIO"} $exit_code
 # TYPE fio_start_time_seconds gauge

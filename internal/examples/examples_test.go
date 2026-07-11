@@ -811,6 +811,28 @@ func TestKataIOBenchmarkImageFilesExist(t *testing.T) {
 	}
 }
 
+func TestKataIOFioScriptSeparatesTotalAndActiveRuntimeMetrics(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	for _, metric := range []string{
+		"fio_total_duration_seconds",
+		"fio_active_runtime_seconds",
+		"fio_read_runtime_seconds",
+		"fio_write_runtime_seconds",
+		"fio_setup_overhead_seconds",
+	} {
+		if !strings.Contains(script, metric) {
+			t.Fatalf("run-fio.sh must emit %s", metric)
+		}
+	}
+	if strings.Contains(script, "fio_duration_seconds{") {
+		t.Fatalf("run-fio.sh must not emit ambiguous fio_duration_seconds")
+	}
+}
+
 func asString(value any) string {
 	if value == nil {
 		return ""
