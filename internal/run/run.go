@@ -161,11 +161,11 @@ func renderTemplateVars(vars map[string]any, timestamp time.Time) map[string]any
 	return rendered
 }
 
-func CreateRunDir(suiteName string, mode string) (string, error) {
+func CreateRunDir(suiteName string, mode string, timestamp time.Time) (string, error) {
 	if err := os.MkdirAll("results", 0o755); err != nil {
 		return "", err
 	}
-	dir := filepath.Join("results", runDirName(suiteName, mode, time.Now().UTC()))
+	dir := filepath.Join("results", runDirName(suiteName, mode, timestamp))
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return "", err
 	}

@@ -562,15 +562,19 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := reporting.ValidateConfig(&req.Requires.Reporting, req.Requires.Artifacts.Enabled, req.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
 		return err
 	}
-	if _, _, err := acr.BuildCommands(acr.BuildOptions{
-		SuiteDir:       suiteDir,
-		RegistryName:   "preflight",
-		RegistryServer: "preflight.invalid",
-		ResourceGroup:  "preflight",
-		Tag:            "preflight",
-		Builds:         imageBuilds,
-	}); err != nil {
-		return err
+	runTimestamp := time.Now().UTC()
+	runTag := acr.RunTag(*suiteName, *modeName, runTimestamp)
+	if len(imageBuilds) > 0 {
+		if _, _, err := acr.BuildCommands(acr.BuildOptions{
+			SuiteDir:       suiteDir,
+			RegistryName:   "preflight",
+			RegistryServer: "preflight.invalid",
+			ResourceGroup:  "preflight",
+			Tag:            runTag,
+			Builds:         imageBuilds,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := validateRunSuiteImageKeys(mode.ImageVars, staticImages, imageBuilds, req); err != nil {
 		return err
@@ -587,8 +591,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := runpkg.ValidateRequirements(ctx, runpkg.Requirements{Kubernetes: req.Requires.Kubernetes, NodeSelectors: req.Requires.NodeSelectors}, target.Output); err != nil {
 		return err
 	}
-	runTimestamp := time.Now().UTC()
-	runDir, err := runpkg.CreateRunDir(*suiteName, *modeName)
+	runDir, err := runpkg.CreateRunDir(*suiteName, *modeName, runTimestamp)
 	if err != nil {
 		return err
 	}
@@ -601,7 +604,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 			RegistryName:   registryName,
 			RegistryServer: registryServer,
 			ResourceGroup:  names.ResourceGroup,
-			Tag:            acr.RunTag(*suiteName, *modeName, runTimestamp),
+			Tag:            runTag,
 			Builds:         req.Requires.Images.Builds,
 			LogsDir:        filepath.Join(runDir, "logs"),
 		})
@@ -883,8 +886,8 @@ func validateRunSuiteImageKeys(imageVars map[string]string, staticImages map[str
 
 func validateImageKeys(imageKeys map[string]string, staticImages map[string]string, builds []acr.ImageBuild) error {
 	known := map[string]bool{}
-	for key := range staticImages {
-		known[key] = true
+	for key, image := range staticImages {
+		known[key] = image != ""
 	}
 	for _, build := range builds {
 		known[build.Key] = true

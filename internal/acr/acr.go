@@ -233,7 +233,7 @@ func validateDockerfilePath(contextPath string, dockerfile string, key string) e
 	info, err := os.Lstat(dockerfilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return fmt.Errorf("image build %q dockerfile %q does not exist", key, dockerfile)
 		}
 		return err
 	}

@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Azure/aks-burner/internal/acr"
 	"github.com/Azure/aks-burner/internal/artifacts"
@@ -862,6 +864,7 @@ func TestRunSuiteExplicitContextWithBuildsUsesAzureWithoutCredentials(t *testing
 	if !strings.Contains(string(data), "kubeContext: preview") || strings.Contains(string(data), "clusterName:") {
 		t.Fatalf("explicit build metadata = %s", data)
 	}
+	assertRunDirectoryAndBuildTagUseSameTimestamp(t, filepath.Join(root, "results"), azMarker, "existing", "smoke")
 }
 
 func TestRunSuiteRejectsInvalidImageBuildsBeforeSideEffects(t *testing.T) {
@@ -889,6 +892,29 @@ func TestRunSuiteRejectsInvalidImageBuildsBeforeSideEffects(t *testing.T) {
 			assertRunSuiteLocalPreflightFailure(t, root, tc.wantErr)
 		})
 	}
+}
+
+func TestRunSuiteRejectsMissingDockerfileBeforeSideEffects(t *testing.T) {
+	root := testRepoRoot(t)
+	writeBuildContextSuite(t, root)
+	if err := os.Remove(filepath.Join(root, "suites", "existing", "build", "Dockerfile")); err != nil {
+		t.Fatal(err)
+	}
+	assertRunSuiteLocalPreflightFailure(t, root, "dockerfile")
+}
+
+func TestRunSuiteRejectsRuntimeTagOverMaximumBeforeSideEffects(t *testing.T) {
+	root := testRepoRoot(t)
+	writeBuildContextSuite(t, root)
+	longSuiteName := strings.Repeat("a", 100)
+	oldSuiteDir := filepath.Join(root, "suites", "existing")
+	newSuiteDir := filepath.Join(root, "suites", longSuiteName)
+	if err := os.Rename(oldSuiteDir, newSuiteDir); err != nil {
+		t.Fatal(err)
+	}
+	replaceFileText(t, filepath.Join(newSuiteDir, "suite.yml"), "existing", longSuiteName)
+	replaceFileText(t, filepath.Join(newSuiteDir, "requirements.yml"), "existing", longSuiteName)
+	assertRunSuiteLocalPreflightFailureForSuite(t, root, longSuiteName, "tag length")
 }
 
 func TestRunSuiteRejectsUnknownEnabledImageKeysBeforeSideEffects(t *testing.T) {
@@ -951,6 +977,68 @@ func TestRunSuiteRejectsUnknownEnabledImageKeysBeforeSideEffects(t *testing.T) {
 			writeNoBuildContextSuite(t, root)
 			tc.mutate(t, root)
 			assertRunSuiteLocalPreflightFailure(t, root, tc.wantErr)
+		})
+	}
+}
+
+func TestRunSuiteRejectsEmptyEnabledStaticImagesBeforeSideEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "mode image",
+			mutate: func(t *testing.T, root string) {
+				replaceFileText(t, filepath.Join(root, "suites", "existing", "vars", "smoke.yml"), "imageVars: {}", "imageVars:\n  image: pause")
+				replaceFileText(t, filepath.Join(root, "config", "images.yml"), "  pause: pause:test", "  pause: ''")
+			},
+		},
+		{
+			name: "Prometheus install image",
+			mutate: func(t *testing.T, root string) {
+				path := filepath.Join(root, "suites", "existing", "requirements.yml")
+				replaceFileText(t, path, "      required: false\n      install: false", "      required: true\n      install: true")
+				replaceFileText(t, filepath.Join(root, "config", "images.yml"), "  prometheus: prometheus:test", "  prometheus: ''")
+			},
+		},
+		{
+			name: "kube-state-metrics install image",
+			mutate: func(t *testing.T, root string) {
+				path := filepath.Join(root, "suites", "existing", "requirements.yml")
+				replaceFileText(t, path, "      requiredMetrics: []\n", `      requiredMetrics: []
+    kubeStateMetrics:
+      required: true
+      install: true
+      namespace: perf-monitoring
+      imageKey: kube-state-metrics
+      serviceName: kube-state-metrics
+      servicePort: 8080
+      requiredMetrics: []
+`)
+				replaceFileText(t, filepath.Join(root, "config", "images.yml"), "  prometheus: prometheus:test", "  prometheus: prometheus:test\n  kube-state-metrics: ''")
+			},
+		},
+		{
+			name: "artifact copy image",
+			mutate: func(t *testing.T, root string) {
+				path := filepath.Join(root, "suites", "existing", "requirements.yml")
+				replaceFileText(t, path, "      requiredMetrics: []\n", `      requiredMetrics: []
+  artifacts:
+    enabled: true
+    namespace: artifacts
+    pvcName: results
+    mountPath: /results
+    copyImage: artifact-copy
+`)
+				replaceFileText(t, filepath.Join(root, "config", "images.yml"), "  prometheus: prometheus:test", "  prometheus: prometheus:test\n  artifact-copy: ''")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testRepoRoot(t)
+			writeNoBuildContextSuite(t, root)
+			tc.mutate(t, root)
+			assertRunSuiteLocalPreflightFailure(t, root, "not found")
 		})
 	}
 }
@@ -1997,7 +2085,7 @@ imageVars: {}
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("pause: pause:test\nprometheus: prometheus:test\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "config", "images.yml"), []byte("images:\n  pause: pause:test\n  prometheus: prometheus:test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -2031,6 +2119,11 @@ func writeVersionRecordingKubeBurner(t *testing.T, dir, marker string) {
 
 func assertRunSuiteLocalPreflightFailure(t *testing.T, root, wantErr string) {
 	t.Helper()
+	assertRunSuiteLocalPreflightFailureForSuite(t, root, "existing", wantErr)
+}
+
+func assertRunSuiteLocalPreflightFailureForSuite(t *testing.T, root, suiteName, wantErr string) {
+	t.Helper()
 	binDir := t.TempDir()
 	markers := []string{
 		filepath.Join(t.TempDir(), "az.log"),
@@ -2043,7 +2136,7 @@ func assertRunSuiteLocalPreflightFailure(t *testing.T, root, wantErr string) {
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
-	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview", "--resource-group", "rg-test"})
+	err := run([]string{"run-suite", "--suite", suiteName, "--mode", "smoke", "--kube-context", "preview", "--resource-group", "rg-test"})
 	if err == nil || !strings.Contains(err.Error(), wantErr) {
 		t.Fatalf("run-suite error = %v, want %q", err, wantErr)
 	}
@@ -2054,6 +2147,37 @@ func assertRunSuiteLocalPreflightFailure(t *testing.T, root, wantErr string) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "results")); !os.IsNotExist(err) {
 		t.Fatalf("results directory exists before local preflight completed: %v", err)
+	}
+}
+
+func assertRunDirectoryAndBuildTagUseSameTimestamp(t *testing.T, resultsDir, azMarker, suiteName, modeName string) {
+	t.Helper()
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("results entries = %d, want 1", len(entries))
+	}
+	runDirTimestamp := strings.TrimSuffix(entries[0].Name(), "_"+suiteName+"_"+modeName)
+	runTime, err := time.Parse("2006-01-02T15-04-05.999999999Z07:00", runDirTimestamp)
+	if err != nil {
+		t.Fatalf("parse run directory timestamp %q: %v", runDirTimestamp, err)
+	}
+	data, err := os.ReadFile(azMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`--image benchmark/app:` + regexp.QuoteMeta(suiteName+"-"+modeName+"-") + `([^ ]+)`).FindSubmatch(data)
+	if match == nil {
+		t.Fatalf("ACR build marker missing image tag: %s", data)
+	}
+	buildTime, err := time.Parse("20060102T150405.000000000Z", string(match[1]))
+	if err != nil {
+		t.Fatalf("parse build tag timestamp %q: %v", match[1], err)
+	}
+	if !runTime.Equal(buildTime) {
+		t.Fatalf("run directory timestamp %s != build tag timestamp %s", runTime, buildTime)
 	}
 }
 

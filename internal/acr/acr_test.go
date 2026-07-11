@@ -39,6 +39,9 @@ func TestBuildCommandsConstructsDeterministicAcrBuild(t *testing.T) {
 	if err := os.MkdirAll(contextDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	opts := BuildOptions{
 		SuiteDir:       suiteDir,
 		RegistryName:   "acrakskataperf",
@@ -215,6 +218,23 @@ func TestBuildCommandsRejectsDockerfileOutsideContext(t *testing.T) {
 	}
 }
 
+func TestBuildCommandsRejectsMissingDockerfile(t *testing.T) {
+	suiteDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(suiteDir, "images", "pause"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := BuildCommands(BuildOptions{
+		SuiteDir:       suiteDir,
+		RegistryName:   "acrtest",
+		RegistryServer: "acrtest.azurecr.io",
+		Tag:            "run-1",
+		Builds:         []ImageBuild{{Key: "image", Repository: "kata/pause", Context: "images/pause", Dockerfile: "Dockerfile"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "dockerfile") || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("BuildCommands() error = %v, want missing dockerfile error", err)
+	}
+}
+
 func TestBuildCommandsRejectsSymlinkedDockerfileOutsideContext(t *testing.T) {
 	suiteDir := t.TempDir()
 	contextDir := filepath.Join(suiteDir, "images", "pause")
@@ -242,6 +262,9 @@ func TestBuildCommandsRejectsSymlinkedDockerfileOutsideContext(t *testing.T) {
 
 func TestBuildCommandsRejectsDuplicateBuildKeys(t *testing.T) {
 	suiteDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(suiteDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	_, _, err := BuildCommands(BuildOptions{
 		SuiteDir:       suiteDir,
 		RegistryName:   "acrtest",
