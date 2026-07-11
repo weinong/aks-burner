@@ -2,6 +2,7 @@ package reporting
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -43,12 +44,41 @@ func TestReadStandardSummariesExpandsMetrics(t *testing.T) {
 
 func TestReadStandardSummariesMissingArtifactsDirectory(t *testing.T) {
 	runDir := t.TempDir()
-	rows, files, err := ReadStandardSummaries(filepath.Join(runDir, "artifacts"), runDir)
+	artifactsDir := filepath.Join(runDir, "artifacts")
+	walkCalled := false
+	walkDir := func(string, fs.WalkDirFunc) error {
+		walkCalled = true
+		return nil
+	}
+	rows, files, err := readStandardSummaries(artifactsDir, runDir, walkDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if walkCalled {
+		t.Fatal("walker called for missing artifacts root")
+	}
 	if files != 0 || len(rows) != 0 {
 		t.Fatalf("files/rows = %d/%d", files, len(rows))
+	}
+}
+
+func TestReadStandardSummariesPropagatesTraversalFailure(t *testing.T) {
+	runDir := t.TempDir()
+	artifactsDir := filepath.Join(runDir, "artifacts")
+	if err := os.Mkdir(artifactsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failedPath := filepath.Join(artifactsDir, "vanished")
+	walkDir := func(root string, walkFn fs.WalkDirFunc) error {
+		if root != artifactsDir {
+			t.Fatalf("walk root = %q, want %q", root, artifactsDir)
+		}
+		return walkFn(failedPath, nil, &fs.PathError{Op: "lstat", Path: failedPath, Err: fs.ErrNotExist})
+	}
+
+	rows, files, err := readStandardSummaries(artifactsDir, runDir, walkDir)
+	if err == nil || !strings.Contains(err.Error(), failedPath) || !strings.Contains(err.Error(), "file does not exist") {
+		t.Fatalf("ReadStandardSummaries() = %#v, %d, %v; want traversal error for %q", rows, files, err, failedPath)
 	}
 }
 

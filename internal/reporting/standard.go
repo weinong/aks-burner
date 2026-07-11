@@ -81,19 +81,26 @@ func (metric *standardMetric) UnmarshalJSON(data []byte) error {
 }
 
 func ReadStandardSummaries(artifactsDir, runDir string) ([]Row, int, error) {
+	return readStandardSummaries(artifactsDir, runDir, filepath.WalkDir)
+}
+
+func readStandardSummaries(artifactsDir, runDir string, walkDir func(string, fs.WalkDirFunc) error) ([]Row, int, error) {
+	if _, err := os.Stat(artifactsDir); errors.Is(err, fs.ErrNotExist) {
+		return nil, 0, nil
+	} else if err != nil {
+		return nil, 0, fmt.Errorf("stat standard summary root %s: %w", artifactsDir, err)
+	}
+
 	paths := []string{}
-	err := filepath.WalkDir(artifactsDir, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := walkDir(artifactsDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			return fmt.Errorf("walk %s: %w", path, walkErr)
 		}
 		if !entry.IsDir() && entry.Name() == "summary.json" {
 			paths = append(paths, path)
 		}
 		return nil
 	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, 0, nil
-	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("discover standard summaries in %s: %w", artifactsDir, err)
 	}
