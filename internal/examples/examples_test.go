@@ -1,6 +1,7 @@
 package examples
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Azure/aks-burner/internal/config"
+	"github.com/Azure/aks-burner/internal/reporting"
 	"github.com/Azure/aks-burner/internal/requirements"
 	"github.com/Azure/aks-burner/internal/run"
 	"gopkg.in/yaml.v3"
@@ -824,25 +826,253 @@ func TestKataIOBenchmarkImageFilesExist(t *testing.T) {
 	}
 }
 
-func TestKataIOFioScriptSeparatesTotalAndActiveRuntimeMetrics(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+func TestKataIOFioSummary(t *testing.T) {
+	requireKataIOScriptTools(t)
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "time"), `#!/usr/bin/env bash
+set -euo pipefail
+while (($#)); do
+  case "$1" in
+    -v) shift ;;
+    -o) printf 'fake time output\n' > "$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+"$@"
+`)
+	writeExecutable(t, filepath.Join(binDir, "fio"), `#!/usr/bin/env bash
+set -euo pipefail
+output=""
+for arg in "$@"; do
+  case "$arg" in --output=*) output="${arg#--output=}" ;; esac
+done
+if [[ "${FAKE_FIO_MALFORMED:-}" == "1" ]]; then
+  printf '{malformed\n' > "$output"
+else
+  cat > "$output" <<'EOF'
+{"jobs":[{"read":{"iops":101.5,"bw_bytes":4096,"runtime":1250,"clat_ns":{"percentile":{"99.000000":700}}},"write":{"iops":2,"bw_bytes":8192,"runtime":500,"clat_ns":{"percentile":{"99.000000":900}}}}]}
+EOF
+fi
+printf 'fake fio stdout\n'
+printf 'fake fio stderr\n' >&2
+exit "${FAKE_BENCHMARK_EXIT:?}"
+`)
+
+	resultsDir := filepath.Join(tempDir, "results")
+	cmd := exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TIME_BIN="+filepath.Join(binDir, "time"),
+		"FAKE_BENCHMARK_EXIT=17",
+		"RUN_ID=run-1", "SCENARIO=fio-scenario", "SAMPLE_ID=sample-a",
+		"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
+		"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
+		"WORK_DIR="+filepath.Join(tempDir, "work"), "RESULTS_DIR="+resultsDir,
+	)
+	assertCommandExitCode(t, cmd, 17)
+
+	sampleDir := filepath.Join(resultsDir, "run-1", "fio-scenario", "sample-a")
+	assertKataIOSummary(t, resultsDir, tempDir, map[string]string{
+		"runtime": "kata", "storage": "azure-disk", "workload": "fio",
+		"profile": "randread-4k", "concurrency": "10", "sample": "sample-a",
+	}, map[string]string{
+		"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds",
+		"exit_code": "code", "read_iops": "operations/second", "write_iops": "operations/second",
+		"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
+		"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
+	}, map[string]string{"exit_code": "17", "active_runtime": "1.25", "read_iops": "101.5"})
+	assertFilesExist(t, sampleDir, "fio.json", "time.txt", "stdout.log", "stderr.log", "proc-self-io-before.txt", "proc-self-io-after.txt", "df-before.txt", "df-after.txt")
+	assertFileDoesNotExist(t, filepath.Join(sampleDir, "summary.prom"))
+
+	malformedResultsDir := filepath.Join(tempDir, "malformed-results")
+	cmd = exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TIME_BIN="+filepath.Join(binDir, "time"),
+		"FAKE_BENCHMARK_EXIT=19", "FAKE_FIO_MALFORMED=1",
+		"RUN_ID=run-2", "SCENARIO=fio-scenario", "SAMPLE_ID=sample-c",
+		"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
+		"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
+		"WORK_DIR="+filepath.Join(tempDir, "malformed-work"), "RESULTS_DIR="+malformedResultsDir,
+	)
+	assertCommandExitCode(t, cmd, 19)
+	assertKataIOSummary(t, malformedResultsDir, tempDir, map[string]string{
+		"runtime": "kata", "storage": "azure-disk", "workload": "fio",
+		"profile": "randread-4k", "concurrency": "10", "sample": "sample-c",
+	}, map[string]string{
+		"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds",
+		"exit_code": "code", "read_iops": "operations/second", "write_iops": "operations/second",
+		"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
+		"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
+	}, map[string]string{"exit_code": "19", "active_runtime": "0", "read_iops": "0"})
+}
+
+func TestKataIOGitSummary(t *testing.T) {
+	requireKataIOScriptTools(t)
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "time"), `#!/usr/bin/env bash
+set -euo pipefail
+while (($#)); do
+  case "$1" in
+    -v) shift ;;
+    -o) printf 'fake time output\n' > "$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+"$@"
+`)
+	writeExecutable(t, filepath.Join(binDir, "git"), `#!/usr/bin/env bash
+set -euo pipefail
+target="${@: -1}"
+mkdir -p "$target"
+printf 'repository data\n' > "$target/file.txt"
+printf '{}\n' > "${GIT_TRACE2_EVENT:?}"
+printf 'fake trace\n' > "${GIT_TRACE2_PERF:?}"
+printf 'fake git stdout\n'
+printf 'fake git stderr\n' >&2
+exit "${FAKE_BENCHMARK_EXIT:?}"
+`)
+
+	resultsDir := filepath.Join(tempDir, "results")
+	cmd := exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-git-clone.sh"))
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TIME_BIN="+filepath.Join(binDir, "time"),
+		"FAKE_BENCHMARK_EXIT=23",
+		"RUN_ID=run-1", "SCENARIO=git-scenario", "SAMPLE_ID=sample-b",
+		"REPO_URL=https://example.invalid/repo.git", "CLONE_MODE=blobless",
+		"RUNTIME=standard", "STORAGE_TYPE=emptydir", "CONCURRENCY=1",
+		"WORK_DIR="+filepath.Join(tempDir, "work"), "RESULTS_DIR="+resultsDir,
+	)
+	assertCommandExitCode(t, cmd, 23)
+
+	sampleDir := filepath.Join(resultsDir, "run-1", "git-scenario", "sample-b")
+	assertKataIOSummary(t, resultsDir, tempDir, map[string]string{
+		"runtime": "standard", "storage": "emptydir", "workload": "git",
+		"profile": "blobless", "concurrency": "1", "sample": "sample-b",
+	}, map[string]string{
+		"clone_duration": "seconds", "exit_code": "code", "repository_size": "bytes", "file_count": "files",
+	}, map[string]string{"exit_code": "23", "file_count": "1"})
+	assertFilesExist(t, sampleDir, "time.txt", "git-stdout.log", "git-stderr.log", "git-trace2-event.json", "git-trace2-perf.log", "repo-size-bytes.txt", "file-count.txt", "proc-self-io-before.txt", "proc-self-io-after.txt", "df-before.txt", "df-after.txt")
+	assertFileDoesNotExist(t, filepath.Join(sampleDir, "summary.prom"))
+}
+
+func TestKataIOTemplatesProvideSummaryDimensions(t *testing.T) {
+	templates, err := filepath.Glob(filepath.Join("..", "..", "suites", "kata-io", "templates", "*-job.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(data)
-	for _, metric := range []string{
-		"fio_total_duration_seconds",
-		"fio_active_runtime_seconds",
-		"fio_read_runtime_seconds",
-		"fio_write_runtime_seconds",
-		"fio_setup_overhead_seconds",
-	} {
-		if !strings.Contains(script, metric) {
-			t.Fatalf("run-fio.sh must emit %s", metric)
+	wantTemplates := []string{
+		"fio-emptydir-kata-job.yml", "fio-emptydir-standard-job.yml", "fio-pvc-kata-job.yml", "fio-pvc-standard-job.yml",
+		"git-emptydir-kata-job.yml", "git-emptydir-standard-job.yml", "git-pvc-kata-job.yml", "git-pvc-standard-job.yml",
+	}
+	gotTemplates := make([]string, 0, len(templates))
+	for _, template := range templates {
+		gotTemplates = append(gotTemplates, filepath.Base(template))
+	}
+	if !reflect.DeepEqual(gotTemplates, wantTemplates) {
+		t.Fatalf("Kata IO job templates = %v, want exactly %v", gotTemplates, wantTemplates)
+	}
+	for _, template := range templates {
+		name := filepath.Base(template)
+		data, err := os.ReadFile(template)
+		if err != nil {
+			t.Fatal(err)
+		}
+		required := []string{"RUNTIME", "STORAGE_TYPE", "CONCURRENCY"}
+		if strings.HasPrefix(name, "fio-") {
+			required = append(required, "FIO_PROFILE_NAME")
+		} else {
+			required = append(required, "CLONE_MODE")
+		}
+		for _, variable := range required {
+			if !regexp.MustCompile(`(?m)^\s+- name: ` + variable + `$`).Match(data) {
+				t.Errorf("%s missing %s environment variable", name, variable)
+			}
 		}
 	}
-	if strings.Contains(script, "fio_duration_seconds{") {
-		t.Fatalf("run-fio.sh must not emit ambiguous fio_duration_seconds")
+}
+
+func requireKataIOScriptTools(t *testing.T) {
+	t.Helper()
+	for _, tool := range []string{"bash", "jq", "awk", "date", "df", "du", "find", "wc", "tr"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("required Kata IO script test tool %q not found in PATH; install jq, gawk, coreutils, and findutils: %v", tool, err)
+		}
+	}
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertCommandExitCode(t *testing.T, cmd *exec.Cmd, want int) {
+	t.Helper()
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("command error = %v, output:\n%s; want exit code %d", err, output, want)
+	}
+	if got := exitErr.ExitCode(); got != want {
+		t.Fatalf("command exit code = %d, output:\n%s; want %d", got, output, want)
+	}
+}
+
+func assertKataIOSummary(t *testing.T, artifactsDir, runDir string, wantDimensions, wantMetrics, wantValues map[string]string) {
+	t.Helper()
+	rows, files, err := reporting.ReadStandardSummaries(artifactsDir, runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 {
+		t.Fatalf("standard summary files = %d, want 1", files)
+	}
+	if len(rows) == 0 {
+		t.Fatal("standard summary has no metric rows")
+	}
+	if got := rows[0].Dimensions; !reflect.DeepEqual(got, wantDimensions) {
+		t.Fatalf("summary dimensions = %#v, want %#v", got, wantDimensions)
+	}
+	gotMetrics := make(map[string]string, len(rows))
+	gotValues := make(map[string]string, len(rows))
+	for _, row := range rows {
+		gotMetrics[row.Metric] = row.Unit
+		gotValues[row.Metric] = row.Value.Text
+	}
+	if !reflect.DeepEqual(gotMetrics, wantMetrics) {
+		t.Fatalf("summary metrics = %#v, want %#v", gotMetrics, wantMetrics)
+	}
+	for metric, wantValue := range wantValues {
+		if gotValue := gotValues[metric]; gotValue != wantValue {
+			t.Fatalf("%s = %s, want %s", metric, gotValue, wantValue)
+		}
+	}
+}
+
+func assertFilesExist(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("raw artifact %s missing: %v", name, err)
+		}
+	}
+}
+
+func assertFileDoesNotExist(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("%s exists or cannot be checked: %v", path, err)
 	}
 }
 

@@ -49,6 +49,12 @@ spec:
               value: {{.repoURL}}
             - name: CLONE_MODE
               value: {{.cloneMode}}
+            - name: RUNTIME
+              value: {{.runtime}}
+            - name: STORAGE_TYPE
+              value: {{.storageType}}
+            - name: CONCURRENCY
+              value: "{{.concurrency}}"
             - name: WORK_DIR
               value: /work
             - name: RESULTS_DIR

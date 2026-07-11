@@ -6,6 +6,10 @@ SCENARIO="${SCENARIO:-git-clone}"
 SAMPLE_ID="${SAMPLE_ID:-${HOSTNAME:-sample}}"
 REPO_URL="${REPO_URL:?REPO_URL is required}"
 CLONE_MODE="${CLONE_MODE:-full}"
+RUNTIME="${RUNTIME:?RUNTIME is required}"
+STORAGE_TYPE="${STORAGE_TYPE:?STORAGE_TYPE is required}"
+CONCURRENCY="${CONCURRENCY:?CONCURRENCY is required}"
+TIME_BIN="${TIME_BIN:-/usr/bin/time}"
 WORK_DIR="${WORK_DIR:-/work}"
 RESULTS_DIR="${RESULTS_DIR:-/results}"
 OUT_DIR="${RESULTS_DIR}/${RUN_ID}/${SCENARIO}/${SAMPLE_ID}"
@@ -33,19 +37,17 @@ case "$CLONE_MODE" in
 esac
 
 start_ns="$(date +%s%N)"
-start_epoch="$(date +%s)"
 cat /proc/self/io > "$OUT_DIR/proc-self-io-before.txt" || true
 df -h "$SAMPLE_WORK_DIR" > "$OUT_DIR/df-before.txt" || true
 
 set +e
-/usr/bin/time -v -o "$OUT_DIR/time.txt" \
+"$TIME_BIN" -v -o "$OUT_DIR/time.txt" \
   git clone "${CLONE_ARGS[@]}" "$REPO_URL" "$TARGET_DIR" \
   > "$OUT_DIR/git-stdout.log" 2> "$OUT_DIR/git-stderr.log"
 exit_code="$?"
 set -e
 
 end_ns="$(date +%s%N)"
-end_epoch="$(date +%s)"
 duration_ns="$((end_ns - start_ns))"
 duration_seconds="$(awk "BEGIN { print ${duration_ns} / 1000000000 }")"
 
@@ -57,20 +59,22 @@ df -h "$SAMPLE_WORK_DIR" > "$OUT_DIR/df-after.txt" || true
 repo_size_bytes="$(awk '{print $1}' "$OUT_DIR/repo-size-bytes.txt")"
 file_count="$(tr -d ' ' < "$OUT_DIR/file-count.txt")"
 
-cat > "$OUT_DIR/summary.prom" <<EOF
-# TYPE git_clone_duration_seconds gauge
-git_clone_duration_seconds{run_id="$RUN_ID",scenario="$SCENARIO",clone_mode="$CLONE_MODE"} $duration_seconds
-# TYPE git_clone_exit_code gauge
-git_clone_exit_code{run_id="$RUN_ID",scenario="$SCENARIO",clone_mode="$CLONE_MODE"} $exit_code
-# TYPE git_clone_start_time_seconds gauge
-git_clone_start_time_seconds{run_id="$RUN_ID",scenario="$SCENARIO",clone_mode="$CLONE_MODE"} $start_epoch
-# TYPE git_clone_end_time_seconds gauge
-git_clone_end_time_seconds{run_id="$RUN_ID",scenario="$SCENARIO",clone_mode="$CLONE_MODE"} $end_epoch
-# TYPE git_clone_repo_size_bytes gauge
-git_clone_repo_size_bytes{run_id="$RUN_ID",scenario="$SCENARIO",clone_mode="$CLONE_MODE"} $repo_size_bytes
-# TYPE git_clone_file_count gauge
-git_clone_file_count{run_id="$RUN_ID",scenario="$SCENARIO",clone_mode="$CLONE_MODE"} $file_count
-EOF
+jq -n \
+  --arg runtime "$RUNTIME" \
+  --arg storage "$STORAGE_TYPE" \
+  --arg profile "$CLONE_MODE" \
+  --arg concurrency "$CONCURRENCY" \
+  --arg sample "$SAMPLE_ID" \
+  --argjson cloneDuration "$duration_seconds" \
+  --argjson exitCode "$exit_code" \
+  --argjson repositorySize "$repo_size_bytes" \
+  --argjson fileCount "$file_count" \
+  '{schemaVersion:1,dimensions:{runtime:$runtime,storage:$storage,workload:"git",profile:$profile,concurrency:$concurrency,sample:$sample},metrics:[
+    {name:"clone_duration",value:$cloneDuration,unit:"seconds"},
+    {name:"exit_code",value:$exitCode,unit:"code"},
+    {name:"repository_size",value:$repositorySize,unit:"bytes"},
+    {name:"file_count",value:$fileCount,unit:"files"}
+  ]}' > "$OUT_DIR/summary.json"
 
-cat "$OUT_DIR/summary.prom"
+cat "$OUT_DIR/summary.json"
 exit "$exit_code"
