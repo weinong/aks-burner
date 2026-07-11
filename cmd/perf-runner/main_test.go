@@ -700,8 +700,9 @@ func TestRunSuiteStandardSummaryReportingCreatesCSVAndLimitsPreview(t *testing.T
 	replaceFileText(t, filepath.Join(root, "config", "images.yml"), "  prometheus: prometheus:test", "  prometheus: prometheus:test\n  artifact-copy: artifact-copy:test")
 	binDir := t.TempDir()
 	writeRecordingCommand(t, binDir, "az", filepath.Join(t.TempDir(), "az.log"), "")
-	writeRecordingCommand(t, binDir, "kubectl", filepath.Join(t.TempDir(), "kubectl.log"), `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
-	writeStandardSummaryKubeBurner(t, binDir)
+	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
+	writeStandardSummaryCopyKubectl(t, binDir, kubectlMarker)
+	writeVersionedKubeBurner(t, filepath.Join(binDir, "kube-burner"), "2.7.3")
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
@@ -712,7 +713,9 @@ func TestRunSuiteStandardSummaryReportingCreatesCSVAndLimitsPreview(t *testing.T
 		t.Fatalf("run-suite error = %v; log = %q", err, singleRunLog(t, filepath.Join(root, "results")))
 	}
 	runDir := singleRunDir(t, filepath.Join(root, "results"))
+	assertFileContains(t, filepath.Join(runDir, "artifacts", "fixture", "summary.json"), "metric-11")
 	assertFileContains(t, filepath.Join(runDir, "summary", "results.csv"), "metric-11")
+	assertFileContains(t, kubectlMarker, " cp ")
 	if got := strings.Count(output, "metric-"); got != 10 {
 		t.Fatalf("preview metrics = %d, want 10:\n%s", got, output)
 	}
@@ -1854,6 +1857,7 @@ func TestExecuteRunCopyAndReportOrdersArtifactFreeStages(t *testing.T) {
 		t.Fatal("waitArtifactJobs called when artifacts are disabled")
 		return nil
 	}, func(ctx context.Context, target kubetarget.Target, cfg artifacts.Config, destination string, subpath string) error {
+		t.Fatal("copyArtifacts called when artifacts are disabled")
 		return nil
 	}, func(runDir string, cfg reporting.Config, info reporting.RunInfo, out io.Writer) (reporting.Result, error) {
 		order = append(order, "report")
@@ -1975,6 +1979,38 @@ func TestExecuteRunCopyAndReportPrefersKubeBurnerFailureOverArtifactCopy(t *test
 	})
 	if !errors.Is(err, executeErr) || !strings.Contains(err.Error(), "artifact copy also failed") {
 		t.Fatalf("executeRunCopyAndReport() error = %v, want kube-burner error with artifact copy context", err)
+	}
+}
+
+func TestExecuteRunCopyAndReportReturnsArtifactWaitFailureWithoutReporting(t *testing.T) {
+	waitErr := errors.New("artifact wait failed")
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard,
+		func(string, string, kubetarget.Target) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config) error { return waitErr },
+		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return nil },
+		func(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
+			t.Fatal("report called after artifact wait failure")
+			return reporting.Result{}, nil
+		},
+	)
+	if err != waitErr {
+		t.Fatalf("executeRunCopyAndReport() error = %v, want original wait error", err)
+	}
+}
+
+func TestExecuteRunCopyAndReportReturnsArtifactCopyFailureWithoutReporting(t *testing.T) {
+	copyErr := errors.New("artifact copy failed")
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard,
+		func(string, string, kubetarget.Target) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return copyErr },
+		func(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
+			t.Fatal("report called after artifact copy failure")
+			return reporting.Result{}, nil
+		},
+	)
+	if err != copyErr {
+		t.Fatalf("executeRunCopyAndReport() error = %v, want original copy error", err)
 	}
 }
 
@@ -2253,17 +2289,24 @@ func writeRecordingKubeBurner(t *testing.T, dir, marker, version string) {
 
 const minimalKubeBurnerResult = `[{"quantileName":"Ready","P99":4,"P95":3,"P50":2,"min":1,"max":4,"avg":2.5,"timestamp":"2026-07-11T00:00:00Z","metricName":"podLatencyQuantilesMeasurement","jobName":"startup-smoke"}]`
 
-func writeStandardSummaryKubeBurner(t *testing.T, dir string) {
+func writeStandardSummaryCopyKubectl(t *testing.T, dir, marker string) {
 	t.Helper()
 	metrics := make([]string, 12)
 	for i := range metrics {
 		metrics[i] = fmt.Sprintf(`{"name":"metric-%02d","value":%d,"unit":"count"}`, i, i)
 	}
 	document := fmt.Sprintf(`{"schemaVersion":1,"dimensions":{"workload":"fio"},"metrics":[%s]}`, strings.Join(metrics, ","))
-	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: 2.7.3\\n'; exit 0; fi\n" +
-		"/bin/mkdir -p ../artifacts/fixture\n" +
-		"printf '%s' " + strconv.Quote(document) + " > ../artifacts/fixture/summary.json\n"
-	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
+	content := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\n" +
+		"case \"$*\" in\n" +
+		"  *\"version -o json\"*) printf '%s' '{\"serverVersion\":{\"gitVersion\":\"v9.99.0\"}}' ;;\n" +
+		"  *\"get nodes\"*) printf 'node/test\\n' ;;\n" +
+		"  *\" cp \"*)\n" +
+		"    for argument do destination=\"$argument\"; done\n" +
+		"    /bin/mkdir -p \"$destination/fixture\"\n" +
+		"    printf '%s' " + strconv.Quote(document) + " > \"$destination/fixture/summary.json\"\n" +
+		"    ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

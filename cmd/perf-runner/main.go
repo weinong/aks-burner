@@ -745,7 +745,10 @@ func executeRunCopyAndReport(
 			executeErr = err
 		}
 	}
-	artifactErr := copyArtifacts(ctx, target, artifactCfg, artifactDestination, artifactSubpath)
+	var artifactErr error
+	if artifactCfg.Enabled {
+		artifactErr = copyArtifacts(ctx, target, artifactCfg, artifactDestination, artifactSubpath)
+	}
 	if executeErr != nil {
 		if artifactErr != nil {
 			return fmt.Errorf("kube-burner failed: %w; artifact copy also failed: %v", executeErr, artifactErr)
