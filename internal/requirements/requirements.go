@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/aks-burner/internal/infra"
 	"github.com/Azure/aks-burner/internal/kubestatemetrics"
 	"github.com/Azure/aks-burner/internal/prometheus"
+	"github.com/Azure/aks-burner/internal/reporting"
 	"github.com/Azure/aks-burner/internal/run"
 	"github.com/Azure/aks-burner/internal/suite"
 )
@@ -23,6 +24,7 @@ type Document struct {
 		Images         *acr.Requirements             `yaml:"images"`
 		Artifacts      artifacts.Config              `yaml:"artifacts"`
 		Observability  ObservabilityRequirements     `yaml:"observability"`
+		Reporting      reporting.Config              `yaml:"reporting"`
 	} `yaml:"requires"`
 }
 

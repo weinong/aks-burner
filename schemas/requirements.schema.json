@@ -8,7 +8,7 @@
     "requires": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["infrastructure", "kubernetes", "observability"],
+      "required": ["infrastructure", "kubernetes", "observability", "reporting"],
       "properties": {
         "infrastructure": {
           "type": "object",
@@ -100,6 +100,27 @@
             "pvcName": { "type": "string", "minLength": 1 },
             "mountPath": { "type": "string", "minLength": 1 },
             "copyImage": { "type": "string", "minLength": 1 }
+          }
+        },
+        "reporting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sources", "prometheusMetricUnits"],
+          "properties": {
+            "sources": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["standardSummary", "kubeBurner"],
+              "properties": {
+                "standardSummary": { "type": "boolean" },
+                "kubeBurner": { "type": "boolean" }
+              }
+            },
+            "prometheusMetricUnits": {
+              "type": "object",
+              "propertyNames": { "minLength": 1 },
+              "additionalProperties": { "type": "string", "minLength": 1 }
+            }
           }
         },
         "observability": {

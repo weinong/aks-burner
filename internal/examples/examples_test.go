@@ -4,8 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -281,7 +281,7 @@ func TestRequirementsSchemaRejectsInvalidNodePools(t *testing.T) {
 	} {
 		t.Run(invalidPool[:12], func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "requirements.yml")
-			data := "suite: demo\nrequires:\n  infrastructure:\n    provider: aks\n    nodePools:\n      - " + invalidPool + "\n  kubernetes:\n    minVersion: \"1.36\"\n  nodeSelectors: []\n  observability:\n    prometheus:\n      required: false\n      install: false\n      namespace: monitoring\n      imageKey: prometheus\n      serviceName: prometheus\n      servicePort: 9090\n      localPort: 9090\n"
+			data := "suite: demo\nrequires:\n  infrastructure:\n    provider: aks\n    nodePools:\n      - " + invalidPool + "\n  kubernetes:\n    minVersion: \"1.36\"\n  nodeSelectors: []\n  reporting:\n    sources:\n      standardSummary: false\n      kubeBurner: true\n    prometheusMetricUnits: {}\n  observability:\n    prometheus:\n      required: false\n      install: false\n      namespace: monitoring\n      imageKey: prometheus\n      serviceName: prometheus\n      servicePort: 9090\n      localPort: 9090\n"
 			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 				t.Fatal(err)
 			}

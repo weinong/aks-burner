@@ -32,6 +32,13 @@ requires:
       labels:
         perf.azure.com/node-role: workload
         kubernetes.azure.com/os-sku: AzureLinux
+  reporting:
+    sources:
+      standardSummary: false
+      kubeBurner: true
+    prometheusMetricUnits:
+      podCPUUsage: cores
+      podMemoryWorkingSet: bytes
   observability:
     prometheus:
       required: true

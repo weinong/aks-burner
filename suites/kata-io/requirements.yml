@@ -39,6 +39,27 @@ requires:
         dockerfile: Dockerfile
         platform: linux/amd64
         timeoutSeconds: 3600
+  reporting:
+    sources:
+      standardSummary: true
+      kubeBurner: true
+    prometheusMetricUnits:
+      podCPUUsage: cores
+      podMemoryWorkingSet: bytes
+      containerFsReadBytes: bytes
+      containerFsWriteBytes: bytes
+      containerFsIoTime: seconds
+      containerNetworkReceiveBytes: bytes
+      containerNetworkTransmitBytes: bytes
+      kubePodCreated: unix_seconds
+      kubePodScheduledTime: unix_seconds
+      kubePodInitializedTime: unix_seconds
+      kubePodContainerStarted: unix_seconds
+      kubePodReadyTime: unix_seconds
+      kubePodRuntimeClass: info
+      runPodSandboxP95: seconds
+      runPodSandboxP99: seconds
+      podStartTotalP95: seconds
   observability:
     prometheus:
       required: true

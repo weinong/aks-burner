@@ -335,6 +335,13 @@ func suiteRequirements(opts addSuiteOptions) map[string]any {
 			},
 			"kubernetes":    map[string]any{"minVersion": opts.KubernetesVersion},
 			"nodeSelectors": []map[string]any{{"name": "workload", "pool": "userpool", "required": true, "minNodes": 1, "labels": map[string]string{"perf.azure.com/node-role": "workload"}}},
+			"reporting": map[string]any{
+				"sources": map[string]any{"standardSummary": false, "kubeBurner": true},
+				"prometheusMetricUnits": map[string]string{
+					"podCPUUsage":         "cores",
+					"podMemoryWorkingSet": "bytes",
+				},
+			},
 			"observability": map[string]any{
 				"prometheus": map[string]any{
 					"required":        opts.Prometheus,

@@ -204,6 +204,11 @@ requires:
   kubernetes:
     minVersion: "1.30"
   nodeSelectors: []
+  reporting:
+    sources:
+      standardSummary: false
+      kubeBurner: true
+    prometheusMetricUnits: {}
   observability:
     prometheus:
       required: false
@@ -344,6 +349,12 @@ requires:
         taints: []
   kubernetes:
     minVersion: "1.36"
+  reporting:
+    sources:
+      standardSummary: true
+      kubeBurner: true
+    prometheusMetricUnits:
+      podCPUUsage: cores
   observability:
     prometheus:
       required: true
@@ -374,6 +385,99 @@ requires:
 	}
 	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), path); err != nil {
 		t.Fatalf("requirements schema rejected kube-state-metrics/artifacts: %v", err)
+	}
+}
+
+func TestRequirementsSchemaRejectsMissingReporting(t *testing.T) {
+	root := testRepoRoot(t)
+	path := filepath.Join(root, "requirements.yml")
+	data := []byte(`suite: demo
+requires:
+  infrastructure:
+    provider: aks
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+  kubernetes:
+    minVersion: "1.36"
+  observability:
+    prometheus:
+      required: false
+      install: false
+      namespace: monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), path); err == nil {
+		t.Fatal("requirements schema accepted missing reporting block")
+	}
+}
+
+func TestRequirementsSchemaRejectsUnknownReportingSource(t *testing.T) {
+	root := testRepoRoot(t)
+	path := filepath.Join(root, "requirements.yml")
+	data := []byte(`suite: demo
+requires:
+  infrastructure:
+    provider: aks
+    nodePools:
+      - name: systempool
+        mode: System
+        count: 1
+        vmSize: Standard_D4s_v5
+        osType: Linux
+        osSKU: Ubuntu
+        workloadRuntime: OCIContainer
+        labels: {}
+        taints: []
+  kubernetes:
+    minVersion: "1.36"
+  reporting:
+    sources:
+      standardSummary: false
+      kubeBurner: true
+      unknown: true
+    prometheusMetricUnits: {}
+  observability:
+    prometheus:
+      required: false
+      install: false
+      namespace: monitoring
+      imageKey: prometheus
+      serviceName: prometheus
+      servicePort: 9090
+      localPort: 9090
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), path); err == nil {
+		t.Fatal("requirements schema accepted unknown reporting source")
+	}
+}
+
+func TestSuiteRequirementsDeclaresReporting(t *testing.T) {
+	requires := suiteRequirements(addSuiteOptions{Prometheus: true})["requires"].(map[string]any)
+	reporting := requires["reporting"].(map[string]any)
+	sources := reporting["sources"].(map[string]any)
+	if sources["kubeBurner"] != true {
+		t.Fatalf("kubeBurner source = %#v, want true", sources["kubeBurner"])
+	}
+	units := reporting["prometheusMetricUnits"].(map[string]string)
+	if units["podCPUUsage"] != "cores" || units["podMemoryWorkingSet"] != "bytes" {
+		t.Fatalf("prometheusMetricUnits = %#v", units)
 	}
 }
 
@@ -1562,6 +1666,11 @@ requires:
       minNodes: 1
       labels:
         perf.azure.com/node-role: workload
+  reporting:
+    sources:
+      standardSummary: false
+      kubeBurner: true
+    prometheusMetricUnits: {}
   observability:
     prometheus:
       required: false
@@ -1689,7 +1798,12 @@ requires:
         taints: []
   kubernetes:
     minVersion: "9.99"
-` + nodeSelectors + images + `  observability:
+` + nodeSelectors + images + `  reporting:
+    sources:
+      standardSummary: false
+      kubeBurner: true
+    prometheusMetricUnits: {}
+  observability:
     prometheus:
       required: false
       install: false
