@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -386,8 +387,6 @@ func TestKataIOContractsValidate(t *testing.T) {
 	}{
 		{"schemas/suite.schema.json", "suites/kata-io/suite.yml"},
 		{"schemas/requirements.schema.json", "suites/kata-io/requirements.yml"},
-		{"schemas/mode.schema.json", "suites/kata-io/vars/smoke.yml"},
-		{"schemas/mode.schema.json", "suites/kata-io/vars/full.yml"},
 		{"schemas/mode.schema.json", "suites/kata-io/vars/fio-fast.yml"},
 		{"schemas/mode.schema.json", "suites/kata-io/vars/git-fast.yml"},
 		{"schemas/mode.schema.json", "suites/kata-io/vars/fio.yml"},
@@ -400,9 +399,23 @@ func TestKataIOContractsValidate(t *testing.T) {
 	}
 }
 
+func TestKataIOExposesOnlyCurrentModes(t *testing.T) {
+	matches, err := filepath.Glob(filepath.Join("..", "..", "suites", "kata-io", "vars", "*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modes := make([]string, 0, len(matches))
+	for _, match := range matches {
+		modes = append(modes, strings.TrimSuffix(filepath.Base(match), ".yml"))
+	}
+	if got, want := modes, []string{"fio-fast", "fio", "git-fast", "git"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("kata-io modes = %v, want %v", got, want)
+	}
+}
+
 func TestKataIOMergeReadyContracts(t *testing.T) {
 	root := filepath.Join("..", "..")
-	modes := []string{"smoke", "full", "fio-fast", "git-fast", "fio", "git"}
+	modes := []string{"fio-fast", "git-fast", "fio", "git"}
 	for _, mode := range modes {
 		data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "vars", mode+".yml"))
 		if err != nil {
@@ -720,7 +733,7 @@ func TestKataIOInfraPinsRequiredKubernetesVersion(t *testing.T) {
 }
 
 func TestKataIOModesUsePerRunIDPlaceholder(t *testing.T) {
-	for _, mode := range []string{"smoke", "full"} {
+	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "vars", mode+".yml"))
 		if err != nil {
 			t.Fatal(err)
@@ -742,7 +755,7 @@ func TestKataIOModesUsePerRunIDPlaceholder(t *testing.T) {
 }
 
 func TestKataIOModesPreserveResultsForArtifactCopy(t *testing.T) {
-	for _, mode := range []string{"smoke", "full"} {
+	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "vars", mode+".yml"))
 		if err != nil {
 			t.Fatal(err)

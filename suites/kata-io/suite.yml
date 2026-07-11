@@ -1,8 +1,10 @@
 name: kata-io
 description: Exploratory AKS Kata Pod Sandboxing I/O and Git clone benchmark suite.
 tests:
-  - kata-io-smoke
-  - kata-io-full
+  - kata-io-fio-fast
+  - kata-io-git-fast
+  - kata-io-fio
+  - kata-io-git
 setup:
   resources:
     - name: namespace

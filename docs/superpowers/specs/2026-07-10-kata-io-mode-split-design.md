@@ -10,8 +10,7 @@ Split the large `kata-io` benchmark surface into practical mode-level entry poin
 - `git-fast`: fastest Git clone end-to-end validation. It covers standard and Kata runtimes on `emptyDir`, uses blobless clone, and runs concurrency 1.
 - `fio`: broader fio benchmark mode. It covers standard and Kata runtimes, `emptyDir`, Azure Disk, Azure Files, all fio profiles, and concurrency 1 and 10.
 - `git`: broader Git clone benchmark mode. It covers standard and Kata runtimes, `emptyDir`, Azure Disk, Azure Files, full and blobless clone, and concurrency 1 and 10.
-- `smoke`: remains a small combined smoke path for existing users.
-- `full`: remains the exhaustive exploratory workload for compatibility, but is not the normal verification path.
+- `smoke` and `full` are removed from the suite's exposed modes; use `fio-fast` or `git-fast` for quick validation.
 
 ## Shared Behavior
 
@@ -32,6 +31,5 @@ Every kata-io workload mode must use the same persistent setup and run safety be
 ## Non-Goals
 
 - Do not delete the cluster.
-- Do not remove `full`.
 - Do not introduce a generic workload matrix engine in this change.
 - Do not change benchmark scripts or fio profiles.

@@ -13,8 +13,8 @@ TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
 TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-suite
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
-TEST_SUITE=kata-io TEST_MODE=smoke make run-suite
-TEST_SUITE=kata-io TEST_MODE=full make run-suite
+TEST_SUITE=kata-io TEST_MODE=fio-fast make run-suite
+TEST_SUITE=kata-io TEST_MODE=git-fast make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
@@ -34,8 +34,8 @@ TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
-TEST_SUITE=kata-io TEST_MODE=smoke make run-suite
-TEST_SUITE=kata-io TEST_MODE=full make run-suite
+TEST_SUITE=kata-io TEST_MODE=fio-fast make run-suite
+TEST_SUITE=kata-io TEST_MODE=git-fast make run-suite
 TEST_SUITE=kata-io make destroy
 ```
 
