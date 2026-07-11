@@ -1,0 +1,192 @@
+package reporting
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestGenerateCombinesDeclaredSourcesWithoutAggregation(t *testing.T) {
+	workspace := t.TempDir()
+	runDir := filepath.Join(workspace, "results", "run-1")
+	writeStandardMetrics(t, runDir, []string{"0.2500"})
+	writeKubeBurnerMetrics(t, runDir)
+	var out bytes.Buffer
+	cfg := Config{
+		Sources:               Sources{StandardSummary: true, KubeBurner: true},
+		PrometheusMetricNames: []string{"podCPUUsage"},
+		PrometheusMetricUnits: map[string]string{"podCPUUsage": "cores"},
+	}
+
+	result, err := Generate(runDir, cfg, RunInfo{Suite: "demo", Mode: "smoke", Timestamp: "2026-07-11T00:00:00Z", WorkspaceRoot: workspace}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SourceFiles != 2 || result.Rows != 2 {
+		t.Fatalf("result = %#v, want 2 source files and 2 rows", result)
+	}
+	if result.CSVPath != filepath.Join(runDir, "summary", "results.csv") {
+		t.Fatalf("CSVPath = %q", result.CSVPath)
+	}
+
+	records := readCSV(t, result.CSVPath)
+	if len(records) != 3 {
+		t.Fatalf("CSV has %d data rows, want 2: %#v", len(records)-1, records)
+	}
+	joined := fmt.Sprint(records)
+	for _, want := range []string{"artifacts/bench/summary.json", "raw/metrics/result.json", "0.2500", "1.2000e-03", "podCPUUsage"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("CSV missing %q: %#v", want, records)
+		}
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Test results: demo / smoke / 2026-07-11T00:00:00Z",
+		"Sources: 2", "Measurements: 2",
+		"Results CSV: results/run-1/summary/results.csv",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("preview missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestGeneratePreviewRowLimit(t *testing.T) {
+	for _, test := range []struct {
+		rows        int
+		wantMetrics int
+		omitted     string
+	}{
+		{rows: 9, wantMetrics: 9},
+		{rows: 10, wantMetrics: 10},
+		{rows: 11, wantMetrics: 10, omitted: "1 additional row omitted"},
+		{rows: 12, wantMetrics: 10, omitted: "2 additional rows omitted"},
+	} {
+		t.Run(fmt.Sprint(test.rows), func(t *testing.T) {
+			workspace := t.TempDir()
+			runDir := filepath.Join(workspace, "results", "run")
+			values := make([]string, test.rows)
+			for index := range values {
+				values[index] = fmt.Sprintf("%d.123456789", index+1)
+			}
+			writeStandardMetrics(t, runDir, values)
+			var out bytes.Buffer
+
+			_, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: workspace}, &out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := out.String()
+			if got := strings.Count(text, "metric-"); got != test.wantMetrics {
+				t.Fatalf("preview contains %d metrics, want %d:\n%s", got, test.wantMetrics, text)
+			}
+			if test.omitted != "" && !strings.Contains(text, test.omitted) {
+				t.Fatalf("preview missing %q:\n%s", test.omitted, text)
+			}
+			if test.omitted == "" && strings.Contains(text, "row omitted") {
+				t.Fatalf("preview unexpectedly reports omitted rows:\n%s", text)
+			}
+		})
+	}
+}
+
+func TestPreviewHandlesZeroRowsAndAbbreviatesOnlyTerminalValues(t *testing.T) {
+	var empty bytes.Buffer
+	printPreview(&empty, RunInfo{}, nil, 0, "/workspace/results/run/summary/results.csv")
+	if strings.Contains(empty.String(), "row omitted") {
+		t.Fatalf("empty preview reports omitted rows:\n%s", empty.String())
+	}
+
+	rows := []Row{{Source: "source", Metric: "metric", Value: Number{Text: "123456789.123456"}, Unit: "count"}}
+	var out bytes.Buffer
+	printPreview(&out, RunInfo{WorkspaceRoot: "/workspace"}, rows, 1, "/workspace/results/run/summary/results.csv")
+	if !strings.Contains(out.String(), "1.23457e+08") || strings.Contains(out.String(), "123456789.123456") {
+		t.Fatalf("terminal value was not abbreviated:\n%s", out.String())
+	}
+}
+
+func TestGenerateSortsRowsDeterministically(t *testing.T) {
+	workspace := t.TempDir()
+	runDir := filepath.Join(workspace, "run")
+	writeStandardMetrics(t, runDir, []string{"3", "2", "1"})
+	var first bytes.Buffer
+	result, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: workspace}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records := readCSV(t, result.CSVPath)
+	metrics := []string{records[1][2], records[2][2], records[3][2]}
+	if want := []string{"metric-01", "metric-02", "metric-03"}; !reflect.DeepEqual(metrics, want) {
+		t.Fatalf("metrics = %v, want %v", metrics, want)
+	}
+	var second bytes.Buffer
+	if _, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: workspace}, &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.String() != first.String() {
+		t.Fatalf("preview changed between runs:\nfirst:\n%s\nsecond:\n%s", first.String(), second.String())
+	}
+}
+
+func TestGenerateRejectsZeroRows(t *testing.T) {
+	runDir := t.TempDir()
+	var out bytes.Buffer
+	_, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: filepath.Dir(runDir)}, &out)
+	if err == nil || !strings.Contains(err.Error(), "no valid measurements") {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("Generate() wrote a preview on failure:\n%s", out.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(runDir, "summary", "results.csv")); !os.IsNotExist(statErr) {
+		t.Fatalf("results.csv exists after failure: %v", statErr)
+	}
+}
+
+func TestPrometheusMetricNamesFromConfigReturnsSortedCopy(t *testing.T) {
+	cfg := Config{PrometheusMetricNames: []string{"zeta", "alpha"}}
+	got := PrometheusMetricNamesFromConfig(cfg)
+	if want := []string{"alpha", "zeta"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("PrometheusMetricNamesFromConfig() = %v, want %v", got, want)
+	}
+	got[0] = "changed"
+	if cfg.PrometheusMetricNames[0] != "zeta" {
+		t.Fatalf("function returned aliased slice: %v", cfg.PrometheusMetricNames)
+	}
+}
+
+func writeStandardMetrics(t *testing.T, runDir string, values []string) {
+	t.Helper()
+	dir := filepath.Join(runDir, "artifacts", "bench")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var metrics strings.Builder
+	for index := len(values) - 1; index >= 0; index-- {
+		if metrics.Len() > 0 {
+			metrics.WriteByte(',')
+		}
+		fmt.Fprintf(&metrics, `{"name":"metric-%02d","value":%s,"unit":"seconds"}`, index+1, values[index])
+	}
+	document := fmt.Sprintf(`{"schemaVersion":1,"dimensions":{"scenario":"demo"},"metrics":[%s]}`, metrics.String())
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeKubeBurnerMetrics(t *testing.T, runDir string) {
+	t.Helper()
+	dir := filepath.Join(runDir, "raw", "metrics")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `[{"metricName":"podCPUUsage","value":1.2000e-03,"timestamp":"2026-07-11T00:00:00Z","labels":{"namespace":"demo"}}]`
+	if err := os.WriteFile(filepath.Join(dir, "result.json"), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
