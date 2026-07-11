@@ -10,6 +10,16 @@ import (
 )
 
 func writeCSV(path string, rows []Row) (returnErr error) {
+	dimensions := DimensionColumns(rows)
+	renderedHeaders := make(map[string]string, len(dimensions))
+	for _, dimension := range dimensions {
+		rendered := spreadsheetSafe(dimension)
+		if previous, exists := renderedHeaders[rendered]; exists {
+			return fmt.Errorf("dimension headers %q and %q both render as %q after spreadsheet-safe escaping", previous, dimension, rendered)
+		}
+		renderedHeaders[rendered] = dimension
+	}
+
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return fmt.Errorf("create report directory %s: %w", directory, err)
@@ -30,7 +40,6 @@ func writeCSV(path string, rows []Row) (returnErr error) {
 		return fmt.Errorf("set temporary report mode: %w", err)
 	}
 
-	dimensions := DimensionColumns(rows)
 	header := make([]string, 0, len(dimensions)+4)
 	header = append(header, "source")
 	for _, dimension := range dimensions {

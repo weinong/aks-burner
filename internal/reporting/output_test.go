@@ -118,6 +118,46 @@ func TestWriteCSVAtomicallyReplacesExistingReport(t *testing.T) {
 	}
 }
 
+func TestWriteCSVRejectsSpreadsheetSafeDimensionHeaderCollision(t *testing.T) {
+	dir := t.TempDir()
+	summaryDir := filepath.Join(dir, "summary")
+	if err := os.MkdirAll(summaryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(summaryDir, "results.csv")
+	original := []byte("existing report\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows := []Row{{
+		Source:     "source",
+		Dimensions: map[string]string{"=x": "first", "'=x": "second"},
+		Metric:     "metric",
+		Value:      Number{Text: "1"},
+		Unit:       "count",
+	}}
+
+	err := writeCSV(path, rows)
+
+	if err == nil || !strings.Contains(err.Error(), `dimension headers "'=x" and "=x"`) || !strings.Contains(err.Error(), `both render as "'=x"`) {
+		t.Fatalf("writeCSV() error = %v", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !reflect.DeepEqual(got, original) {
+		t.Fatalf("existing report changed to %q", got)
+	}
+	temps, globErr := filepath.Glob(filepath.Join(summaryDir, "results.csv.tmp-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("temporary files remain: %v", temps)
+	}
+}
+
 func readCSV(t *testing.T, path string) [][]string {
 	t.Helper()
 	file, err := os.Open(path)

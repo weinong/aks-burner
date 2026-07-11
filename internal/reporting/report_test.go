@@ -2,7 +2,9 @@ package reporting
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,6 +109,101 @@ func TestPreviewHandlesZeroRowsAndAbbreviatesOnlyTerminalValues(t *testing.T) {
 	if !strings.Contains(out.String(), "1.23457e+08") || strings.Contains(out.String(), "123456789.123456") {
 		t.Fatalf("terminal value was not abbreviated:\n%s", out.String())
 	}
+}
+
+func TestPreviewEscapesProducerControlledTerminalText(t *testing.T) {
+	rows := []Row{{
+		Source:     "source\tforged",
+		Dimensions: map[string]string{"header\nforged": "value\rforged"},
+		Metric:     "metric\x1b[31mred\u202eflip\u2028line",
+		Value:      Number{Text: "1"},
+		Unit:       "unit\x00hidden",
+	}}
+	var out bytes.Buffer
+	info := RunInfo{
+		Suite:         "suite\tforged",
+		Mode:          "mode\nforged",
+		Timestamp:     "time\rforged",
+		WorkspaceRoot: "/workspace",
+	}
+
+	if err := printPreview(&out, info, rows, 1, "/workspace/results/\x1b[2Jrun/summary/results.csv"); err != nil {
+		t.Fatal(err)
+	}
+
+	text := out.String()
+	for _, want := range []string{
+		`suite\tforged`, `mode\nforged`, `time\rforged`,
+		`header\nforged`, `source\tforged`, `value\rforged`,
+		`metric\x1b[31mred\u202eflip\u2028line`, `unit\x00hidden`, `results/\x1b[2Jrun/summary/results.csv`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("preview missing escaped text %q:\n%s", want, text)
+		}
+	}
+	if strings.ContainsRune(text, '\x1b') || strings.ContainsRune(text, '\x00') || strings.ContainsRune(text, '\u202e') || strings.ContainsRune(text, '\u2028') {
+		t.Fatalf("preview contains raw terminal controls: %q", text)
+	}
+	if got := terminalSafe("ordinary café"); got != "ordinary café" {
+		t.Fatalf("terminalSafe() = %q, want ordinary text unchanged", got)
+	}
+}
+
+func TestGeneratePropagatesPreviewErrorAndRetainsCSV(t *testing.T) {
+	workspace := t.TempDir()
+	runDir := filepath.Join(workspace, "results", "run")
+	writeStandardMetrics(t, runDir, []string{"1.2500"})
+
+	result, err := Generate(
+		runDir,
+		Config{Sources: Sources{StandardSummary: true}},
+		RunInfo{WorkspaceRoot: workspace},
+		failingWriter{err: io.ErrClosedPipe},
+	)
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("Generate() error = %v, want closed pipe", err)
+	}
+
+	path := filepath.Join(runDir, "summary", "results.csv")
+	if result.CSVPath != path || result.SourceFiles != 1 || result.Rows != 1 {
+		t.Fatalf("Generate() result = %#v, want completed CSV result", result)
+	}
+	records := readCSV(t, path)
+	if got := records[1][3]; got != "1.2500" {
+		t.Fatalf("retained CSV value = %q, want 1.2500", got)
+	}
+}
+
+func TestPreviewPropagatesTabwriterFlushError(t *testing.T) {
+	rows := []Row{{Source: "source", Metric: "metric", Value: Number{Text: "1"}, Unit: "count"}}
+	out := &failAfterWrites{remaining: 2, err: io.ErrUnexpectedEOF}
+
+	err := printPreview(out, RunInfo{WorkspaceRoot: "/workspace"}, rows, 1, "/workspace/results/run/summary/results.csv")
+
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("printPreview() error = %v, want unexpected EOF", err)
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (writer failingWriter) Write([]byte) (int, error) {
+	return 0, writer.err
+}
+
+type failAfterWrites struct {
+	remaining int
+	err       error
+}
+
+func (writer *failAfterWrites) Write(data []byte) (int, error) {
+	if writer.remaining == 0 {
+		return 0, writer.err
+	}
+	writer.remaining--
+	return len(data), nil
 }
 
 func TestGenerateSortsRowsDeterministically(t *testing.T) {
