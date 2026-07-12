@@ -1,0 +1,11 @@
+[
+  {
+    "timestamp": "2026-07-11T00:00:00Z",
+    "value": 1.284,
+    "uuid": "23c0b5fd-c17e-4326-a389-b3aebc774c82",
+    "query": "histogram_quantile(0.95, sum by (le) (increase(kubelet_pod_start_total_duration_seconds_bucket[5m])))",
+    "metricName": "podStartTotalP95",
+    "jobName": "fio-fast",
+    "metadata": {}
+  }
+]

@@ -64,6 +64,29 @@ func TestReadKubeBurnerMetricsPreservesRangeSamples(t *testing.T) {
 	}
 }
 
+func TestReadKubeBurnerMetricsAcceptsUnlabeledPrometheusScalar(t *testing.T) {
+	runDir := copyKubeBurnerFixtures(t, "podStartTotalP95.json")
+	rows, files, err := ReadKubeBurnerMetrics(
+		filepath.Join(runDir, "raw", "metrics"),
+		runDir,
+		[]string{"podStartTotalP95"},
+		map[string]string{"podStartTotalP95": "seconds"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || len(rows) != 1 {
+		t.Fatalf("files/rows = %d/%#v", files, rows)
+	}
+	wantDimensions := map[string]string{
+		"kubeBurner.jobName":   "fio-fast",
+		"kubeBurner.timestamp": "2026-07-11T00:00:00Z",
+	}
+	if rows[0].Metric != "podStartTotalP95" || rows[0].Value.Text != "1.284" || rows[0].Unit != "seconds" || !reflect.DeepEqual(rows[0].Dimensions, wantDimensions) {
+		t.Fatalf("row = %#v", rows[0])
+	}
+}
+
 func TestReadKubeBurnerMetricsIgnoresUnsupportedDocuments(t *testing.T) {
 	runDir := copyKubeBurnerFixtures(t, "ignored-podLatencyMeasurement.json", "jobSummary.json")
 	writeKubeBurnerMetric(t, runDir, "unknown.json", `[{"metricName":"notDeclared","value":1,"timestamp":"2026-07-11T00:00:00Z","labels":{}}]`)
@@ -73,7 +96,28 @@ func TestReadKubeBurnerMetricsIgnoresUnsupportedDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 4 || len(rows) != 0 {
+	if files != 0 || len(rows) != 0 {
+		t.Fatalf("files/rows = %d/%#v", files, rows)
+	}
+}
+
+func TestReadKubeBurnerMetricsCountsMixedFileOnce(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "mixed.json", `[
+		{"metricName":"notDeclared","value":1},
+		{"metricName":"declared","value":2,"timestamp":"2026-07-11T00:00:00Z"}
+	]`)
+
+	rows, files, err := ReadKubeBurnerMetrics(
+		filepath.Join(runDir, "raw", "metrics"),
+		runDir,
+		[]string{"declared"},
+		map[string]string{"declared": "count"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || len(rows) != 1 {
 		t.Fatalf("files/rows = %d/%#v", files, rows)
 	}
 }
@@ -87,6 +131,9 @@ func TestReadKubeBurnerMetricsRejectsMalformedAcceptedDocuments(t *testing.T) {
 		{name: "missing quantile", document: `[{"metricName":"podLatencyQuantilesMeasurement","P50":1,"P95":2,"max":4,"avg":3,"jobName":"job","quantileName":"Ready"}]`, field: "P99"},
 		{name: "malformed value", document: `[{"metricName":"declared","value":"1","timestamp":"2026-07-11T00:00:00Z","labels":{}}]`, field: "value"},
 		{name: "malformed labels", document: `[{"metricName":"declared","value":1,"timestamp":"2026-07-11T00:00:00Z","labels":{"pod":1}}]`, field: "labels"},
+		{name: "null labels", document: `[{"metricName":"declared","value":1,"timestamp":"2026-07-11T00:00:00Z","labels":null}]`, field: "labels"},
+		{name: "array labels", document: `[{"metricName":"declared","value":1,"timestamp":"2026-07-11T00:00:00Z","labels":[]}]`, field: "labels"},
+		{name: "scalar labels", document: `[{"metricName":"declared","value":1,"timestamp":"2026-07-11T00:00:00Z","labels":"pod=demo"}]`, field: "labels"},
 		{name: "malformed timestamp", document: `[{"metricName":"declared","value":1,"timestamp":"not-a-time","labels":{}}]`, field: "timestamp"},
 	}
 

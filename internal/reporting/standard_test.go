@@ -102,6 +102,13 @@ func TestReadStandardSummariesRejectsInvalidDocuments(t *testing.T) {
 		{name: "non-string dimension", document: `{"schemaVersion":1,"dimensions":{"workload":1},"metrics":[{"name":"metric","value":1,"unit":"count"}]}`, field: "dimensions"},
 		{name: "unknown field", document: `{"schemaVersion":1,"dimensions":{},"metrics":[{"name":"metric","value":1,"unit":"count"}],"extra":true}`, field: "extra"},
 		{name: "unknown metric field", document: `{"schemaVersion":1,"dimensions":{},"metrics":[{"name":"metric","value":1,"unit":"count","extra":true}]}`, field: "extra"},
+		{name: "duplicate schema version", document: `{"schemaVersion":1,"schemaVersion":1,"dimensions":{},"metrics":[{"name":"metric","value":1,"unit":"count"}]}`, field: "schemaVersion"},
+		{name: "duplicate dimension", document: `{"schemaVersion":1,"dimensions":{"runtime":"kata","runtime":"runc"},"metrics":[{"name":"metric","value":1,"unit":"count"}]}`, field: "dimensions.runtime"},
+		{name: "duplicate metric value", document: `{"schemaVersion":1,"dimensions":{},"metrics":[{"name":"metric","value":1,"value":2,"unit":"count"}]}`, field: "metrics[0].value"},
+		{name: "wrong case schema version", document: `{"SchemaVersion":1,"dimensions":{},"metrics":[{"name":"metric","value":1,"unit":"count"}]}`, field: "SchemaVersion"},
+		{name: "wrong case dimensions", document: `{"schemaVersion":1,"Dimensions":{},"metrics":[{"name":"metric","value":1,"unit":"count"}]}`, field: "Dimensions"},
+		{name: "wrong case metric name", document: `{"schemaVersion":1,"dimensions":{},"metrics":[{"Name":"metric","value":1,"unit":"count"}]}`, field: "metrics[0].Name"},
+		{name: "wrong case metric value", document: `{"schemaVersion":1,"dimensions":{},"metrics":[{"name":"metric","Value":1,"unit":"count"}]}`, field: "metrics[0].Value"},
 		{name: "malformed JSON", document: `{"schemaVersion":1`, field: "JSON"},
 		{name: "trailing JSON value", document: `{"schemaVersion":1,"dimensions":{},"metrics":[{"name":"metric","value":1,"unit":"count"}]} {}`, field: "JSON"},
 	}

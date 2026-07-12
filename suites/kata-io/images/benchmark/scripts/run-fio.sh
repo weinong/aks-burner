@@ -43,15 +43,39 @@ read_clat_p99_ns="0"
 write_clat_p99_ns="0"
 read_runtime_seconds="0"
 write_runtime_seconds="0"
-if [ -s "$OUT_DIR/fio.json" ] && jq -e '.jobs | type == "array" and length > 0' "$OUT_DIR/fio.json" > /dev/null 2>&1; then
-  read_iops="$(jq '[.jobs[].read.iops // 0] | add' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
-  write_iops="$(jq '[.jobs[].write.iops // 0] | add' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
-  read_bw_bytes="$(jq '[.jobs[].read.bw_bytes // 0] | add' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
-  write_bw_bytes="$(jq '[.jobs[].write.bw_bytes // 0] | add' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
-  read_clat_p99_ns="$(jq '[.jobs[].read.clat_ns.percentile."99.000000" // 0] | max' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
-  write_clat_p99_ns="$(jq '[.jobs[].write.clat_ns.percentile."99.000000" // 0] | max' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
-  read_runtime_seconds="$(jq '[.jobs[].read.runtime // 0] | max / 1000' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
-  write_runtime_seconds="$(jq '[.jobs[].write.runtime // 0] | max / 1000' "$OUT_DIR/fio.json" 2>/dev/null || echo 0)"
+if [ "$exit_code" -eq 0 ]; then
+  if ! parsed_metrics="$(jq -er '
+    def numeric: type == "number";
+    if (.jobs | type) != "array" or (.jobs | length) == 0 then
+      error("jobs must be a non-empty array")
+    elif all(.jobs[];
+      (.read.iops | numeric) and
+      (.write.iops | numeric) and
+      (.read.bw_bytes | numeric) and
+      (.write.bw_bytes | numeric) and
+      (.read.clat_ns.percentile."99.000000" | numeric) and
+      (.write.clat_ns.percentile."99.000000" | numeric) and
+      (.read.runtime | numeric) and
+      (.write.runtime | numeric)
+    ) | not then
+      error("summary fields must all be numeric")
+    else
+      [
+        ([.jobs[].read.iops] | add),
+        ([.jobs[].write.iops] | add),
+        ([.jobs[].read.bw_bytes] | add),
+        ([.jobs[].write.bw_bytes] | add),
+        ([.jobs[].read.clat_ns.percentile."99.000000"] | max),
+        ([.jobs[].write.clat_ns.percentile."99.000000"] | max),
+        ([.jobs[].read.runtime] | max / 1000),
+        ([.jobs[].write.runtime] | max / 1000)
+      ] | @tsv
+    end
+  ' "$OUT_DIR/fio.json")"; then
+    printf 'failed to parse required numeric FIO summary fields from %s\n' "$OUT_DIR/fio.json" >&2
+    exit 1
+  fi
+  IFS=$'\t' read -r read_iops write_iops read_bw_bytes write_bw_bytes read_clat_p99_ns write_clat_p99_ns read_runtime_seconds write_runtime_seconds <<< "$parsed_metrics"
 fi
 active_runtime_seconds="$(awk "BEGIN { print (${read_runtime_seconds} > ${write_runtime_seconds}) ? ${read_runtime_seconds} : ${write_runtime_seconds} }")"
 setup_overhead_seconds="$(awk "BEGIN { value = ${duration_seconds} - ${active_runtime_seconds}; print (value > 0 ? value : 0) }")"

@@ -41,6 +41,7 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 	sort.Strings(paths)
 
 	rows := []Row{}
+	contributingFiles := 0
 	for _, path := range paths {
 		source, err := filepath.Rel(runDir, path)
 		if err != nil {
@@ -51,6 +52,7 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 		if err != nil {
 			return nil, 0, err
 		}
+		rowsBeforeFile := len(rows)
 		for index, document := range documents {
 			metricName, err := requiredString(document, "metricName")
 			if err != nil {
@@ -73,11 +75,14 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 				return nil, 0, fmt.Errorf("%s: documents[%d]: %w", source, index, err)
 			}
 		}
+		if len(rows) > rowsBeforeFile {
+			contributingFiles++
+		}
 	}
 	if err := ValidateRows(rows); err != nil {
 		return nil, 0, err
 	}
-	return rows, len(paths), nil
+	return rows, contributingFiles, nil
 }
 
 func readKubeBurnerDocuments(path, source string) ([]map[string]json.RawMessage, error) {
@@ -145,16 +150,14 @@ func appendPrometheusRow(rows []Row, source, metricName, unit string, document m
 		return nil, fmt.Errorf("timestamp must be RFC3339: %w", err)
 	}
 
-	encodedLabels, ok := document["labels"]
-	if !ok {
-		return nil, fmt.Errorf("labels field is required")
-	}
-	var labels map[string]string
-	if err := json.Unmarshal(encodedLabels, &labels); err != nil {
-		return nil, fmt.Errorf("labels must contain only string values: %w", err)
-	}
-	if labels == nil {
-		return nil, fmt.Errorf("labels must be an object")
+	labels := map[string]string{}
+	if encodedLabels, ok := document["labels"]; ok {
+		if err := json.Unmarshal(encodedLabels, &labels); err != nil {
+			return nil, fmt.Errorf("labels must be an object containing only string values: %w", err)
+		}
+		if labels == nil {
+			return nil, fmt.Errorf("labels must be an object")
+		}
 	}
 	dimensions := make(map[string]string, len(labels)+2)
 	for key, value := range labels {

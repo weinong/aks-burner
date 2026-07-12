@@ -852,6 +852,8 @@ for arg in "$@"; do
 done
 if [[ "${FAKE_FIO_MALFORMED:-}" == "1" ]]; then
   printf '{malformed\n' > "$output"
+elif [[ "${FAKE_FIO_INCOMPLETE:-}" == "1" ]]; then
+  printf '{"jobs":[{"read":{"iops":1}}]}\n' > "$output"
 else
   cat > "$output" <<'EOF'
 {"jobs":[{"read":{"iops":101.5,"bw_bytes":4096,"runtime":1250,"clat_ns":{"percentile":{"99.000000":700}}},"write":{"iops":2,"bw_bytes":8192,"runtime":500,"clat_ns":{"percentile":{"99.000000":900}}}}]}
@@ -867,13 +869,15 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 	cmd.Env = append(os.Environ(),
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"TIME_BIN="+filepath.Join(binDir, "time"),
-		"FAKE_BENCHMARK_EXIT=17",
+		"FAKE_BENCHMARK_EXIT=0",
 		"RUN_ID=run-1", "SCENARIO=fio-scenario", "SAMPLE_ID=sample-a",
 		"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
 		"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
 		"WORK_DIR="+filepath.Join(tempDir, "work"), "RESULTS_DIR="+resultsDir,
 	)
-	assertCommandExitCode(t, cmd, 17)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run-fio.sh failed: %v\n%s", err, output)
+	}
 
 	sampleDir := filepath.Join(resultsDir, "run-1", "fio-scenario", "sample-a")
 	assertKataIOSummary(t, resultsDir, tempDir, map[string]string{
@@ -884,7 +888,7 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 		"exit_code": "code", "read_iops": "operations/second", "write_iops": "operations/second",
 		"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
 		"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
-	}, map[string]string{"exit_code": "17", "active_runtime": "1.25", "read_iops": "101.5"})
+	}, map[string]string{"exit_code": "0", "active_runtime": "1.25", "read_iops": "101.5"})
 	assertFilesExist(t, sampleDir, "fio.json", "time.txt", "stdout.log", "stderr.log", "proc-self-io-before.txt", "proc-self-io-after.txt", "df-before.txt", "df-after.txt")
 	assertFileDoesNotExist(t, filepath.Join(sampleDir, "summary.prom"))
 
@@ -909,6 +913,38 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 		"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
 		"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
 	}, map[string]string{"exit_code": "19", "active_runtime": "0", "read_iops": "0"})
+
+	malformedSuccessResultsDir := filepath.Join(tempDir, "malformed-success-results")
+	cmd = exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TIME_BIN="+filepath.Join(binDir, "time"),
+		"FAKE_BENCHMARK_EXIT=0", "FAKE_FIO_MALFORMED=1",
+		"RUN_ID=run-3", "SCENARIO=fio-scenario", "SAMPLE_ID=sample-d",
+		"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
+		"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
+		"WORK_DIR="+filepath.Join(tempDir, "malformed-success-work"), "RESULTS_DIR="+malformedSuccessResultsDir,
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("run-fio.sh succeeded with malformed FIO JSON and exit 0")
+	}
+	assertFileDoesNotExist(t, filepath.Join(malformedSuccessResultsDir, "run-3", "fio-scenario", "sample-d", "summary.json"))
+
+	incompleteResultsDir := filepath.Join(tempDir, "incomplete-results")
+	cmd = exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TIME_BIN="+filepath.Join(binDir, "time"),
+		"FAKE_BENCHMARK_EXIT=0", "FAKE_FIO_INCOMPLETE=1",
+		"RUN_ID=run-4", "SCENARIO=fio-scenario", "SAMPLE_ID=sample-e",
+		"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
+		"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
+		"WORK_DIR="+filepath.Join(tempDir, "incomplete-work"), "RESULTS_DIR="+incompleteResultsDir,
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("run-fio.sh succeeded with incomplete FIO JSON and exit 0")
+	}
+	assertFileDoesNotExist(t, filepath.Join(incompleteResultsDir, "run-4", "fio-scenario", "sample-e", "summary.json"))
 }
 
 func TestKataIOGitSummary(t *testing.T) {

@@ -57,6 +57,31 @@ func TestGenerateCombinesDeclaredSourcesWithoutAggregation(t *testing.T) {
 	}
 }
 
+func TestGenerateCountsOnlyKubeBurnerFilesContributingRows(t *testing.T) {
+	workspace := t.TempDir()
+	runDir := filepath.Join(workspace, "results", "run-1")
+	writeKubeBurnerMetric(t, runDir, "ignored.json", `[{"metricName":"notDeclared"}]`)
+	data, err := os.ReadFile(filepath.Join("testdata", "kube-burner-2.7.3", "podStartTotalP95.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKubeBurnerMetric(t, runDir, "mixed.json", `[{"metricName":"jobSummary"},`+strings.TrimPrefix(strings.TrimSpace(string(data)), "["))
+	var out bytes.Buffer
+	cfg := Config{
+		Sources:               Sources{KubeBurner: true},
+		PrometheusMetricNames: []string{"podStartTotalP95"},
+		PrometheusMetricUnits: map[string]string{"podStartTotalP95": "seconds"},
+	}
+
+	result, err := Generate(runDir, cfg, RunInfo{WorkspaceRoot: workspace}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SourceFiles != 1 || result.Rows != 1 {
+		t.Fatalf("result = %#v, want 1 contributing source and 1 row", result)
+	}
+}
+
 func TestGeneratePreviewRowLimit(t *testing.T) {
 	for _, test := range []struct {
 		rows        int

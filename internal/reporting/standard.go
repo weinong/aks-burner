@@ -130,13 +130,15 @@ func readStandardSummaries(artifactsDir, runDir string, walkDir func(string, fs.
 }
 
 func readStandardDocument(path, source string) (standardDocument, error) {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return standardDocument{}, fmt.Errorf("%s: open JSON: %w", source, err)
 	}
-	defer file.Close()
+	if err := validateStandardJSON(data); err != nil {
+		return standardDocument{}, fmt.Errorf("%s: invalid JSON field or document shape: %w", source, err)
+	}
 
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	var document standardDocument
@@ -151,6 +153,110 @@ func readStandardDocument(path, source string) (standardDocument, error) {
 		return standardDocument{}, fmt.Errorf("%s: invalid trailing JSON: %w", source, err)
 	}
 	return document, nil
+}
+
+type standardJSONContext int
+
+const (
+	standardJSONGeneric standardJSONContext = iota
+	standardJSONDocument
+	standardJSONDimensions
+	standardJSONMetrics
+	standardJSONMetric
+)
+
+func validateStandardJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := validateStandardJSONValue(decoder, "", standardJSONDocument); err != nil {
+		return err
+	}
+	if token, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("unexpected trailing token %v", token)
+		}
+		return fmt.Errorf("invalid trailing JSON: %w", err)
+	}
+	return nil
+}
+
+func validateStandardJSONValue(decoder *json.Decoder, path string, context standardJSONContext) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		return validateStandardJSONObject(decoder, path, context)
+	case '[':
+		index := 0
+		for decoder.More() {
+			childContext := standardJSONGeneric
+			childPath := fmt.Sprintf("%s[%d]", path, index)
+			if context == standardJSONMetrics {
+				childContext = standardJSONMetric
+			}
+			if err := validateStandardJSONValue(decoder, childPath, childContext); err != nil {
+				return err
+			}
+			index++
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return fmt.Errorf("unexpected delimiter %q", delimiter)
+	}
+}
+
+func validateStandardJSONObject(decoder *json.Decoder, path string, context standardJSONContext) error {
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("%s object member name must be a string", path)
+		}
+		fieldPath := name
+		if path != "" {
+			fieldPath = path + "." + name
+		}
+		if seen[name] {
+			return fmt.Errorf("%s is a duplicate object member", fieldPath)
+		}
+		seen[name] = true
+
+		childContext := standardJSONGeneric
+		switch context {
+		case standardJSONDocument:
+			switch name {
+			case "schemaVersion":
+			case "dimensions":
+				childContext = standardJSONDimensions
+			case "metrics":
+				childContext = standardJSONMetrics
+			default:
+				return fmt.Errorf("%s is not an allowed field", fieldPath)
+			}
+		case standardJSONMetric:
+			switch name {
+			case "name", "value", "unit":
+			default:
+				return fmt.Errorf("%s is not an allowed field", fieldPath)
+			}
+		}
+		if err := validateStandardJSONValue(decoder, fieldPath, childContext); err != nil {
+			return err
+		}
+	}
+	_, err := decoder.Token()
+	return err
 }
 
 func expandStandardDocument(document standardDocument, source string) ([]Row, error) {
