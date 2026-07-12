@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: REPLACE_POD_NAME
+  namespace: REPLACE_NAMESPACE
+  labels:
+    app.kubernetes.io/name: kata-direct-volume-ab
+    kata-direct-volume-ab/run: REPLACE_RUN_LABEL
+    kata-direct-volume-ab/case: REPLACE_CASE
+spec:
+  runtimeClassName: kata-vm-isolation
+  nodeName: REPLACE_NODE
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 5
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: kata-direct-volume-ab
+      effect: NoSchedule
+  containers:
+    - name: probe
+      image: REPLACE_PROBE_IMAGE
+      imagePullPolicy: IfNotPresent
+      command: [/bin/bash, -ceu, "printf '%s' REPLACE_COMMAND_B64 | base64 -d | /bin/bash -seu"]
+      securityContext: &probeSecurity
+        allowPrivilegeEscalation: false
+        capabilities:
+          add: [SYS_ADMIN]
+          drop: [ALL]
+        runAsNonRoot: false
+        runAsUser: 0
+        seccompProfile:
+          type: RuntimeDefault
+      resources: &probeResources
+        requests: {cpu: "1", memory: 1Gi}
+        limits: {cpu: "1", memory: 1Gi}
+      volumeDevices:
+        - name: testdisk
+          devicePath: /dev/testdisk
+  volumes:
+    - name: testdisk
+      persistentVolumeClaim:
+        claimName: REPLACE_PVC_NAME

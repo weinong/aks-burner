@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: REPLACE_PV_NAME
+  labels:
+    app.kubernetes.io/name: kata-direct-volume-ab
+    kata-direct-volume-ab/run: REPLACE_RUN_LABEL
+spec:
+  capacity:
+    storage: 4Gi
+  volumeMode: Block
+  accessModes:
+    - ReadWriteOncePod
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  local:
+    path: REPLACE_LOOP_DEVICE
+  claimRef:
+    namespace: REPLACE_NAMESPACE
+    name: REPLACE_PVC_NAME
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [REPLACE_NODE]

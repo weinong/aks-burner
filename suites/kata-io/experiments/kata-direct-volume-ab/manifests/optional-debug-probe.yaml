@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: REPLACE_POD_NAME
+  namespace: REPLACE_NAMESPACE
+  labels:
+    app.kubernetes.io/name: kata-direct-volume-ab-debug
+    kata-direct-volume-ab/run: REPLACE_RUN_LABEL
+spec:
+  runtimeClassName: kata-vm-isolation
+  nodeName: REPLACE_NODE
+  restartPolicy: Never
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: kata-direct-volume-ab
+      effect: NoSchedule
+  containers:
+    - name: probe
+      image: REPLACE_PROBE_IMAGE
+      imagePullPolicy: IfNotPresent
+      command: [/bin/bash, -ceu, "uname -a; lsblk -a -b -O; cat /proc/mounts; sleep 30"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: [ALL]}
+        runAsUser: 0
+        seccompProfile: {type: RuntimeDefault}
+      resources:
+        requests: {cpu: "1", memory: 1Gi}
+        limits: {cpu: "1", memory: 1Gi}
