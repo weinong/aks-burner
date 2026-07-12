@@ -773,7 +773,12 @@ func TestRunSuiteRejectsUnsupportedKubeBurnerVersionBeforeSideEffects(t *testing
 	t.Setenv("PATH", binDir)
 	withWorkingDir(t, root)
 
-	err := run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	err := runSuiteWithDependencies([]string{"--suite", "existing", "--mode", "smoke"}, runSuiteDependencies{
+		AzureUserAlias: func(context.Context) (string, error) {
+			t.Fatal("AzureUserAlias called before kube-burner version validation")
+			return "", nil
+		},
+	})
 	if err == nil || !strings.Contains(err.Error(), "2.7.3") || !strings.Contains(err.Error(), "2.7.2") {
 		t.Fatalf("run-suite error = %v, want kube-burner version error", err)
 	}
@@ -791,7 +796,30 @@ func TestRunSuiteReportingValidationFailsBeforeWorkloadSideEffects(t *testing.T)
 	root := testRepoRoot(t)
 	writeBuildContextSuite(t, root)
 	replaceFileText(t, filepath.Join(root, "suites", "existing", "requirements.yml"), "      kubeBurner: true", "      kubeBurner: false")
-	assertRunSuiteLocalPreflightFailure(t, root, "reporting source")
+	binDir := t.TempDir()
+	azMarker := filepath.Join(t.TempDir(), "az.log")
+	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
+	kubeBurnerMarker := filepath.Join(t.TempDir(), "kube-burner.log")
+	writeRecordingCommand(t, binDir, "az", azMarker, "")
+	writeRecordingCommand(t, binDir, "kubectl", kubectlMarker, "")
+	writeVersionRecordingKubeBurner(t, binDir, kubeBurnerMarker)
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	err := runSuiteWithDependencies([]string{"--suite", "existing", "--mode", "smoke"}, runSuiteDependencies{
+		AzureUserAlias: func(context.Context) (string, error) {
+			t.Fatal("AzureUserAlias called before reporting validation")
+			return "", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "reporting source") {
+		t.Fatalf("run-suite error = %v, want reporting source error", err)
+	}
+	for _, marker := range []string{azMarker, kubectlMarker, kubeBurnerMarker} {
+		if data, _ := os.ReadFile(marker); len(data) != 0 {
+			t.Fatalf("side effect before reporting validation in %s: %s", marker, data)
+		}
+	}
 }
 
 func TestRunSuiteMissingWorkloadFailsBeforeSideEffects(t *testing.T) {
@@ -1630,6 +1658,7 @@ func TestManagedRunSuiteRejectsExplicitEmptyResourceGroupBeforeIdentityOrAzureAc
 
 func TestManagedRunSuiteIdentityFailurePreventsAzureAndResultMutations(t *testing.T) {
 	root := provisionTestRepo(t)
+	writeVersionedKubeBurner(t, filepath.Join(root, "bin", "kube-burner"), "2.7.3")
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1997,6 +2026,26 @@ func TestExecuteRunCopyAndReportReturnsArtifactWaitFailureWithoutReporting(t *te
 	)
 	if err != waitErr {
 		t.Fatalf("executeRunCopyAndReport() error = %v, want original wait error", err)
+	}
+}
+
+func TestExecuteRunCopyAndReportReturnsArtifactWaitFailureWithCopyContext(t *testing.T) {
+	waitErr := errors.New("artifact wait failed")
+	copyErr := errors.New("artifact copy failed")
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard,
+		func(string, string, kubetarget.Target) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config) error { return waitErr },
+		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return copyErr },
+		func(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
+			t.Fatal("report called after artifact wait failure")
+			return reporting.Result{}, nil
+		},
+	)
+	if !errors.Is(err, waitErr) || errors.Is(err, copyErr) {
+		t.Fatalf("executeRunCopyAndReport() error = %v, want wait error identity only", err)
+	}
+	if !strings.Contains(err.Error(), "artifact copy also failed") || strings.Contains(err.Error(), "kube-burner failed") {
+		t.Fatalf("executeRunCopyAndReport() error = %v, want copy context without kube-burner failure", err)
 	}
 }
 

@@ -98,6 +98,9 @@ func readKubeBurnerDocuments(path, source string) ([]map[string]json.RawMessage,
 	if err := decoder.Decode(&documents); err != nil {
 		return nil, fmt.Errorf("%s: invalid JSON document array: %w", source, err)
 	}
+	if documents == nil {
+		return nil, fmt.Errorf("%s: invalid JSON document array: top-level value must be an array", source)
+	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {

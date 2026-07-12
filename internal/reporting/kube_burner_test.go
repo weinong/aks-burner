@@ -101,6 +101,33 @@ func TestReadKubeBurnerMetricsIgnoresUnsupportedDocuments(t *testing.T) {
 	}
 }
 
+func TestReadKubeBurnerMetricsAcceptsEmptyDocumentArray(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "empty.json", `[]`)
+
+	rows, files, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 0 || len(rows) != 0 {
+		t.Fatalf("files/rows = %d/%#v", files, rows)
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsNonArrayTopLevelValues(t *testing.T) {
+	for _, document := range []string{`null`, `{}`, `"document"`, `1`, `true`} {
+		t.Run(document, func(t *testing.T) {
+			runDir := t.TempDir()
+			writeKubeBurnerMetric(t, runDir, "invalid.json", document)
+
+			_, _, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), "invalid JSON document array") {
+				t.Fatalf("ReadKubeBurnerMetrics() error = %v, want top-level array error", err)
+			}
+		})
+	}
+}
+
 func TestReadKubeBurnerMetricsCountsMixedFileOnce(t *testing.T) {
 	runDir := t.TempDir()
 	writeKubeBurnerMetric(t, runDir, "mixed.json", `[

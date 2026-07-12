@@ -520,14 +520,6 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if req.Requires.Images != nil {
 		imageBuilds = req.Requires.Images.Builds
 	}
-	if deps.AzureUserAlias == nil {
-		deps.AzureUserAlias = currentAzureUserAlias
-	}
-	resourceGroupNeeded := *kubeContext == "" || len(imageBuilds) > 0
-	names, err := resolveAzureResourceNames(context.Background(), *suiteName, *resourceGroup, *clusterNameOverride, resourceGroupNeeded, deps.AzureUserAlias)
-	if err != nil {
-		return err
-	}
 	if err := infra.ValidateNodePools(*suiteName, req.Requires.Infrastructure.NodePools, req.Requires.NodeSelectors); err != nil {
 		return err
 	}
@@ -580,6 +572,14 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 		return err
 	}
 	if err := runpkg.ValidateKubeBurnerVersion(root); err != nil {
+		return err
+	}
+	if deps.AzureUserAlias == nil {
+		deps.AzureUserAlias = currentAzureUserAlias
+	}
+	resourceGroupNeeded := *kubeContext == "" || len(imageBuilds) > 0
+	names, err := resolveAzureResourceNames(context.Background(), *suiteName, *resourceGroup, *clusterNameOverride, resourceGroupNeeded, deps.AzureUserAlias)
+	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -739,24 +739,29 @@ func executeRunCopyAndReport(
 		}
 		artifactCfg.CopyImage = copyImage
 	}
-	executeErr := execute(workloadPath, logPath, target)
-	if executeErr == nil && artifactCfg.Enabled {
-		if err := waitArtifactJobs(ctx, target, artifactCfg); err != nil {
-			executeErr = err
-		}
+	workloadErr := execute(workloadPath, logPath, target)
+	var waitErr error
+	if workloadErr == nil && artifactCfg.Enabled {
+		waitErr = waitArtifactJobs(ctx, target, artifactCfg)
 	}
-	var artifactErr error
+	var copyErr error
 	if artifactCfg.Enabled {
-		artifactErr = copyArtifacts(ctx, target, artifactCfg, artifactDestination, artifactSubpath)
+		copyErr = copyArtifacts(ctx, target, artifactCfg, artifactDestination, artifactSubpath)
 	}
-	if executeErr != nil {
-		if artifactErr != nil {
-			return fmt.Errorf("kube-burner failed: %w; artifact copy also failed: %v", executeErr, artifactErr)
+	if workloadErr != nil {
+		if copyErr != nil {
+			return fmt.Errorf("kube-burner failed: %w; artifact copy also failed: %v", workloadErr, copyErr)
 		}
-		return executeErr
+		return workloadErr
 	}
-	if artifactErr != nil {
-		return artifactErr
+	if waitErr != nil {
+		if copyErr != nil {
+			return fmt.Errorf("artifact wait failed: %w; artifact copy also failed: %v", waitErr, copyErr)
+		}
+		return waitErr
+	}
+	if copyErr != nil {
+		return copyErr
 	}
 	_, err := report(runDir, reportingCfg, runInfo, out)
 	return err
