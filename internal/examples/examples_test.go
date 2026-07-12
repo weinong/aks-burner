@@ -854,9 +854,19 @@ if [[ "${FAKE_FIO_MALFORMED:-}" == "1" ]]; then
   printf '{malformed\n' > "$output"
 elif [[ "${FAKE_FIO_INCOMPLETE:-}" == "1" ]]; then
   printf '{"jobs":[{"read":{"iops":1}}]}\n' > "$output"
+elif [[ "${FAKE_FIO_READ_ONLY:-}" == "1" ]]; then
+  printf '%s\n' '{"jobs":[{"read":{"iops":101.5,"bw_bytes":4096,"runtime":1250,"total_ios":100,"clat_ns":{"percentile":{"99.000000":700}}},"write":{"iops":0,"bw_bytes":0,"runtime":0,"total_ios":0,"clat_ns":{}}}]}' > "$output"
+elif [[ "${FAKE_FIO_WRITE_ONLY:-}" == "1" ]]; then
+  printf '%s\n' '{"jobs":[{"read":{"iops":0,"bw_bytes":0,"runtime":0,"total_ios":0,"clat_ns":{}},"write":{"iops":202.5,"bw_bytes":8192,"runtime":750,"total_ios":200,"clat_ns":{"percentile":{"99.000000":900}}}}]}' > "$output"
+elif [[ "${FAKE_FIO_ACTIVE_MISSING_P99:-}" == "1" ]]; then
+  printf '%s\n' '{"jobs":[{"read":{"iops":1,"bw_bytes":4096,"runtime":100,"total_ios":1,"clat_ns":{}},"write":{"iops":0,"bw_bytes":0,"runtime":0,"total_ios":0,"clat_ns":{}}}]}' > "$output"
+elif [[ "${FAKE_FIO_NEGATIVE_TOTAL_IOS:-}" == "1" ]]; then
+  printf '%s\n' '{"jobs":[{"read":{"iops":0,"bw_bytes":0,"runtime":0,"total_ios":-1,"clat_ns":{}},"write":{"iops":0,"bw_bytes":0,"runtime":0,"total_ios":0,"clat_ns":{}}}]}' > "$output"
+elif [[ "${FAKE_FIO_MULTI_JOB:-}" == "1" ]]; then
+  printf '%s\n' '{"jobs":[{"read":{"iops":100,"bw_bytes":1000,"runtime":1000,"total_ios":1,"clat_ns":{"percentile":{"99.000000":700}}},"write":{"iops":0,"bw_bytes":0,"runtime":0,"total_ios":0,"clat_ns":{}}},{"read":{"iops":0,"bw_bytes":0,"runtime":0,"total_ios":0,"clat_ns":{}},"write":{"iops":20,"bw_bytes":2000,"runtime":1500,"total_ios":2,"clat_ns":{"percentile":{"99.000000":900}}}},{"read":{"iops":50.5,"bw_bytes":500,"runtime":2000,"total_ios":3,"clat_ns":{"percentile":{"99.000000":800}}},"write":{"iops":30,"bw_bytes":3000,"runtime":500,"total_ios":4,"clat_ns":{"percentile":{"99.000000":1000}}}}]}' > "$output"
 else
   cat > "$output" <<'EOF'
-{"jobs":[{"read":{"iops":101.5,"bw_bytes":4096,"runtime":1250,"clat_ns":{"percentile":{"99.000000":700}}},"write":{"iops":2,"bw_bytes":8192,"runtime":500,"clat_ns":{"percentile":{"99.000000":900}}}}]}
+{"jobs":[{"read":{"iops":101.5,"bw_bytes":4096,"runtime":1250,"total_ios":100,"clat_ns":{"percentile":{"99.000000":700}}},"write":{"iops":2,"bw_bytes":8192,"runtime":500,"total_ios":2,"clat_ns":{"percentile":{"99.000000":900}}}}]}
 EOF
 fi
 printf 'fake fio stdout\n'
@@ -945,6 +955,80 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 		t.Fatal("run-fio.sh succeeded with incomplete FIO JSON and exit 0")
 	}
 	assertFileDoesNotExist(t, filepath.Join(incompleteResultsDir, "run-4", "fio-scenario", "sample-e", "summary.json"))
+
+	for _, tc := range []struct {
+		name       string
+		env        string
+		runID      string
+		sampleID   string
+		wantValues map[string]string
+	}{
+		{
+			name: "read-only", env: "FAKE_FIO_READ_ONLY=1", runID: "run-5", sampleID: "sample-f",
+			wantValues: map[string]string{"read_iops": "101.5", "write_iops": "0", "read_clat_p99": "700", "write_clat_p99": "0", "active_runtime": "1.25"},
+		},
+		{
+			name: "write-only", env: "FAKE_FIO_WRITE_ONLY=1", runID: "run-6", sampleID: "sample-g",
+			wantValues: map[string]string{"read_iops": "0", "write_iops": "202.5", "read_clat_p99": "0", "write_clat_p99": "900", "active_runtime": "0.75"},
+		},
+		{
+			name: "multi-job", env: "FAKE_FIO_MULTI_JOB=1", runID: "run-7", sampleID: "sample-h",
+			wantValues: map[string]string{
+				"read_iops": "150.5", "write_iops": "50", "read_bandwidth": "1500", "write_bandwidth": "5000",
+				"read_clat_p99": "800", "write_clat_p99": "1000", "active_runtime": "2",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caseResultsDir := filepath.Join(tempDir, tc.name+"-results")
+			cmd := exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"TIME_BIN="+filepath.Join(binDir, "time"), "FAKE_BENCHMARK_EXIT=0", tc.env,
+				"RUN_ID="+tc.runID, "SCENARIO=fio-scenario", "SAMPLE_ID="+tc.sampleID,
+				"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
+				"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
+				"WORK_DIR="+filepath.Join(tempDir, tc.name+"-work"), "RESULTS_DIR="+caseResultsDir,
+			)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run-fio.sh failed: %v\n%s", err, output)
+			}
+			assertKataIOSummary(t, caseResultsDir, tempDir, map[string]string{
+				"runtime": "kata", "storage": "azure-disk", "workload": "fio",
+				"profile": "randread-4k", "concurrency": "10", "sample": tc.sampleID,
+			}, map[string]string{
+				"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds",
+				"exit_code": "code", "read_iops": "operations/second", "write_iops": "operations/second",
+				"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
+				"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
+			}, tc.wantValues)
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		env      string
+		runID    string
+		sampleID string
+	}{
+		{name: "active-missing-p99", env: "FAKE_FIO_ACTIVE_MISSING_P99=1", runID: "run-8", sampleID: "sample-i"},
+		{name: "negative-total-ios", env: "FAKE_FIO_NEGATIVE_TOTAL_IOS=1", runID: "run-9", sampleID: "sample-j"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caseResultsDir := filepath.Join(tempDir, tc.name+"-results")
+			cmd := exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"TIME_BIN="+filepath.Join(binDir, "time"), "FAKE_BENCHMARK_EXIT=0", tc.env,
+				"RUN_ID="+tc.runID, "SCENARIO=fio-scenario", "SAMPLE_ID="+tc.sampleID,
+				"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
+				"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
+				"WORK_DIR="+filepath.Join(tempDir, tc.name+"-work"), "RESULTS_DIR="+caseResultsDir,
+			)
+			assertCommandExitCode(t, cmd, 1)
+			assertFileDoesNotExist(t, filepath.Join(caseResultsDir, tc.runID, "fio-scenario", tc.sampleID, "summary.json"))
+		})
+	}
 }
 
 func TestKataIOGitSummary(t *testing.T) {

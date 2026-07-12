@@ -45,30 +45,36 @@ read_runtime_seconds="0"
 write_runtime_seconds="0"
 if [ "$exit_code" -eq 0 ]; then
   if ! parsed_metrics="$(jq -er '
-    def numeric: type == "number";
+    def direction($value):
+      if (($value.iops | type) != "number") or
+         (($value.bw_bytes | type) != "number") or
+         (($value.runtime | type) != "number") or
+         (($value.total_ios | type) != "number") then
+        error("direction summary fields must be numeric")
+      elif $value.total_ios < 0 then
+        error("total_ios must not be negative")
+      elif $value.total_ios > 0 then
+        if ($value.clat_ns.percentile."99.000000" | type) != "number" then
+          error("active direction p99 completion latency must be numeric")
+        else
+          [$value.iops, $value.bw_bytes, $value.runtime, $value.clat_ns.percentile."99.000000"]
+        end
+      else
+        [$value.iops, $value.bw_bytes, $value.runtime, 0]
+      end;
     if (.jobs | type) != "array" or (.jobs | length) == 0 then
       error("jobs must be a non-empty array")
-    elif all(.jobs[];
-      (.read.iops | numeric) and
-      (.write.iops | numeric) and
-      (.read.bw_bytes | numeric) and
-      (.write.bw_bytes | numeric) and
-      (.read.clat_ns.percentile."99.000000" | numeric) and
-      (.write.clat_ns.percentile."99.000000" | numeric) and
-      (.read.runtime | numeric) and
-      (.write.runtime | numeric)
-    ) | not then
-      error("summary fields must all be numeric")
     else
+      (.jobs | map({read: direction(.read), write: direction(.write)})) as $jobs |
       [
-        ([.jobs[].read.iops] | add),
-        ([.jobs[].write.iops] | add),
-        ([.jobs[].read.bw_bytes] | add),
-        ([.jobs[].write.bw_bytes] | add),
-        ([.jobs[].read.clat_ns.percentile."99.000000"] | max),
-        ([.jobs[].write.clat_ns.percentile."99.000000"] | max),
-        ([.jobs[].read.runtime] | max / 1000),
-        ([.jobs[].write.runtime] | max / 1000)
+        ([$jobs[].read[0]] | add),
+        ([$jobs[].write[0]] | add),
+        ([$jobs[].read[1]] | add),
+        ([$jobs[].write[1]] | add),
+        ([$jobs[].read[3]] | max),
+        ([$jobs[].write[3]] | max),
+        ([$jobs[].read[2]] | max / 1000),
+        ([$jobs[].write[2]] | max / 1000)
       ] | @tsv
     end
   ' "$OUT_DIR/fio.json")"; then
