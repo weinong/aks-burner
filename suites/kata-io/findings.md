@@ -102,3 +102,11 @@ The split metrics separate two different effects:
 - Keep reporting split FIO metrics in benchmark artifacts.
 - Compare `fio_active_runtime_seconds` separately from `fio_setup_overhead_seconds` in summaries and dashboards.
 - If the goal is storage-substrate comparison, add a mode that controls the backing filesystem explicitly instead of comparing host ext4 `emptyDir` to Kata `virtiofs`.
+
+## Azure Container Storage Local NVMe Raw Block POC
+
+A separate POC on 2026-07-11 tested Azure Container Storage 2.x local NVMe with a Kubernetes raw block PVC and `volumeDevices`. The standard-runtime control wrote successfully. The Kata guest received the 10 GiB volume as `vdb`, and sysfs identified `/sys/bus/virtio/drivers/virtio_blk`, proving that this path bypasses `virtiofs`.
+
+The device was not usable for writes under the tested AKS managed Kata stack: `mkfs.ext4` and synchronized `dd` writes returned guest `vdb` I/O errors. Cloud-hypervisor opened the correct device-mapper LV as writable. After deleting only the Kata pod, the same PVC and PV were attached unchanged to a standard-runtime pod, where the identical synchronized write succeeded. Testing `disable_block_device_use = false` and direct block cache mode did not resolve the Kata failure; the managed node configuration was restored after the test.
+
+The experiment manifests, commands, versions, and evidence are recorded in [`experiments/acstor-local-nvme/README.md`](experiments/acstor-local-nvme/README.md). The next step is a newer managed Kata runtime or a self-managed current Kata build, not a filesystem-mode fallback through `virtiofs`.

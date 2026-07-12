@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: standard-local-nvme-block
+  namespace: kata-acstor-nvme
+  annotations:
+    localdisk.csi.acstor.io/accept-ephemeral-storage: "true"
+spec:
+  accessModes:
+    - ReadWriteOncePod
+  volumeMode: Block
+  storageClassName: local-csi
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: standard-local-nvme-block
+  namespace: kata-acstor-nvme
+  labels:
+    app: kata-acstor-nvme
+    runtime: standard
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    perf.azure.com/node-role: workload
+  containers:
+    - name: probe
+      image: ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+      command:
+        - /bin/bash
+        - -c
+        - apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends e2fsprogs fio util-linux && sleep infinity
+      readinessProbe:
+        exec:
+          command: [/bin/bash, -c, command -v fio >/dev/null && command -v mkfs.ext4 >/dev/null && test -b /dev/acstor-nvme]
+        periodSeconds: 2
+        failureThreshold: 300
+      securityContext:
+        capabilities:
+          add: [SYS_ADMIN]
+      volumeDevices:
+        - name: local-nvme
+          devicePath: /dev/acstor-nvme
+  volumes:
+    - name: local-nvme
+      persistentVolumeClaim:
+        claimName: standard-local-nvme-block

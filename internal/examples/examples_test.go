@@ -34,6 +34,80 @@ func TestKataPerfContractsValidate(t *testing.T) {
 	}
 }
 
+func TestKataAzureContainerStorageLocalNVMeExperiment(t *testing.T) {
+	root := filepath.Join("..", "..")
+	dir := filepath.Join(root, "suites", "kata-io", "experiments", "acstor-local-nvme")
+
+	assertContains := func(file string, wants ...string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("%s must contain %q", file, want)
+			}
+		}
+	}
+
+	assertContains("README.md",
+		"rg-aks-burner-kata-acstor-<run-id>",
+		"aksacsnvme<run-id>",
+		"Standard_L8s_v3",
+		"--enable-azure-container-storage ephemeralDisk",
+	)
+	assertContains("provision.sh",
+		`SYSTEM_NODE_COUNT="1"`,
+		`NVME_NODE_COUNT="1"`,
+		`SUBSCRIPTION_ID="${SUBSCRIPTION_ID:?`,
+		`RUN_ID="${RUN_ID:?`,
+		`CREATE_AZURE_RESOURCES="${CREATE_AZURE_RESOURCES:-}"`,
+		`RESOURCE_GROUP="rg-aks-burner-kata-acstor-${RUN_ID}"`,
+		`CLUSTER_NAME="aksacsnvme${RUN_ID}"`,
+		`--container-storage-version 2`,
+		`--ssh-access disabled`,
+		"wait_for_cluster_ready",
+		"wait_for_local_capacity",
+	)
+	assertContains("storageclass.yml",
+		"name: local-csi",
+		"storageoperator.acstor.io/nodeAffinity",
+		"kubernetes.azure.com/agentpool",
+		"nvmepool",
+		"provisioner: localdisk.csi.acstor.io",
+	)
+	for _, file := range []string{"standard-raw-block.yml", "kata-raw-block.yml"} {
+		assertContains(file,
+			"volumeMode: Block",
+			"ReadWriteOncePod",
+			`localdisk.csi.acstor.io/accept-ephemeral-storage: "true"`,
+			"volumeDevices:",
+			"devicePath: /dev/acstor-nvme",
+		)
+	}
+	assertContains("kata-raw-block.yml", "runtimeClassName: kata-vm-isolation")
+	assertContains("standard-same-pvc.yml",
+		"claimName: kata-local-nvme-block",
+		"volumeDevices:",
+		"devicePath: /dev/acstor-nvme",
+	)
+	assertContains("evidence.md",
+		"same PVC",
+		"virtio_blk",
+		"Input/output error",
+	)
+	assertContains("cleanup.sh",
+		`DELETE_AZURE_RESOURCES="${DELETE_AZURE_RESOURCES:-}"`,
+		`aks-burner-run-id`,
+		`az group delete`,
+	)
+	assertContains("README.md", "kubectl delete -f suites/kata-io/experiments/acstor-local-nvme/standard-same-pvc.yml")
+	for _, file := range []string{"standard-raw-block.yml", "kata-raw-block.yml", "standard-same-pvc.yml"} {
+		assertContains(file, "readinessProbe:", "command -v fio", "test -b /dev/acstor-nvme")
+	}
+}
+
 func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
 	root := filepath.Join("..", "..")
 	images, err := config.LoadImages(filepath.Join(root, "config/images.yml"))
