@@ -18,7 +18,7 @@ requires:
         vmSize: Standard_D8s_v5
         osType: Linux
         osSKU: AzureLinux
-        workloadRuntime: KataMshvVmIsolation
+        workloadRuntime: KataVmIsolation
         labels:
           perf.azure.com/node-role: workload
         taints: []

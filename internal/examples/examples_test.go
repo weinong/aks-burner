@@ -1,11 +1,13 @@
 package examples
 
 import (
+	"encoding/csv"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -682,7 +684,7 @@ func TestKataIOInfraDefaultsCanScheduleConcurrencyTen(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := doc.Requires.Infrastructure.NodePools[1]
-	if user.OSSKU != "AzureLinux" || user.WorkloadRuntime != "KataMshvVmIsolation" {
+	if user.OSSKU != "AzureLinux" || user.WorkloadRuntime != "KataVmIsolation" {
 		t.Fatalf("user pool = %#v", user)
 	}
 	nodeCount, vmSize := user.Count, user.VMSize
@@ -824,6 +826,121 @@ func TestKataIOBenchmarkImageFilesExist(t *testing.T) {
 	}
 }
 
+func TestKataIOVirtioBlkProbeIsPinnedAndFailClosed(t *testing.T) {
+	root := filepath.Join("..", "..", "suites", "kata-io", "experiments", "virtio-blk")
+	probe, err := os.ReadFile(filepath.Join(root, "direct-volume-probe.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Metadata struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+		Spec struct {
+			RuntimeClassName string `yaml:"runtimeClassName"`
+			NodeName         string `yaml:"nodeName"`
+			Containers       []struct {
+				Image   string   `yaml:"image"`
+				Command []string `yaml:"command"`
+			} `yaml:"containers"`
+			Volumes []struct {
+				HostPath struct {
+					Path string `yaml:"path"`
+				} `yaml:"hostPath"`
+			} `yaml:"volumes"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(probe, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Metadata.Name != "directvol-probe" || manifest.Metadata.Namespace != "kata-io" {
+		t.Fatalf("probe metadata = %#v", manifest.Metadata)
+	}
+	if manifest.Spec.RuntimeClassName != "kata-vm-isolation" || manifest.Spec.NodeName != "REPLACE_NODE" {
+		t.Fatalf("probe scheduling = %#v", manifest.Spec)
+	}
+	if len(manifest.Spec.Containers) != 1 || manifest.Spec.Containers[0].Image != "mcr.microsoft.com/azurelinux/base/core@sha256:58051d6dfcedeb83a40ade772977e550cf852c38f01fd6273ab9634b20afff60" {
+		t.Fatalf("probe container = %#v", manifest.Spec.Containers)
+	}
+	if len(manifest.Spec.Volumes) != 1 || manifest.Spec.Volumes[0].HostPath.Path != "/var/lib/kata-direct-volume/slot0" {
+		t.Fatalf("probe volume = %#v", manifest.Spec.Volumes)
+	}
+	command := strings.Join(manifest.Spec.Containers[0].Command, "\n")
+	for _, want := range []string{
+		`/dev/vda) echo "refusing guest root device`,
+		"/dev/vd*",
+		`test "$fstype" = ext4`,
+		"kata-virtio-blk-probe",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("direct-volume probe must contain %q", want)
+		}
+	}
+
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readme), "kubectl create namespace kata-io") {
+		t.Fatal("virtio-blk README must document the namespace prerequisite")
+	}
+}
+
+func TestKataIOVirtioBlkSampleMediansMatchFindings(t *testing.T) {
+	root := filepath.Join("..", "..", "suites", "kata-io")
+	file, err := os.Open(filepath.Join(root, "experiments", "virtio-blk", "benchmark-samples.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	records, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 7 {
+		t.Fatalf("benchmark sample rows = %d, want header plus six samples", len(records))
+	}
+
+	values := map[string]map[int][]float64{}
+	for _, row := range records[1:] {
+		if len(row) != len(records[0]) {
+			t.Fatalf("invalid benchmark row: %#v", row)
+		}
+		if values[row[0]] == nil {
+			values[row[0]] = map[int][]float64{}
+		}
+		for column := 2; column < len(row); column++ {
+			value, err := strconv.ParseFloat(row[column], 64)
+			if err != nil {
+				t.Fatalf("parse %q: %v", row[column], err)
+			}
+			values[row[0]][column] = append(values[row[0]][column], value)
+		}
+	}
+
+	findings, err := os.ReadFile(filepath.Join(root, "findings.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		runtime string
+		column  int
+		format  string
+	}{
+		{runtime: "standard-ext4", column: 2, format: "%.4fs"},
+		{runtime: "kata-virtiofs", column: 2, format: "%.3fs"},
+		{runtime: "standard-ext4", column: 5, format: "%,.2f"},
+		{runtime: "kata-virtiofs", column: 5, format: "%,.2f"},
+	} {
+		got := medianOfThree(t, values[check.runtime][check.column])
+		want := formatDecimal(got, check.format)
+		if !strings.Contains(string(findings), want) {
+			t.Fatalf("findings missing %s median %v formatted as %q", check.runtime, got, want)
+		}
+	}
+}
+
 func TestKataIOFioScriptSeparatesTotalAndActiveRuntimeMetrics(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
 	if err != nil {
@@ -896,4 +1013,33 @@ func compareMajorMinor(got string, want string) int {
 		return gotMajor - wantMajor
 	}
 	return gotMinor - wantMinor
+}
+
+func medianOfThree(t *testing.T, values []float64) float64 {
+	t.Helper()
+	if len(values) != 3 {
+		t.Fatalf("values = %v, want three samples", values)
+	}
+	if values[0] > values[1] {
+		values[0], values[1] = values[1], values[0]
+	}
+	if values[1] > values[2] {
+		values[1], values[2] = values[2], values[1]
+	}
+	if values[0] > values[1] {
+		values[0], values[1] = values[1], values[0]
+	}
+	return values[1]
+}
+
+func formatDecimal(value float64, format string) string {
+	if !strings.Contains(format, "%,") {
+		return fmt.Sprintf(format, value)
+	}
+	plainFormat := strings.Replace(format, "%,", "%", 1)
+	parts := strings.SplitN(fmt.Sprintf(plainFormat, value), ".", 2)
+	for i := len(parts[0]) - 3; i > 0; i -= 3 {
+		parts[0] = parts[0][:i] + "," + parts[0][i:]
+	}
+	return strings.Join(parts, ".")
 }

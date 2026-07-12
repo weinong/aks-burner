@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: directvol-probe
+  namespace: kata-io
+spec:
+  runtimeClassName: kata-vm-isolation
+  restartPolicy: Never
+  nodeName: REPLACE_NODE
+  containers:
+    - name: probe
+      image: mcr.microsoft.com/azurelinux/base/core@sha256:58051d6dfcedeb83a40ade772977e550cf852c38f01fd6273ab9634b20afff60
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          mount_line="$(grep ' /data ' /proc/mounts)"
+          source="$(printf '%s\n' "$mount_line" | cut -d' ' -f1)"
+          fstype="$(printf '%s\n' "$mount_line" | cut -d' ' -f3)"
+          case "$source" in
+            /dev/vda) echo "refusing guest root device $source" >&2; exit 1 ;;
+            /dev/vd*) ;;
+            *) echo "expected /data source /dev/vd*, got $source" >&2; exit 1 ;;
+          esac
+          test "$fstype" = ext4 || { echo "expected /data ext4, got $fstype" >&2; exit 1; }
+          printf 'kata-virtio-blk-probe\n' > /data/probe.txt
+          sync
+          test "$(cat /data/probe.txt)" = kata-virtio-blk-probe
+          printf '%s\n' "$mount_line"
+          ls -l /sys/block
+          sleep 600
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      hostPath:
+        path: /var/lib/kata-direct-volume/slot0
+        type: Directory
