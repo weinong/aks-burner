@@ -2,7 +2,7 @@
 
 ## Executive Result
 
-AKS Pod Sandboxing on the tested node image cannot use a node-local disk as a Kata direct volume. The packaged Kata runtime contains the upstream direct-volume CLI and uses the `virtio-blk` block driver, but AKS disables block-device use in the runtime configuration and does not allow a pod annotation to override it.
+The earlier direct-volume mount experiment could not use a node-local disk: physical and loop-backed ext4 mounts failed with guest `EIO`, while a raw file-backed direct volume failed with `ENOENT`. The packaged Kata runtime contains the upstream direct-volume CLI and uses the `virtio-blk` block driver, but AKS disables block-device use in the default runtime configuration and does not allow a pod annotation to override it.
 
 Changing that setting on one disposable experiment node proved that Cloud Hypervisor could create guest `/dev/vdb`, but none of the tested backing forms produced usable guest storage:
 
@@ -12,7 +12,7 @@ Changing that setting on one disposable experiment node proved that Cloud Hyperv
 | Host loop device | `/dev/vdb` appeared | ext4 mount failed with `EIO` |
 | Raw ext4 disk file on local NVMe | Kata attempted block storage setup | guest-agent setup failed with `ENOENT` |
 
-This failure boundary requires an AKS node-image or Kata-runtime change. Kubernetes workload YAML and direct-volume metadata alone cannot make the path viable on the tested managed image.
+A clean follow-up raw-block experiment on 2026-07-12 did not reproduce the write failure. A Kubernetes `volumeDevice` backed by a 4 GiB loop file completed five guest write variants, including direct-plus-fsync and FIO sync. This narrows the older negative result to the direct-volume construction or another unrecorded difference; it is no longer defensible to classify all node-local `virtio-blk` paths as broken on the image label.
 
 The supported Kata path remains `virtiofs`. On the same `Standard_L8s_v3` local NVMe filesystem, three native standard-container samples delivered a median `379,836` read IOPS and `1.56 GB/s`; three Kata `virtiofs` samples delivered `127,183` read IOPS and `0.52 GB/s. Kata setup overhead was `36.51x` standard and p99 completion latency was `30.14x` standard.
 
@@ -44,6 +44,14 @@ The final node device topology was:
 An earlier `Standard_D8ds_v5` pool did not expose a separate local disk because AKS placed its 300 GiB ephemeral OS disk on the SKU's 300 GiB resource disk. The pool was replaced with a managed-OS `Standard_L8s_v3` pool so that the local NVMe remained separate from the OS.
 
 ## Direct `virtio-blk` Experiment
+
+### Direct block write localization
+
+A clean follow-up cluster on 2026-07-12 did not reproduce the prior loop-backed `EIO`. The environment again reported AKS `1.36.1`, node image `AKSAzureLinux-V3katagen2-202606.19.0`, Kata `3.19.1`, and Cloud Hypervisor `51.1.0`, but used a Kubernetes raw-block `volumeDevice` backed by a 4 GiB loop file on dedicated local NVMe.
+
+Five fresh Kata sandboxes each matched three host-seeded 4 KiB markers. Buffered, buffered-plus-fsync, direct, direct-plus-fsync, and FIO sync queue-depth-1 writes all exited successfully, and every exact write pattern was present on the host after verified detachment. Cloud Hypervisor's matching backing FD was `O_RDWR` in every case. For the direct-plus-fsync case, tracefs captured a loop-device write request issue followed 55 microseconds later by completion with error `0`.
+
+The new result proves that the current raw-block path can complete end to end on this clean cluster; it does not explain the older failure. Userspace syscall tracing was unavailable because `strace` was not installed, and no node package was installed. The next useful comparison is the prior direct-volume mount construction and this raw-block construction on the same current node and loop device. Full automation, evidence, and cleanup details are retained in `experiments/virtio-blk-write-trace/`.
 
 ### Managed Runtime Configuration
 
@@ -166,16 +174,14 @@ The guest block inventory did not contain the Azure Disk. Bidirectional marker w
 
 ## Conclusion And Next Action
 
-1. The current AKS managed Kata image supports local NVMe only through host mounting plus `virtiofs`.
-2. Direct-volume tooling is present, but product configuration disables it and all three manual enablement probes failed in the runtime or guest-agent path.
+1. The supported host-filesystem path remains `virtiofs`; the tested direct-volume mount path failed.
+2. A separate Kubernetes raw-block `volumeDevice` path succeeded end to end after isolated enablement of block-device use.
 3. On identical local NVMe backing, Kata `virtiofs` delivered about `33.5%` of native ext4 read IOPS and bandwidth, with `36.51x` setup overhead and `30.14x` p99 latency.
-4. Further workload-manifest experimentation is unlikely to change the result. The next useful engineering work is an AKS node-image/Kata-runtime change that provides a supported block-device enablement mechanism and fixes physical-device `EIO` and file-backed `ENOENT` failures.
+4. The next useful engineering work is a same-node, same-loop comparison of direct-volume mount construction and Kubernetes raw-block construction, with userspace tracing built into the diagnostic image.
 
 ## Retained Experiment State
 
-- The isolated cluster and resource group remain deployed.
-- The workload pool remains one managed-OS `Standard_L8s_v3` Kata node.
+- The follow-up isolated cluster and resource group were deleted after evidence collection.
 - Kata runtime configuration is restored to its supported default.
-- Direct-volume metadata and raw disk image are removed.
-- `/dev/nvme0n1` remains formatted ext4 and host-mounted at `/mnt/kata-local-nvme`.
-- Temporary probe and benchmark pods and benchmark directories were removed.
+- Direct-volume metadata, loop mapping, backing file, local-NVMe mount, and tracefs instance are removed.
+- Temporary probe, diagnostic, and benchmark Kubernetes resources were removed.

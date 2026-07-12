@@ -1,0 +1,181 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: REPLACE_PV_NAME
+  labels:
+    app.kubernetes.io/name: kata-virtio-blk-write-trace
+    kata-io-run: REPLACE_RUN_LABEL
+spec:
+  capacity:
+    storage: 4Gi
+  volumeMode: Block
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  local:
+    path: REPLACE_HOST_DEVICE
+  claimRef:
+    namespace: REPLACE_NAMESPACE
+    name: REPLACE_PVC_NAME
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - REPLACE_NODE
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: REPLACE_PVC_NAME
+  namespace: REPLACE_NAMESPACE
+  labels:
+    app.kubernetes.io/name: kata-virtio-blk-write-trace
+    kata-io-run: REPLACE_RUN_LABEL
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block
+  storageClassName: ""
+  volumeName: REPLACE_PV_NAME
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: REPLACE_POD_NAME
+  namespace: REPLACE_NAMESPACE
+  labels:
+    app.kubernetes.io/name: kata-virtio-blk-write-trace
+    kata-io-run: REPLACE_RUN_LABEL
+    kata-io-case: REPLACE_CASE
+spec:
+  runtimeClassName: kata-vm-isolation
+  restartPolicy: Never
+  nodeName: REPLACE_NODE
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: kata-virtio-blk-write-trace
+      effect: NoSchedule
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: probe
+      image: REPLACE_PROBE_IMAGE
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: 0
+      env:
+        - name: CASE
+          value: REPLACE_CASE
+        - name: DEVICE
+          value: /dev/trace-block
+      command:
+        - /bin/bash
+        - -ceu
+        - |
+          set -o pipefail
+
+          timestamp() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
+          run() {
+            local label=$1
+            shift
+            local start end rc out err
+            start=$(timestamp)
+            out=$(mktemp)
+            err=$(mktemp)
+            printf 'COMMAND_START label=%q time=%s command=' "$label" "$start"
+            printf '%q ' "$@"
+            printf '\n'
+            if "$@" >"$out" 2>"$err"; then rc=0; else rc=$?; fi
+            cat "$out"
+            cat "$err" >&2
+            end=$(timestamp)
+            printf 'COMMAND_END label=%q time=%s status=%d errno_text=%q\n' \
+              "$label" "$end" "$rc" "$(tail -n 1 "$err")"
+            rm -f "$out" "$err"
+            return "$rc"
+          }
+
+          pattern_hash() {
+            head -c 4096 /dev/zero | tr '\0' "$1" | sha256sum | cut -d' ' -f1
+          }
+
+          write_offset() {
+            case "$CASE" in
+              A) printf '%s\n' 268435456 ;;
+              B) printf '%s\n' 402653184 ;;
+              C) printf '%s\n' 805306368 ;;
+              D) printf '%s\n' 1610612736 ;;
+              E) printf '%s\n' 2147483648 ;;
+              *) return 2 ;;
+            esac
+          }
+
+          [[ -b $DEVICE ]] || { printf 'raw block path is not a device: %s\n' "$DEVICE" >&2; exit 1; }
+          [[ $DEVICE != /dev/vda ]] || { printf 'refusing guest root device\n' >&2; exit 1; }
+          run lsblk lsblk -a -b -O
+          run block-size blockdev --getsize64 "$DEVICE"
+          [[ $(blockdev --getsize64 "$DEVICE") -eq 4294967296 ]] || exit 1
+          run logical-sector blockdev --getss "$DEVICE"
+          run physical-sector blockdev --getpbsz "$DEVICE"
+
+          read_offsets=(16777216 134217728 1073741824)
+          read_bytes=(r s t)
+          for index in 0 1 2; do
+            offset=${read_offsets[$index]}
+            marker=/tmp/read-marker-$index.bin
+            run "read-marker-$index" dd if="$DEVICE" of="$marker" bs=4096 count=1 \
+              skip="$((offset / 4096))" iflag=direct status=none
+            expected=$(pattern_hash "${read_bytes[$index]}")
+            actual=$(sha256sum "$marker" | cut -d' ' -f1)
+            printf 'READ_MARKER index=%s offset=%s expected_sha256=%s actual_sha256=%s\n' \
+              "$index" "$offset" "$expected" "$actual"
+            [[ $actual == "$expected" ]] || exit 1
+          done
+
+          offset=$(write_offset)
+          pattern=/tmp/write-pattern.bin
+          head -c 4096 /dev/zero | tr '\0' "$CASE" >"$pattern"
+          [[ $(stat -c %s "$pattern") -eq 4096 ]] || exit 1
+          printf 'READY_FOR_WRITE case=%s offset=%s bytes=4096\n' "$CASE" "$offset"
+          deadline=$((SECONDS + 180))
+          while [[ ! -e /tmp/release-write ]]; do
+            (( SECONDS < deadline )) || { printf 'WRITE_RELEASE_TIMEOUT case=%s\n' "$CASE" >&2; exit 124; }
+            sleep 1
+          done
+
+          seek=$((offset / 4096))
+          case "$CASE" in
+            A) run buffered-no-flush dd if="$pattern" of="$DEVICE" bs=4096 count=1 seek="$seek" conv=notrunc status=none ;;
+            B) run buffered-fsync dd if="$pattern" of="$DEVICE" bs=4096 count=1 seek="$seek" conv=notrunc,fsync status=none ;;
+            C) run direct-no-flush dd if="$pattern" of="$DEVICE" bs=4096 count=1 seek="$seek" oflag=direct conv=notrunc status=none ;;
+            D) run direct-fsync dd if="$pattern" of="$DEVICE" bs=4096 count=1 seek="$seek" oflag=direct conv=notrunc,fsync status=none ;;
+            E)
+              run fio-sync-qd1 fio --name=case-E --filename="$DEVICE" --rw=write \
+                --ioengine=sync --iodepth=1 --direct=1 --fsync=1 --bs=4096 \
+                --size=4096 --offset="$offset" --buffer_pattern=0x45454545 \
+                --refill_buffers=1 --end_fsync=1 --output-format=json
+              ;;
+          esac
+          printf 'WRITE_SUBMITTED case=%s offset=%s bytes=4096 expected_sha256=%s\n' \
+            "$CASE" "$offset" "$(pattern_hash "$CASE")"
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      volumeDevices:
+        - name: raw-block
+          devicePath: /dev/trace-block
+  volumes:
+    - name: raw-block
+      persistentVolumeClaim:
+        claimName: REPLACE_PVC_NAME
