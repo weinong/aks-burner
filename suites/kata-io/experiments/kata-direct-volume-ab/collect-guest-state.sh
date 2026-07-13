@@ -5,7 +5,7 @@ set -Eeuo pipefail
 mkdir -p "$OUTPUT_DIR"
 collected=0
 if ! kubectl --kubeconfig "$KUBECONFIG_PATH" get pod -n "$NAMESPACE" "$POD_NAME" >/dev/null 2>&1; then
-  if [[ ! -e $OUTPUT_DIR/pod-apply-attempted.tsv ]]; then
+  if [[ ! -e $OUTPUT_DIR/pod-create-attempted.tsv ]]; then
     printf 'pod-never-created\t%s\n' "$POD_NAME" >"$OUTPUT_DIR/pod-never-created.tsv"
     printf 'status\tcomplete\treason\tpod-never-created\n' >"$OUTPUT_DIR/collection-status.tsv"
     exit 0

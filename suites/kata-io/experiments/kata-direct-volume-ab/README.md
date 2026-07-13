@@ -7,7 +7,9 @@ This is a fail-closed harness for comparing two Kata paths on the same dedicated
 - Path A: a static local PV/PVC with `volumeMode: Block`, `ReadWriteOncePod`, and guest `volumeDevices` at `/dev/testdisk`.
 - Path B: Kata direct-volume metadata registered for `/run/kata-direct-volume-ab/<run-id>/workspace` and mounted in the container at `/workspace`.
 
-No result is claimed here. Results remain pending until an approved run produces evidence. The harness emits a result matrix without interpreting failures as product findings.
+A run on 2026-07-13 exercised all six cases; sanitized evidence is in `evidence.md`. Both raw-block filesystem cases completed a direct guest read before failing to mount ext4, while isolated raw completed seeded reads and two direct guest writes. All three direct-volume registrations succeeded, then container creation reported guest `/dev/vdb` mount `EIO`. Reversing path order did not change those observations.
+
+The run did not produce a successful filesystem A/B comparison or root cause. Host syscall tracing was unavailable and direct failure evidence remained incomplete. The automatic cleanup pass preserved remaining isolated-raw state after a metadata-scan proof failed; separate destruction evidence confirms deletion of both Azure resource groups, but no retained transcript documents intervening node-local recovery.
 
 ## Run matrix
 

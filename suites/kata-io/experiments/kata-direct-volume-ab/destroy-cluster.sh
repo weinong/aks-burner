@@ -20,6 +20,7 @@ KUBELET_ID=
 ALLOWED_NODE_RESOURCE_TYPES=(
   microsoft.compute/disks
   microsoft.compute/virtualmachinescalesets
+  microsoft.kubernetesconfiguration/privatelinkscopes
   microsoft.managedidentity/userassignedidentities
   microsoft.network/loadbalancers
   microsoft.network/networkinterfaces
@@ -116,7 +117,7 @@ if [[ $(az group exists --subscription "$SUBSCRIPTION_ID" --name "$NODE_RESOURCE
   done
   jq -s . "$RESULT_DIR/node-resource-topology.jsonl" >"$RESULT_DIR/node-resource-topology.json"
   rm -f "$RESULT_DIR/node-resource-topology.jsonl"
-  jq -e --arg aks "$CLUSTER_NAME" --arg aks_rg "$RESOURCE_GROUP" --arg kubelet "$KUBELET_ID" \
+  jq -e --arg aks "$CLUSTER_NAME" --arg aks_rg "$RESOURCE_GROUP" --arg aks_id "${EXPECTED_AKS_ID,,}" --arg kubelet "$KUBELET_ID" \
     -f "$EXPERIMENT_DIR/validate-node-resource-topology.jq" "$RESULT_DIR/node-resource-topology.json" \
     >"$RESULT_DIR/node-resource-topology-proof.json" ||
     safety_die 'node-resource-group inventory: a resource is not tied to the exact AKS cluster/pools by allowed topology; preserving the node resource group'

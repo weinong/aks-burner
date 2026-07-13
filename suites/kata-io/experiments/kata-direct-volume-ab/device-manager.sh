@@ -30,6 +30,20 @@ DIRECT_METADATA_ROOT=/run/kata-containers/shared/direct-volumes
 MOUNT_INFO_COPY="$DEVICE_DIR/mountInfo.json"
 COMMAND_DIR="$DEVICE_DIR/commands"
 RUN_CMD_ECHO=${RUN_CMD_ECHO:-0}
+OCI_METADATA_FILTER=$(cat <<'JQ'
+($needle | if test("^[0-9]+:[0-9]+$") then capture("^(?<major>[0-9]+):(?<minor>[0-9]+)$") else null end) as $mm |
+def concrete_device_reference:
+  if $mm != null then
+    any(.linux.devices[]?;
+      .type == "b" and (.major | tostring) == $mm.major and (.minor | tostring) == $mm.minor)
+  else
+    any(.linux.devices[]?; .path == $needle)
+  end;
+concrete_device_reference or
+(del(.linux.devices, .linux.resources.devices, .linux.maskedPaths, .linux.readonlyPaths) |
+ any(.. | strings; . == $needle))
+JQ
+)
 
 die() { printf 'SAFETY_FAILURE: %s\n' "$*" >&2; exit 1; }
 outcome_die() { printf 'EXPERIMENT_FAILURE: %s\n' "$*" >&2; exit 2; }
@@ -185,43 +199,65 @@ find_block_device_fds() {
 }
 find_device_fds() { find_block_device_fds "$1" "$LOOP_MAJMIN"; }
 metadata_references_device() {
-  local root needle scan_rc
-  for root in /run/vc/sbs /run/kata-containers/sandboxes /run/containerd/io.containerd.runtime.v2.task; do
-    [[ -d $root ]] || continue
-    for needle in "$LOOP_DEVICE" "$BACKING_FILE" "$LOOP_MAJMIN"; do
-      if timeout 10 grep -R -q -F -m1 "$needle" "$root" 2>/dev/null; then
-        return 0
-      else
-        scan_rc=$?
-      fi
-      [[ $scan_rc -eq 1 ]] || die "metadata scan failed for $root (status $scan_rc)"
-    done
+  local needle scan_rc
+  for needle in "$LOOP_DEVICE" "$BACKING_FILE" "$LOOP_MAJMIN"; do
+    if metadata_references_value "$needle"; then return 0; else scan_rc=$?; fi
+    [[ $scan_rc -eq 1 ]] || return 2
   done
   return 1
 }
 metadata_references_value() {
   local root scan_rc
   for root in /run/vc/sbs /run/kata-containers/sandboxes /run/containerd/io.containerd.runtime.v2.task; do
-    [[ -d $root ]] || continue
-    if timeout 10 grep -R -q -F -m1 "$1" "$root" 2>/dev/null; then
-      return 0
-    else
-      scan_rc=$?
-    fi
+    if metadata_root_references_value "$root" "$1"; then return 0; else scan_rc=$?; fi
     [[ $scan_rc -eq 1 ]] || return 2
   done
   return 1
 }
 metadata_root_references_value() {
-  local root=$1 needle=$2 scan_rc
+  local root=$1 needle=$2 match_file=${3:-} list_file error_file mounts mountpoint file scan_rc started remaining
+  local -a find_args
   [[ ! -e $root && ! -L $root ]] && return 1
   [[ -d $root && ! -L $root ]] || return 2
-  if timeout 10 grep -R -q -F -m1 "$needle" "$root" 2>/dev/null; then
-    return 0
+  list_file="$COMMAND_DIR/metadata-scan-files.$$"; error_file="$COMMAND_DIR/metadata-scan-errors.$$"
+  rm -f -- "$list_file" "$error_file"
+  if mounts=$(findmnt -rn -R -e -o TARGET "$root" 2>"$error_file"); then
+    :
   else
     scan_rc=$?
+    [[ $scan_rc -eq 1 ]] || { rm -f -- "$list_file" "$error_file"; return 2; }
   fi
-  [[ $scan_rc -eq 1 ]] || return 2
+  find_args=(-P "$root" -xdev)
+  while IFS= read -r mountpoint; do
+    [[ $mountpoint == "$root/"* ]] || continue
+    find_args+=(\( -path "$mountpoint" -prune \) -o)
+  done <<<"$mounts"
+  find_args+=(\( -type d -name rootfs -prune \) -o \( -type f -print0 \))
+  if ! timeout --kill-after=1s 10s find "${find_args[@]}" >"$list_file" 2>"$error_file"; then
+    rm -f -- "$list_file" "$error_file"; return 2
+  fi
+  started=$SECONDS
+  while IFS= read -r -d '' file; do
+    remaining=$((10 - (SECONDS - started)))
+    (( remaining > 0 )) || { rm -f -- "$list_file" "$error_file"; return 2; }
+    if [[ $root == /run/containerd/io.containerd.runtime.v2.task && ${file##*/} == config.json ]]; then
+      if timeout --kill-after=1s "${remaining}s" jq -e --arg needle "$needle" "$OCI_METADATA_FILTER" "$file" >/dev/null 2>"$error_file"; then
+        scan_rc=0
+      else
+        scan_rc=$?
+      fi
+    elif timeout --kill-after=1s "${remaining}s" grep -F -l -- "$needle" "$file" >/dev/null 2>"$error_file"; then
+      scan_rc=0
+    else
+      scan_rc=$?
+    fi
+    if [[ $scan_rc -eq 0 ]]; then
+      [[ -z $match_file ]] || printf '%s\n' "$file" >>"$match_file"
+      rm -f -- "$list_file" "$error_file"; return 0
+    fi
+    [[ $scan_rc -eq 1 ]] || { rm -f -- "$list_file" "$error_file"; return 2; }
+  done <"$list_file"
+  rm -f -- "$list_file" "$error_file"
   return 1
 }
 direct_metadata_dir() {
@@ -300,10 +336,11 @@ assert_loop_identity() {
   [[ $(lsblk -ndo MAJ:MIN "$LOOP_DEVICE" | xargs) == "$LOOP_MAJMIN" ]] || die 'loop major/minor changed'
 }
 detached_now() {
-  local fds="$DEVICE_DIR/process-fds.tsv"
+  local fds="$DEVICE_DIR/process-fds.tsv" scan_rc
   assert_loop_identity
   find_device_fds "$fds"; [[ ! -s $fds ]] || return 1
-  ! metadata_references_device || return 1
+  if metadata_references_device; then return 1; else scan_rc=$?; fi
+  [[ $scan_rc -eq 1 ]] || die 'metadata scan failed while proving detach'
   [[ -z $(findmnt -rn -S "$LOOP_DEVICE" -o TARGET) ]] || return 1
   assert_empty_sysfs "$LOOP_DEVICE" holders; assert_empty_sysfs "$LOOP_DEVICE" slaves
   ! awk -v dev="$LOOP_DEVICE" 'NR > 1 && $1 == dev {found=1} END {exit !found}' /proc/swaps
@@ -336,7 +373,8 @@ verify_effective_config() {
   grep -Fq "$KATA_CONFIG" "$LAST_STDOUT" || die 'kata-runtime does not report the mutated effective configuration'
 }
 atomic_install() {
-  local source=$1 destination=$2 tmp="${destination}.kdva-${RUN_ID}-$$"
+  local source=$1 destination=$2 tmp
+  tmp="${destination}.kdva-${RUN_ID}-$$"
   install -m "$(stat -c %a "$destination")" -o "$(stat -c %u "$destination")" -g "$(stat -c %g "$destination")" "$source" "$tmp"
   mv -fT "$tmp" "$destination"
 }
@@ -387,7 +425,7 @@ restore_config() {
 }
 
 prepare() {
-  local allocated existing
+  local allocated existing label scan_rc
   [[ ! -e $DEVICE_DIR ]] || die "device state already exists: $DEVICE_DIR"
   mkdir -p "$DEVICE_DIR" "$COMMAND_DIR"; chmod 0700 "$DEVICE_DIR" "$COMMAND_DIR"
   claim_owner; PHASE=preparing; RUN_MOUNTED_NVME=0; LOOP_DEVICE=; LOOP_MAJMIN=; CONFIG_CHANGED=0; CONFIG_RESTART_REQUIRED=0
@@ -396,7 +434,9 @@ prepare() {
   existing=$(findmnt -M "$NVME_MOUNT" -n -o SOURCE 2>/dev/null || true)
   if [[ -z $existing ]]; then
     [[ ! -e $NVME_MOUNT && ! -L $NVME_MOUNT ]] || die 'owned NVMe mount marker is absent for existing mountpoint'
-    if [[ $FORMAT_NVME == yes ]]; then run_cmd format-nvme mkfs.ext4 -F -L kata-direct-volume-ab "$NVME_DEVICE"
+    if [[ $FORMAT_NVME == yes ]]; then
+      label="kdva-${RUN_ID:0:11}"; run_cmd format-nvme mkfs.ext4 -F -L "$label" "$NVME_DEVICE"
+      [[ $(blkid -o value -s LABEL "$NVME_DEVICE" 2>/dev/null) == "$label" ]] || die 'NVMe filesystem label differs from the requested label'
     else [[ $(blkid -o value -s TYPE "$NVME_DEVICE" 2>/dev/null) == ext4 ]] || die 'NVMe is not ext4; explicit FORMAT_NVME=yes is required'; fi
     install -d -m 0700 "$NVME_MOUNT"; mount -t ext4 -o nodev,nosuid "$NVME_DEVICE" "$NVME_MOUNT"; RUN_MOUNTED_NVME=1
     printf '%s\n' "$RUN_ID" >"$MOUNT_OWNER_MARKER"; chmod 0600 "$MOUNT_OWNER_MARKER"; save_state
@@ -416,7 +456,8 @@ prepare() {
   [[ $LOOP_DEVICE =~ ^/dev/loop[0-9]+$ ]] || die 'unexpected loop device'; LOOP_MAJMIN=$(lsblk -ndo MAJ:MIN "$LOOP_DEVICE" | xargs); save_state
   assert_loop_identity
   find_device_fds "$DEVICE_DIR/preformat-fds.tsv"; [[ ! -s $DEVICE_DIR/preformat-fds.tsv ]] || die 'new loop device already has users'
-  metadata_references_device && die 'stale Kata/containerd metadata references the new device'
+  if metadata_references_device; then die 'stale Kata/containerd metadata references the new device'; else scan_rc=$?; fi
+  [[ $scan_rc -eq 1 ]] || die 'metadata scan failed while checking the new device'
   PHASE=prepared; save_state
   printf 'LOOP_DEVICE=%s\nBACKING_FILE=%s\n' "$LOOP_DEVICE" "$BACKING_FILE"
 }
@@ -443,9 +484,9 @@ format_device() {
       field_count=split(normalized, fields, /[[:space:]]+/)
       if (field_count < 6) exit 2
       for (i=1; i<=6; i++) if (fields[i] !~ /^[0-9]+$/) exit 2
-      logical_start=fields[2]; logical_end=fields[3]; physical_start=fields[4]; physical_end=fields[5]; length=fields[6]
+      logical_start=fields[2]; logical_end=fields[3]; physical_start=fields[4]; physical_end=fields[5]; extent_length=fields[6]
       if (logical_start != expected_logical || logical_end < logical_start || physical_end < physical_start ||
-          logical_end - logical_start + 1 != length || physical_end - physical_start + 1 != length) exit 4
+          logical_end - logical_start + 1 != extent_length || physical_end - physical_start + 1 != extent_length) exit 4
       if (first_physical < 0) { first_physical=physical_start; expected_physical=physical_start }
       if (physical_start != expected_physical) exit 5
       expected_logical=logical_end+1; expected_physical=physical_end+1
@@ -580,21 +621,29 @@ unregister_direct() {
 
 begin_guest() {
   load_state; require_owner; assert_loop_identity; detached_now || die 'device has use signals before guest assignment'
-  [[ $PHASE == formatted || $PHASE == direct-registered ]] || die "cannot assign guest in phase $PHASE"
+  [[ $PHASE == formatted || $PHASE == direct-registered || $PHASE == detached ]] || die "cannot assign guest in phase $PHASE"
   PHASE=guest-owned; save_state
 }
 end_guest() { load_state; require_owner; [[ $PHASE == guest-owned ]] || die 'guest-owned phase was not recorded'; wait_detached; }
 wait_detached_action() { load_state; require_owner; wait_detached; }
 
 collect_state() {
-  local case_dir="$DEVICE_DIR/runtime-$CASE_ID" pids pid start current exe cmdline rows=0 flags access
+  local case_dir="$DEVICE_DIR/runtime-$CASE_ID" pids pid start current exe cmdline rows=0 flags access root scan_rc
   load_state; require_owner; assert_loop_identity; mkdir -p "$case_dir"
   run_cmd collect-lsblk lsblk -a -b -O "$LOOP_DEVICE"; cp "$LAST_STDOUT" "$case_dir/lsblk.txt"
   find_device_fds "$case_dir/device-fds.tsv"
   : >"$case_dir/runtime-metadata-index.tsv"
+  printf 'sufficient\tmetadata-scan-complete\n' >"$case_dir/runtime-metadata-status.tsv"
   for root in /run/vc/sbs /run/kata-containers/sandboxes /run/containerd/io.containerd.runtime.v2.task; do
-    [[ -d $root ]] || continue
-    timeout 10 grep -R -l -F -m1 "$LOOP_DEVICE" "$root" 2>/dev/null >>"$case_dir/runtime-metadata-index.tsv" || true
+    if metadata_root_references_value "$root" "$LOOP_DEVICE" "$case_dir/runtime-metadata-index.tsv"; then
+      :
+    else
+      scan_rc=$?
+      if [[ $scan_rc -ne 1 ]]; then
+        printf 'insufficient\tmetadata-scan-error\t%s\n' "$root" >>"$case_dir/runtime-metadata-index.tsv"
+        printf 'insufficient\tmetadata-scan-error\t%s\n' "$root" >"$case_dir/runtime-metadata-status.tsv"
+      fi
+    fi
   done
   [[ -s $case_dir/runtime-metadata-index.tsv ]] || printf 'insufficient\tno-readable-runtime-metadata-reference\n' >"$case_dir/runtime-metadata-index.tsv"
   pids=$(awk -F '\t' '$4 ~ /(^|[ \/])cloud-hypervisor([ ]|$)/ {print $1}' "$case_dir/device-fds.tsv" | sort -u)
@@ -652,6 +701,7 @@ resolve_owned_ch() {
 
 trace_start() {
   local target pid start tracer tracer_start fd_csv trace_dir="$DEVICE_DIR/traces/$CASE_ID" trace_root instance encoded_dev event
+  load_state; require_owner; [[ $PHASE == guest-owned ]] || die 'tracing requires guest-owned phase'
   mkdir -p "$trace_dir"; [[ ! -e $trace_dir/tracer.env ]] || die 'a trace is already registered'
   if ! target=$(resolve_owned_ch); then
     printf 'insufficient\texpected-one-owned-cloud-hypervisor\n' >"$trace_dir/syscall-status.tsv"
@@ -662,7 +712,7 @@ trace_start() {
   fd_csv=$(awk -F '\t' -v p="$pid" '$1 == p {values = values sep $2; sep = ","} END {print values}' "$DEVICE_DIR/trace-target-fds.tsv")
   [[ $fd_csv =~ ^[0-9]+(,[0-9]+)*$ ]] || die 'cannot scope syscall trace to owned Cloud Hypervisor FDs'
   printf '%s\n' "$fd_csv" >"$trace_dir/target-fds.csv"
-  if command -v strace >/dev/null && strace --help 2>&1 | grep -q -- 'trace-fds'; then
+  if command -v strace >/dev/null && strace --help 2>&1 | grep -F -- 'trace-fds' >/dev/null; then
     setsid timeout 180 strace -ff -ttt -T -yy -s 256 -e trace=io_uring_setup,io_uring_register,io_uring_enter,pread64,pwrite64,read,write,fsync,fdatasync \
       -e "trace-fds=$fd_csv" -p "$pid" >"$trace_dir/syscall.stdout" 2>"$trace_dir/syscall.stderr" &
     tracer=$!; sleep 1
@@ -680,8 +730,8 @@ trace_start() {
   instance="$trace_root/instances/kdva-${RUN_ID}-${DEVICE_ID}-${CASE_ID}"
   if [[ -d $trace_root/events/block && -w $trace_root/instances ]]; then
     if mkdir "$instance"; then
-      encoded_dev=$(( (${LOOP_MAJMIN%%:*} << 20) | ${LOOP_MAJMIN##*:} ))
       printf '%s\n' "$instance" >"$trace_dir/tracefs-instance"
+      encoded_dev=$(( (${LOOP_MAJMIN%%:*} << 20) | ${LOOP_MAJMIN##*:} ))
       for event in block_rq_issue block_rq_complete block_rq_error; do
         if [[ ! -e $instance/events/block/$event/filter ]]; then
           printf 'insufficient\tmissing-%s\n' "$event" >>"$trace_dir/block-status.tsv"; continue

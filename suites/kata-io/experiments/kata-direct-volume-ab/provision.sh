@@ -41,7 +41,7 @@ on_exit() {
 [[ $SUBSCRIPTION_ID =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]] || die 'SUBSCRIPTION_ID must be a GUID'
 [[ $CREATE_AZURE_RESOURCES == yes ]] || die 'Set CREATE_AZURE_RESOURCES=yes after review'
 require_tools az kubectl sed sort
-az aks create --help | grep -q -- '--node-resource-group' || die 'installed Azure CLI does not support az aks create --node-resource-group'
+az aks create --help | grep -F -- '--node-resource-group' >/dev/null || die 'installed Azure CLI does not support az aks create --node-resource-group'
 [[ ! -e $KUBECONFIG_PATH ]] || die "KUBECONFIG_PATH exists; refusing to overwrite: $KUBECONFIG_PATH"
 [[ ! -e $RESULT_DIR ]] || die "result target exists; refusing to overwrite: $RESULT_DIR"
 [[ $(az account show --query id -o tsv) == "$SUBSCRIPTION_ID" ]] || die 'active subscription mismatch'
@@ -72,12 +72,40 @@ NODE_RESOURCE_GROUP_MANAGED_BY=$(az group show --subscription "$SUBSCRIPTION_ID"
 [[ ${NODE_RESOURCE_GROUP_MANAGED_BY,,} == "${AKS_RESOURCE_ID,,}" ]] || safety_die 'node resource group managedBy does not point to the exact AKS resource'
 save_state
 az group show --subscription "$SUBSCRIPTION_ID" --name "$NODE_RESOURCE_GROUP" -o json | redact >"$RESULT_DIR/node-resource-group.json"
-run_logged kata-pool-create az aks nodepool add --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --cluster-name "$CLUSTER_NAME" \
-  --name katapool --mode User --node-count 1 --node-vm-size "$KATA_VM_SIZE" --node-osdisk-type Managed --os-sku AzureLinux \
-  --workload-runtime KataVmIsolation --node-taints dedicated=kata-direct-volume-ab:NoSchedule \
-  --labels purpose=kata-direct-volume-ab deployment-suffix="$DEPLOYMENT_SUFFIX" --ssh-access disabled \
-  --tags deployment-id="$DEPLOYMENT_ID" purpose=kata-direct-volume-ab run-id="$RUN_ID" deployment-suffix="$DEPLOYMENT_SUFFIX" --output none
-run_logged aks-reconcile az aks update --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" --attach-acr "$ACR_NAME" --output none
+for attempt in {1..20}; do
+  kata_pool_label="kata-pool-create-attempt-$attempt"
+  if run_logged "$kata_pool_label" az aks nodepool add --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --cluster-name "$CLUSTER_NAME" \
+    --name katapool --mode User --node-count 1 --node-vm-size "$KATA_VM_SIZE" --node-osdisk-type Managed --os-sku AzureLinux \
+    --workload-runtime KataVmIsolation --node-taints dedicated=kata-direct-volume-ab:NoSchedule \
+    --labels purpose=kata-direct-volume-ab deployment-suffix="$DEPLOYMENT_SUFFIX" --ssh-access disabled \
+    --tags deployment-id="$DEPLOYMENT_ID" purpose=kata-direct-volume-ab run-id="$RUN_ID" deployment-suffix="$DEPLOYMENT_SUFFIX" --output none; then
+    break
+  else
+    kata_pool_rc=$?
+  fi
+  kata_pool_log="$RESULT_DIR/$kata_pool_label.log"
+  if ! grep -Fq 'Code: OperationNotAllowed' "$kata_pool_log" ||
+     ! grep -Fq 'in-progress PutExtensionAddonHandler.PUT operation' "$kata_pool_log" ||
+     (( attempt == 20 )); then
+    exit "$kata_pool_rc"
+  fi
+  sleep 30
+done
+for attempt in {1..20}; do
+  reconcile_label="aks-reconcile-attempt-$attempt"
+  if run_logged "$reconcile_label" az aks update --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" --attach-acr "$ACR_NAME" --output none; then
+    break
+  else
+    reconcile_rc=$?
+  fi
+  reconcile_log="$RESULT_DIR/$reconcile_label.log"
+  if ! grep -Fq 'Code: OperationNotAllowed' "$reconcile_log" ||
+     ! grep -Fq 'in-progress PutExtensionAddonHandler.PUT operation' "$reconcile_log" ||
+     (( attempt == 20 )); then
+    exit "$reconcile_rc"
+  fi
+  sleep 30
+done
 run_logged get-credentials az aks get-credentials --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" --file "$KUBECONFIG_PATH" --output none
 assert_kubeconfig_targets_cluster
 run_logged nodes kubectl --kubeconfig "$KUBECONFIG_PATH" get nodes -o wide

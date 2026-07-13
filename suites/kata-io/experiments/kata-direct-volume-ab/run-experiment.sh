@@ -39,7 +39,8 @@ declare -A POD_KEY_ACTIVE=() POD_NAME=() POD_UID=() POD_RESOURCE_VERSION=() POD_
 TRACE_CASES=(A B B2 A2 RAW DIRECT)
 
 host_action() {
-  local device=$1 action=$2 label=${3:-$action} case_id=${4:-$label} marker_name=${5:-} marker_value=${6:-} out="$RESULT_DIR/${device}-${label}.log" rc
+  local device=$1 action=$2 label case_id marker_name marker_value out rc
+  label=${3:-$action}; case_id=${4:-$label}; marker_name=${5:-}; marker_value=${6:-}; out="$RESULT_DIR/${device}-${label}.log"
   if "${K[@]}" exec -i -n "$NAMESPACE" "$DIAG_POD" -- chroot /host /usr/bin/nsenter --target 1 --mount --pid --wd=/ -- /bin/bash -s -- \
     "$action" "$RUN_ID" "$device" "$EXPECTED_NVME_DEVICE" "$FORMAT_NVME" "$case_id" "$marker_name" "$marker_value" \
     <"$EXPERIMENT_DIR/device-manager.sh" >"$out" 2>&1; then
@@ -58,10 +59,23 @@ stop_case_trace() {
   IN_CLEANUP=false
   return "$rc"
 }
+wait_for_workload_completion() {
+  local pod=$1 deadline=$((SECONDS + 300)) phase
+  while (( SECONDS < deadline )); do
+    phase=$("${K[@]}" get pod -n "$NAMESPACE" "$pod" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    case "$phase" in
+      Succeeded) return 0 ;;
+      Failed) return 1 ;;
+    esac
+    sleep 2
+  done
+  return 1
+}
 state_value() { sed -n "s/^$2=//p" "$RESULT_DIR/$1-$3.log" | tail -n1; }
 
 persist_run_kubernetes_ownership() {
-  local file="$RESULT_DIR/kubernetes-ownership.env" tmp="$file.tmp.$$" key
+  local file="$RESULT_DIR/kubernetes-ownership.env" tmp key
+  tmp="$file.tmp.$$"
   {
     printf 'NAMESPACE=%q\nNAMESPACE_UID=%q\nNAMESPACE_RESOURCE_VERSION=%q\n' "$NAMESPACE" "$NAMESPACE_UID" "$NAMESPACE_RESOURCE_VERSION"
     printf 'DIAG_POD=%q\nDIAG_POD_UID=%q\nDIAG_POD_RESOURCE_VERSION=%q\n' "$DIAG_POD" "$DIAG_POD_UID" "$DIAG_POD_RESOURCE_VERSION"
@@ -117,7 +131,7 @@ delete_kubernetes_object_with_preconditions() {
 }
 
 register_workload_pod_identity() {
-  local case_name=$1 expected_name=$2 state_file=$3 key=$case_name
+  local case_name=$1 expected_name=$2 state_file=$3 key=$1
   local WORKLOAD_CASE_NAME= WORKLOAD_POD_NAME= WORKLOAD_POD_UID= WORKLOAD_POD_RESOURCE_VERSION= json
   if [[ ! -s $state_file ]]; then
     json=$(kubernetes_object_json pod "$expected_name" "$NAMESPACE") || return 1
@@ -149,7 +163,7 @@ delete_owned_workload_pod() {
   POD_KEY_ACTIVE[$key]=false
 }
 register_raw_identity() {
-  local device=$1 case_name=$2 state_file=$3 key="$device:$case_name"
+  local device=$1 case_name=$2 state_file=$3 key="$1:$2"
   local PV_NAME= PVC_NAME= PV_UID= PVC_UID= LOOP_DEVICE=
   # The create helper emits only shell-escaped assignments into this run-owned 0700 result directory.
   source "$state_file"
@@ -163,7 +177,7 @@ register_raw_identity() {
 }
 
 register_partial_raw_identity() {
-  local device=$1 case_name=$2 state_file=$3 key="$device:$case_name"
+  local device=$1 case_name=$2 state_file=$3 key="$1:$2"
   local PV_NAME= PVC_NAME= PV_UID= PVC_UID= LOOP_DEVICE=
   [[ -s $state_file ]] || return 0
   source "$state_file"
@@ -242,7 +256,8 @@ inventory_foreign_loop_pvs() {
 }
 
 delete_raw_identity() {
-  local key=$1 device=${RAW_DEVICE[$key]} pv_json pvc_json resource_version
+  local key=$1 device pv_json pvc_json resource_version
+  device=${RAW_DEVICE[$key]}
   pvc_json=$(raw_resource_json pvc "${RAW_PVC_NAME[$key]}") || return 1
   if [[ -n $pvc_json ]]; then
     raw_identity_is_owned "$key" pvc "$pvc_json" || return 1
@@ -372,7 +387,8 @@ cleanup() {
 }
 
 copy_host_device_artifacts() {
-  local device=$1 case_name=$2 target="$RESULT_DIR/$case_name/host-artifacts/$device" file_path tmp
+  local device=$1 case_name=$2 target file_path tmp
+  target="$RESULT_DIR/$case_name/host-artifacts/$device"
   mkdir -p "$target"
   "${K[@]}" exec -n "$NAMESPACE" "$DIAG_POD" -- tar -C "/host/var/log/kata-direct-volume-ab/$RUN_ID/devices/$device" -cf - . | tar -C "$target" -xf -
   while IFS= read -r -d '' file_path; do
@@ -383,7 +399,8 @@ copy_host_device_artifacts() {
 }
 
 derive_trace_status() {
-  local case_name=$1 device=$2 trace_dir="$RESULT_DIR/$case_name/host-artifacts/$device/traces/$case_name"
+  local case_name=$1 device=$2 trace_dir
+  trace_dir="$RESULT_DIR/$case_name/host-artifacts/$device/traces/$case_name"
   local syscall_status syscall_reason block_status block_reason
   if [[ ! -s $trace_dir/syscall-status.tsv || ! -s $trace_dir/block-status.tsv ]]; then
     TRACE_STATUS=insufficient; TRACE_REASON=missing-case-scoped-trace-status; return
@@ -400,8 +417,8 @@ derive_trace_status() {
 }
 
 derive_evidence_status() {
-  local case_name=$1 device=$2 started=$3 case_dir="$RESULT_DIR/$case_name" host_dir="$RESULT_DIR/$case_name/host-artifacts/$device"
-  local runtime_dir="$RESULT_DIR/$case_name/host-artifacts/$device/runtime-$case_name" missing=() artifact
+  local case_name=$1 device=$2 started=$3 case_dir host_dir runtime_dir missing=() artifact
+  case_dir="$RESULT_DIR/$case_name"; host_dir="$case_dir/host-artifacts/$device"; runtime_dir="$host_dir/runtime-$case_name"
   [[ -s $case_dir/rendered-pod.yaml ]] || missing+=(rendered-pod)
   if [[ -s $case_dir/pod-never-created.tsv ]]; then
     :
@@ -409,6 +426,7 @@ derive_evidence_status() {
     for artifact in pod.yaml describe.txt events.txt guest.log; do [[ -s $case_dir/$artifact ]] || missing+=("$artifact"); done
     [[ $started == false ]] || {
       [[ -s $runtime_dir/lsblk.txt && -s $runtime_dir/device-fds.tsv && -s $runtime_dir/runtime-metadata-index.tsv ]] || missing+=(case-runtime-capture)
+      grep -q $'^sufficient\tmetadata-scan-complete$' "$runtime_dir/runtime-metadata-status.tsv" 2>/dev/null || missing+=(runtime-metadata-scan)
       grep -q $'^sufficient\t' "$runtime_dir/ch-classification.tsv" 2>/dev/null || missing+=(ch-classification)
       [[ -s $case_dir/guest.log ]] || missing+=(guest-state)
     }
@@ -483,7 +501,8 @@ prepare_device() {
 }
 
 run_raw() {
-  local device=$1 case_name=$2 mode=$3 trace=${4:-no} expected_marker=${5:-none} own_marker=${6:?} marker_value="${RUN_ID}:${device}:${own_marker}"
+  local device=$1 case_name=$2 mode=$3 trace=${4:-no} expected_marker=${5:-none} own_marker=${6:?} marker_value
+  marker_value="${RUN_ID}:${device}:${own_marker}"
   local loop pv="kdva-${RUN_LABEL}-${device}" pvc="kdva-${RUN_LABEL}-${device}" pod="kdva-${RUN_LABEL}-${case_name,,}" rc=0 trace_status=not-requested trace_reason=not-requested cleanup_status=complete host_status=skipped started=false runtime_collected=false
   [[ $trace != yes ]] || trace_status=insufficient
   loop=$(state_value "$device" LOOP_DEVICE prepare); [[ $loop =~ ^/dev/loop[0-9]+$ ]] || die 'cannot resolve loop device'
@@ -506,7 +525,7 @@ run_raw() {
       runtime_collected=true
       [[ $trace != yes ]] || { host_action "$device" trace-start "$case_name-trace-start" "$case_name" && trace_status=started || trace_status=insufficient; }
       "${K[@]}" exec -n "$NAMESPACE" "$pod" -- touch /tmp/release-test || rc=$?
-      [[ $rc -ne 0 ]] || "${K[@]}" wait -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod" --timeout=300s || rc=$?
+      [[ $rc -ne 0 ]] || wait_for_workload_completion "$pod" || rc=$?
     else rc=$?; fi
   else
     [[ $rc -ne 0 ]] || rc=$?
@@ -514,7 +533,7 @@ run_raw() {
   register_workload_pod_identity "$case_name" "$pod" "$RESULT_DIR/$case_name/pod-ownership.env" || { SAFE_TO_CLEAN=false; cleanup_status=failed; rc=1; }
   mkdir -p "$RESULT_DIR/$case_name"
   if [[ $started == true && $runtime_collected == false ]]; then host_action "$device" collect "$case_name-runtime-failure" "$case_name" || true; fi
-  OUTPUT_DIR="$RESULT_DIR/$case_name" POD_NAME=$pod "$EXPERIMENT_DIR/collect-guest-state.sh" || true
+  OUTPUT_DIR="$RESULT_DIR/$case_name" POD_NAME=$pod NAMESPACE=$NAMESPACE KUBECONFIG_PATH=$KUBECONFIG_PATH "$EXPERIMENT_DIR/collect-guest-state.sh" || true
   if [[ $trace == yes ]] && ! stop_case_trace "$device" "$case_name"; then
     TRACE_CLEANUP_FAILED=true; SAFE_TO_CLEAN=false; cleanup_status=failed; rc=1
   fi
@@ -544,7 +563,8 @@ run_raw() {
 }
 
 run_direct() {
-  local device=$1 case_name=$2 trace=${3:-no} expected_marker=${4:-none} own_marker=${5:?} marker_value="${RUN_ID}:${device}:${own_marker}"
+  local device=$1 case_name=$2 trace=${3:-no} expected_marker=${4:-none} own_marker=${5:?} marker_value
+  marker_value="${RUN_ID}:${device}:${own_marker}"
   local workspace= pod="kdva-${RUN_LABEL}-${case_name,,}" rc=0 trace_status=not-requested trace_reason=not-requested cleanup_status=complete host_status=skipped started=false registered=false runtime_collected=false registration_status=failed
   [[ $trace != yes ]] || trace_status=insufficient
   if host_action "$device" register-direct "$case_name-register"; then
@@ -563,7 +583,7 @@ run_direct() {
       runtime_collected=true
       [[ $trace != yes ]] || { host_action "$device" trace-start "$case_name-trace-start" "$case_name" && trace_status=started || trace_status=insufficient; }
       "${K[@]}" exec -n "$NAMESPACE" "$pod" -- touch /tmp/release-test || rc=$?
-      [[ $rc -ne 0 ]] || "${K[@]}" wait -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod" --timeout=300s || rc=$?
+      [[ $rc -ne 0 ]] || wait_for_workload_completion "$pod" || rc=$?
     else rc=$?; fi
   else
     [[ $rc -ne 0 ]] || rc=$?
@@ -571,7 +591,7 @@ run_direct() {
   register_workload_pod_identity "$case_name" "$pod" "$RESULT_DIR/$case_name/pod-ownership.env" || { SAFE_TO_CLEAN=false; cleanup_status=failed; rc=1; }
   mkdir -p "$RESULT_DIR/$case_name"
   if [[ $started == true && $runtime_collected == false ]]; then host_action "$device" collect "$case_name-runtime-failure" "$case_name" || true; fi
-  OUTPUT_DIR="$RESULT_DIR/$case_name" POD_NAME=$pod "$EXPERIMENT_DIR/collect-guest-state.sh" || true
+  OUTPUT_DIR="$RESULT_DIR/$case_name" POD_NAME=$pod NAMESPACE=$NAMESPACE KUBECONFIG_PATH=$KUBECONFIG_PATH "$EXPERIMENT_DIR/collect-guest-state.sh" || true
   if [[ $trace == yes ]] && ! stop_case_trace "$device" "$case_name"; then
     TRACE_CLEANUP_FAILED=true; SAFE_TO_CLEAN=false; cleanup_status=failed; rc=1
   fi
@@ -626,8 +646,8 @@ record_case() {
 }
 
 record_normalized_metadata() {
-  local case_name=$1 device=$2 path=$3 case_dir="$RESULT_DIR/$case_name" host_dir="$RESULT_DIR/$case_name/host-artifacts/$device"
-  local runtime_dir="$RESULT_DIR/$case_name/host-artifacts/$device/runtime-$case_name" state="$RESULT_DIR/$case_name/host-artifacts/$device/state.env"
+  local case_name=$1 device=$2 path=$3 case_dir host_dir runtime_dir state
+  case_dir="$RESULT_DIR/$case_name"; host_dir="$case_dir/host-artifacts/$device"; runtime_dir="$host_dir/runtime-$case_name"; state="$host_dir/state.env"
   local fd_mode=insufficient host_device=insufficient host_majmin=insufficient fs_uuid=insufficient guest_path=insufficient fstype=insufficient options=insufficient read_only=insufficient
   local metadata_ref=insufficient storage_ref=insufficient path_line
   if [[ -s $runtime_dir/ch-fds.tsv ]]; then
@@ -688,9 +708,9 @@ require_immutable_image "$PROBE_IMAGE" PROBE_IMAGE; require_immutable_image "$HO
 mkdir -p "$RESULT_DIR"; chmod 0700 "$RESULT_DIR"; trap cleanup EXIT INT TERM
 initialize_matrix
 assert_kubeconfig_targets_cluster
-GROUP_TAGS=$(az group show --subscription "$SUBSCRIPTION_ID" --name "$RESOURCE_GROUP" --query '[tags."deployment-id",tags.purpose,tags."run-id",tags."deployment-suffix"]' -o tsv)
+GROUP_TAGS=$(az group show --subscription "$SUBSCRIPTION_ID" --name "$RESOURCE_GROUP" --query '[[tags."deployment-id",tags.purpose,tags."run-id",tags."deployment-suffix"]]' -o tsv)
 [[ $GROUP_TAGS == "$DEPLOYMENT_ID"$'\t'"$PURPOSE"$'\t'"$RUN_ID"$'\t'"$DEPLOYMENT_SUFFIX" ]] || safety_die 'resource group ownership tags do not match this run'
-AKS_TAGS=$(az aks show --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" --query '[tags."deployment-id",tags.purpose,tags."run-id",tags."deployment-suffix"]' -o tsv)
+AKS_TAGS=$(az aks show --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" --query '[[tags."deployment-id",tags.purpose,tags."run-id",tags."deployment-suffix"]]' -o tsv)
 [[ $AKS_TAGS == "$DEPLOYMENT_ID"$'\t'"$PURPOSE"$'\t'"$RUN_ID"$'\t'"$DEPLOYMENT_SUFFIX" ]] || safety_die 'cluster ownership tags do not match this run'
 if "${K[@]}" get namespace "$NAMESPACE" >/dev/null 2>&1; then safety_die 'namespace already exists'; fi
 cat >"$RESULT_DIR/namespace.yaml" <<EOF

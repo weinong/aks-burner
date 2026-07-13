@@ -40,6 +40,9 @@ for script in "$EXPERIMENT_DIR"/*.sh; do
   bash -n "$script"
   [[ -x $script ]] || fail "script is not executable: ${script##*/}"
 done
+if grep -Eq 'local .*label=\$\{3:-\$action\}|local .*tmp="\$(file|destination)|local .*key=\$case_name|local .*key="\$device:\$case_name"|local .*device=\$\{RAW_DEVICE\[\$key\]\}|local .*target="\$RESULT_DIR/\$case_name|local .*trace_dir="\$RESULT_DIR/\$case_name|local .*case_dir="\$RESULT_DIR/\$case_name|local .*marker_value="\$\{RUN_ID\}:\$\{device\}' "$EXPERIMENT_DIR"/*.sh; then
+  fail 'local declaration initializes from a variable declared by the same command under nounset'
+fi
 [[ -x $0 ]] || fail 'contract test is not executable'
 
 grep -q 'volumeMode: Block' "$EXPERIMENT_DIR/manifests/raw-block-pv.yaml" || fail 'raw PV is not block mode'
@@ -52,6 +55,7 @@ grep -q 'mountPath: /workspace' "$EXPERIMENT_DIR/manifests/direct-volume-probe.y
 
 grep -q 'DEPLOYMENT_ID' "$EXPERIMENT_DIR/provision.sh" || fail 'provisioning lacks opaque deployment identity'
 grep -q 'az group exists' "$EXPERIMENT_DIR/provision.sh" || fail 'provisioning lacks resource-group collision check'
+grep -Fq "az aks create --help | grep -F -- '--node-resource-group' >/dev/null" "$EXPERIMENT_DIR/provision.sh" || fail 'AKS CLI capability check does not drain help output'
 grep -q 'purpose=kata-direct-volume-ab' "$EXPERIMENT_DIR/provision.sh" || fail 'provisioning lacks experiment ownership tag'
 grep -Eq 'RESOURCE_GROUP=.*DEPLOYMENT' "$EXPERIMENT_DIR/provision.sh" || fail 'resource group does not include deployment-derived uniqueness'
 grep -q 'az acr check-name' "$EXPERIMENT_DIR/provision.sh" || fail 'provisioning lacks global ACR collision check'
@@ -62,13 +66,17 @@ grep -q -- 'direct-volume remove --volume-path "$WORKSPACE"' "$EXPERIMENT_DIR/de
 if grep -q 'extent_length=.*\$5' "$EXPERIMENT_DIR/device-manager.sh"; then
   fail 'reserved raw blocks rely on unsafe filefrag extent-end arithmetic'
 fi
+grep -q 'extent_length=fields\[6\]' "$EXPERIMENT_DIR/device-manager.sh" || fail 'reserved extent parser uses a non-portable awk identifier'
+if grep -Eq '(^|[^_])length=fields\[6\]' "$EXPERIMENT_DIR/device-manager.sh"; then fail 'reserved extent parser assigns to the awk length built-in'; fi
 grep -q 'raw restore verification failed' "$EXPERIMENT_DIR/device-manager.sh" || fail 'raw restoration is not verified byte-for-byte'
 grep -q 'backing file already exists' "$EXPERIMENT_DIR/device-manager.sh" || fail 'device setup can reuse another run backing file'
 grep -q 'owned NVMe mount marker is absent' "$EXPERIMENT_DIR/device-manager.sh" || fail 'device setup can reuse an unowned NVMe mount'
 grep -q 'all devices must detach before cleanup' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'cleanup can mutate shared state before all devices detach'
+[[ $(grep -Fc -- "--query '[[tags.\"deployment-id\",tags.purpose,tags.\"run-id\",tags.\"deployment-suffix\"]]' -o tsv" "$EXPERIMENT_DIR/run-experiment.sh") -eq 2 ]] || fail 'Azure ownership queries do not produce one TSV row'
 grep -q 'case-scoped workload directory' "$EXPERIMENT_DIR/lib.sh" || fail 'sequential filesystem cases can collide'
 grep -q 'sort -u' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'Cloud Hypervisor access-mode comparison is nondeterministic'
 grep -q 'TRACE_STATUS=' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'result matrix does not consume trace sufficiency status'
+grep -Fq "strace --help 2>&1 | grep -F -- 'trace-fds' >/dev/null" "$EXPERIMENT_DIR/device-manager.sh" || fail 'strace capability check does not drain help output'
 grep -q 'MARKER_OFFSET_ONE=.*state_value' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'raw diagnostic does not receive marker offset one'
 grep -q 'MARKER_OFFSET_TWO=.*state_value' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'raw diagnostic does not receive marker offset two'
 grep -q 'DIRECT_REGISTRATION_PENDING=1' "$EXPERIMENT_DIR/device-manager.sh" || fail 'direct-volume registration is not persisted before validation'
@@ -128,8 +136,32 @@ cleanup_detach_line=$(line_of "$cleanup_device_body" 'losetup -d "$LOOP_DEVICE"'
   fail 'device cleanup does not verify full direct metadata absence immediately before loop detach'
 grep -Fq "die 'post-removal full metadata scan failed'" <<<"$cleanup_device_body" || fail 'cleanup metadata scan failure does not preserve state'
 grep -q 'metadata scan failed' "$EXPERIMENT_DIR/device-manager.sh" || fail 'metadata scan errors do not fail closed'
+grep -q 'find_args=(-P "\$root" -xdev)' "$EXPERIMENT_DIR/device-manager.sh" || fail 'runtime metadata scan can cross filesystem boundaries'
+grep -q -- '-type d -name rootfs -prune' "$EXPERIMENT_DIR/device-manager.sh" || fail 'runtime metadata scan can descend into container rootfs trees'
+grep -q -- '-type f -print0' "$EXPERIMENT_DIR/device-manager.sh" || fail 'runtime metadata scan is not restricted to regular files'
+oci_filter=$(awk '/^OCI_METADATA_FILTER=\$\(cat <<'\''JQ'\''$/{capture=1; next} capture && /^JQ$/{exit} capture{print}' "$EXPERIMENT_DIR/device-manager.sh")
+[[ -n $oci_filter ]] || fail 'containerd OCI metadata filter cannot be extracted for behavior tests'
+oci_fixture='{"linux":{"devices":[{"path":"/dev/loop7","type":"b","major":7,"minor":7}],"resources":{"devices":[{"allow":true,"access":"rwm"}]}}}'
+jq -e --arg needle '7:7' "$oci_filter" >/dev/null <<<"$oci_fixture" || fail 'containerd OCI metadata scan misses concrete block major/minor ownership'
+jq -e --arg needle '/dev/loop7' "$oci_filter" >/dev/null <<<"$oci_fixture" || fail 'containerd OCI metadata scan misses concrete device path ownership'
+if jq -e --arg needle '7:8' "$oci_filter" >/dev/null <<<"$oci_fixture"; then fail 'containerd OCI metadata scan matches unrelated concrete device ownership'; fi
+if jq -e --arg needle '/dev/loop8' "$oci_filter" >/dev/null <<<'{"linux":{"devices":[],"resources":{"devices":[{"allow":true,"access":"rwm"}]}}}'; then fail 'containerd OCI metadata scan treats wildcard device policy as concrete ownership'; fi
+if jq -e --arg needle '/dev/loop7' "$oci_filter" >/dev/null <<<'{"linux":'; then fail 'containerd OCI metadata scan accepts malformed JSON'; fi
+grep -Fq 'any(.. | strings; . == $needle)' "$EXPERIMENT_DIR/device-manager.sh" || fail 'containerd OCI metadata scan omits non-mount storage references'
+grep -q 'runtime-metadata-status.tsv' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'runtime metadata scan errors do not make case evidence insufficient'
+grep -q 'metadata scan failed while proving detach' "$EXPERIMENT_DIR/device-manager.sh" || fail 'detach proof collapses metadata scan errors into absence'
+grep -q 'metadata scan failed while checking the new device' "$EXPERIMENT_DIR/device-manager.sh" || fail 'device preparation collapses metadata scan errors into absence'
+if grep -q 'grep -R' "$EXPERIMENT_DIR/device-manager.sh"; then fail 'runtime metadata scan recursively traverses container task trees'; fi
+grep -q 'label="kdva-\${RUN_ID:0:11}"' "$EXPERIMENT_DIR/device-manager.sh" || fail 'NVMe ext4 label exceeds the 16-byte limit'
 grep -Fq '[[ $scan_rc -eq 1 ]] || die '\''direct registration precondition failed'\''' <<<"$precondition_body" || fail 'direct registration metadata scan errors do not use the fail-closed precondition error'
 grep -q 'trace cleanup failed; preserving all device state' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'cleanup mutates devices after trace cleanup failure'
+trace_start_body=$(awk '/^trace_start\(\)/,/^}/' "$EXPERIMENT_DIR/device-manager.sh")
+trace_load_line=$(line_of "$trace_start_body" 'load_state')
+trace_target_line=$(line_of "$trace_start_body" 'target=$(resolve_owned_ch)')
+trace_instance_line=$(line_of "$trace_start_body" 'printf '\''%s\\n'\'' "$instance" >"$trace_dir/tracefs-instance"')
+trace_encode_line=$(line_of "$trace_start_body" 'encoded_dev=')
+[[ $trace_load_line =~ ^[0-9]+$ && $trace_target_line =~ ^[0-9]+$ && $trace_instance_line =~ ^[0-9]+$ && $trace_encode_line =~ ^[0-9]+$ &&
+   $trace_load_line -lt $trace_target_line && $trace_instance_line -lt $trace_encode_line ]] || fail 'trace start does not load device state and persist tracefs ownership before setup'
 grep -q 'raw resources must be absent before device cleanup' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'device cleanup can precede raw resource deletion'
 grep -q 'PV_UID=' "$EXPERIMENT_DIR/create-raw-block-resources.sh" || fail 'raw PV identity is not retained'
 grep -q 'PVC_UID=' "$EXPERIMENT_DIR/create-raw-block-resources.sh" || fail 'raw PVC identity is not retained'
@@ -151,9 +183,14 @@ grep -q 'NODE_RESOURCE_GROUP' "$EXPERIMENT_DIR/provision.sh" || fail 'provisioni
 grep -q -- '--node-resource-group "$NODE_RESOURCE_GROUP"' "$EXPERIMENT_DIR/provision.sh" || fail 'AKS creation does not use the explicit derived node resource group'
 grep -Eq 'NODE_RESOURCE_GROUP=.*DEPLOYMENT_SUFFIX' "$EXPERIMENT_DIR/lib.sh" || fail 'node resource group does not include deployment-derived uniqueness'
 grep -q 'NODE_RESOURCE_GROUP_ID' "$EXPERIMENT_DIR/provision.sh" || fail 'provisioning state does not retain the exact node resource group ID'
+grep -q 'aks-reconcile-attempt-' "$EXPERIMENT_DIR/provision.sh" || fail 'ACR attachment does not retain per-attempt evidence'
+grep -q 'kata-pool-create-attempt-' "$EXPERIMENT_DIR/provision.sh" || fail 'Kata pool creation does not retain per-attempt evidence'
+grep -q 'in-progress PutExtensionAddonHandler.PUT operation' "$EXPERIMENT_DIR/provision.sh" || fail 'ACR attachment does not retry the observed node-pool reconciliation conflict'
+grep -q 'attempt == 20' "$EXPERIMENT_DIR/provision.sh" || fail 'ACR attachment retry is not bounded'
 grep -q 'nodeResourceGroup' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'destruction does not validate the AKS node resource group'
 grep -q 'node-resource-group inventory' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'destruction does not fail closed on node resource group inventory'
 grep -q 'ALLOWED_NODE_RESOURCE_TYPES' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'node resource group inventory lacks an explicit type allowlist'
+grep -q 'microsoft.kubernetesconfiguration/privatelinkscopes' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'node resource group inventory rejects the AKS extension private link scope'
 grep -q 'unexpected node resource type' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'node resource group inventory does not reject unrecognized types first'
 grep -q 'node-resource-topology.json' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'node resource group inventory does not retain topology evidence'
 grep -q 'referenced_ids' "$EXPERIMENT_DIR/validate-node-resource-topology.jq" || fail 'node resource group inventory does not require relationship evidence'
@@ -162,12 +199,15 @@ grep -q 'expected exactly one systempool and one katapool VMSS root' "$EXPERIMEN
 if grep -Eq '^[[:space:]]+microsoft\.compute/snapshots|^[[:space:]]+microsoft\.network/(publicipprefixes|routetables)' "$EXPERIMENT_DIR/destroy-cluster.sh"; then
   fail 'node resource allowlist includes types not requested by the exact provision configuration'
 fi
-topology_args=(--arg aks aks --arg aks_rg rg --arg kubelet '')
+topology_args=(--arg aks aks --arg aks_rg rg --arg aks_id /subscriptions/s/resourcegroups/rg/providers/microsoft.containerservice/managedclusters/aks --arg kubelet '')
 if ! jq -e "${topology_args[@]}" -f "$EXPERIMENT_DIR/validate-node-resource-topology.jq" >/dev/null <<'JSON'
 [
-  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-cluster-name":"aks","aks-managed-cluster-rg":"rg","aks-managed-poolName":"systempool"},"properties":{"virtualMachineProfile":{"networkProfile":{"networkInterfaceConfigurations":[{"properties":{"ipConfigurations":[{"properties":{"subnet":{"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/virtualNetworks/vnet/subnets/nodes"}}}]}}]}}}},
-  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-cluster-name":"aks","aks-managed-cluster-rg":"rg","aks-managed-poolName":"katapool"},"properties":{}},
-  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/virtualNetworks/vnet","type":"Microsoft.Network/virtualNetworks","properties":{}}
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"systempool"},"identity":{"userAssignedIdentities":{"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.ManagedIdentity/userAssignedIdentities/ext":{}}},"properties":{"virtualMachineProfile":{"networkProfile":{"networkInterfaceConfigurations":[{"properties":{"ipConfigurations":[{"properties":{"subnet":{"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/virtualNetworks/vnet/subnets/nodes"}}}]}}]}}}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"katapool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/loadBalancers/kubernetes","name":"kubernetes","type":"Microsoft.Network/loadBalancers","tags":{"aks-managed-cluster-name":"aks","aks-managed-cluster-rg":"rg"},"properties":{"backendAddressPools":[{"properties":{"backendIPConfigurations":[{"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system/virtualMachines/0/networkInterfaces/nic/ipConfigurations/ipconfig1"},{"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata/virtualMachines/0/networkInterfaces/nic/ipConfigurations/ipconfig1"}]}}]}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/virtualNetworks/vnet","type":"Microsoft.Network/virtualNetworks","properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.ManagedIdentity/userAssignedIdentities/ext","type":"Microsoft.ManagedIdentity/userAssignedIdentities","properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.KubernetesConfiguration/privateLinkScopes/extension-pls","type":"Microsoft.KubernetesConfiguration/privateLinkScopes","properties":{"clusterResourceId":"/subscriptions/s/resourceGroups/rg/providers/Microsoft.ContainerService/managedClusters/aks"}}
 ]
 JSON
 then
@@ -183,6 +223,55 @@ JSON
 then
   fail 'unreferenced allowed-type node resource is accepted'
 fi
+if jq -e "${topology_args[@]}" -f "$EXPERIMENT_DIR/validate-node-resource-topology.jq" >/dev/null 2>&1 <<'JSON'
+[
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"systempool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"katapool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/networkSecurityGroups/copied-tags","type":"Microsoft.Network/networkSecurityGroups","tags":{"aks-managed-cluster-name":"aks","aks-managed-cluster-rg":"rg"},"properties":{"references":["/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata"]}}
+]
+JSON
+then
+  fail 'non-load-balancer resource with copied cluster tags is accepted as a VMSS ownership anchor'
+fi
+if jq -e "${topology_args[@]}" -f "$EXPERIMENT_DIR/validate-node-resource-topology.jq" >/dev/null 2>&1 <<'JSON'
+[
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"systempool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"katapool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/loadBalancers/kubernetes","name":"kubernetes","type":"Microsoft.Network/loadBalancers","tags":{"aks-managed-cluster-name":"aks","aks-managed-cluster-rg":"rg"},"properties":{"notes":["/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata"]}}
+]
+JSON
+then
+  fail 'tagged load balancer with noncanonical spoofed references is accepted as a VMSS ownership anchor'
+fi
+if jq -e "${topology_args[@]}" -f "$EXPERIMENT_DIR/validate-node-resource-topology.jq" >/dev/null 2>&1 <<'JSON'
+[
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"systempool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"katapool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Network/loadBalancers/kubernetes","name":"kubernetes","type":"Microsoft.Network/loadBalancers","tags":{"aks-managed-cluster-name":"aks","aks-managed-cluster-rg":"rg"},"properties":{"backendAddressPools":[{"properties":{"backendIPConfigurations":[{"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system/not-a-vm-nic"},{"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata/not-a-vm-nic"}]}}]}}
+]
+JSON
+then
+  fail 'tagged load balancer with noncanonical VMSS child paths is accepted as an ownership anchor'
+fi
+if jq -e "${topology_args[@]}" -f "$EXPERIMENT_DIR/validate-node-resource-topology.jq" >/dev/null 2>&1 <<'JSON'
+[
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"systempool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"katapool"},"properties":{}}
+]
+JSON
+then
+  fail 'unanchored VMSS roots are accepted by pool tag alone'
+fi
+if jq -e "${topology_args[@]}" -f "$EXPERIMENT_DIR/validate-node-resource-topology.jq" >/dev/null 2>&1 <<'JSON'
+[
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/system","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"systempool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.Compute/virtualMachineScaleSets/kata","type":"Microsoft.Compute/virtualMachineScaleSets","tags":{"aks-managed-poolName":"katapool"},"properties":{}},
+  {"id":"/subscriptions/s/resourceGroups/nodes/providers/Microsoft.KubernetesConfiguration/privateLinkScopes/extension-pls","type":"Microsoft.KubernetesConfiguration/privateLinkScopes","properties":{"clusterResourceId":"/subscriptions/s/resourceGroups/foreign/providers/Microsoft.ContainerService/managedClusters/foreign"}}
+]
+JSON
+then
+  fail 'private link scope tied to a foreign cluster is accepted'
+fi
 grep -q 'managedBy' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'destruction does not validate node resource group managedBy ownership'
 grep -q 'az lock list' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'destruction does not reject node resource group locks'
 grep -q 'aks-managed-cluster-name' "$EXPERIMENT_DIR/destroy-cluster.sh" || fail 'node resource group inventory is not tied to the exact AKS cluster'
@@ -192,8 +281,18 @@ grep -q 'CASE_REGISTRATION.*unsupported' "$EXPERIMENT_DIR/run-experiment.sh" || 
 grep -q 'namespace already exists' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'runner can reuse another run namespace'
 grep -q 'NAMESPACE_UID=' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'namespace UID ownership is not retained'
 grep -q 'POD_UID' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'pod UID ownership is not retained'
+grep -q 'pod-create-attempted.tsv' "$EXPERIMENT_DIR/collect-guest-state.sh" || fail 'guest collection does not recognize a workload pod create attempt'
+if grep -q 'pod-apply-attempted.tsv' "$EXPERIMENT_DIR/collect-guest-state.sh"; then
+  fail 'guest collection checks an obsolete pod apply marker'
+fi
 grep -q 'delete_kubernetes_object_with_preconditions' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'pod cleanup lacks UID preconditions'
 grep -q 'preserving unique namespace for cluster destruction' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'normal cleanup can cascade-delete unowned namespaced resources'
+[[ $(grep -c 'NAMESPACE=\$NAMESPACE KUBECONFIG_PATH=\$KUBECONFIG_PATH "\$EXPERIMENT_DIR/collect-guest-state.sh"' "$EXPERIMENT_DIR/run-experiment.sh") -eq 2 ]] || fail 'guest collection does not receive explicit Kubernetes context'
+grep -q 'wait_for_workload_completion' "$EXPERIMENT_DIR/run-experiment.sh" || fail 'workload completion does not handle terminal failure'
+if grep -q "jsonpath='{.status.phase}'=Succeeded" "$EXPERIMENT_DIR/run-experiment.sh"; then fail 'workload completion waits only for success'; fi
+grep -Fq '$PHASE == detached' "$EXPERIMENT_DIR/device-manager.sh" || fail 'direct-to-raw reversal cannot reassign a safely detached formatted device'
+[[ $(grep -h 'POD_NAME="\$POD_NAME" NAMESPACE="\$NAMESPACE" KUBECONFIG_PATH="\$KUBECONFIG_PATH" "\$EXPERIMENT_DIR/collect-guest-state.sh"' "$EXPERIMENT_DIR"/run-*-test.sh | wc -l) -eq 2 ]] || fail 'workload helpers do not pass explicit Kubernetes context to failure collection'
+if grep -Eq 'kubectl .* logs .*\| grep -q' "$EXPERIMENT_DIR"/run-*-test.sh; then fail 'workload readiness uses an early-closing grep pipeline'; fi
 if grep -Eq 'delete_kubernetes_object_with_preconditions[[:space:]]+namespace|/api/v1/namespaces/\$name"' "$EXPERIMENT_DIR/run-experiment.sh"; then
   fail 'normal cleanup contains a namespace deletion path'
 fi

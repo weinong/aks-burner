@@ -57,10 +57,12 @@ POD_RESOURCE_VERSION=$(jq -r '.metadata.resourceVersion // empty' "$POD_RESPONSE
 persist_pod_ownership
 printf 'pod-created\t%s\n' "$POD_NAME" >"$CASE_DIR/pod-created.tsv"
 deadline=$((SECONDS + 300))
-until kubectl --kubeconfig "$KUBECONFIG_PATH" logs -n "$NAMESPACE" "$POD_NAME" 2>/dev/null | grep -q '^READY_FOR_TEST$'; do
+while true; do
+  logs=$(kubectl --kubeconfig "$KUBECONFIG_PATH" logs -n "$NAMESPACE" "$POD_NAME" 2>/dev/null || true)
+  grep -q '^READY_FOR_TEST$' <<<"$logs" && break
   phase=$(kubectl --kubeconfig "$KUBECONFIG_PATH" get pod -n "$NAMESPACE" "$POD_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   if [[ $phase == Failed || $phase == Succeeded || $SECONDS -ge $deadline ]]; then
-    OUTPUT_DIR="$CASE_DIR" POD_NAME="$POD_NAME" "$EXPERIMENT_DIR/collect-guest-state.sh"; exit 1
+    OUTPUT_DIR="$CASE_DIR" POD_NAME="$POD_NAME" NAMESPACE="$NAMESPACE" KUBECONFIG_PATH="$KUBECONFIG_PATH" "$EXPERIMENT_DIR/collect-guest-state.sh"; exit 1
   fi
   sleep 2
 done

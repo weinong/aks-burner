@@ -177,17 +177,16 @@ The guest block inventory did not contain the Azure Disk. Bidirectional marker w
 1. The supported host-filesystem path remains `virtiofs`; the tested direct-volume mount path failed.
 2. A separate Kubernetes raw-block `volumeDevice` path succeeded end to end after isolated enablement of block-device use.
 3. On identical local NVMe backing, Kata `virtiofs` delivered about `33.5%` of native ext4 read IOPS and bandwidth, with `36.51x` setup overhead and `30.14x` p99 latency.
-4. The next useful engineering work is a same-node, same-loop comparison of direct-volume mount construction and Kubernetes raw-block construction, with an explicitly verified node-visible tracing tool when available.
+4. The A/B run reproduced path-specific failures without showing an order effect. The next useful work is root-cause localization with node-visible FD-scoped syscall tracing and stronger direct-failure runtime evidence.
 
 ## Kata Direct-Volume A/B Follow-Up
 
-A narrowly scoped, fail-closed harness for the proposed same-node comparison is available in `experiments/kata-direct-volume-ab/`. It covers the required A-to-B same-device sequence, a fresh-device B-to-A reversal, and isolated raw and direct variations. The strengthened harness preserves and verifies ext4 metadata, performs the same ext4 operation matrix on both filesystem paths, verifies path-specific handoff markers, and records scoped path/runtime evidence without treating an expected case failure as a reason to omit later cases.
+A run on 2026-07-13 exercised the same-device A-to-B sequence, a fresh-device B-to-A reversal, and isolated raw and direct cases. Both raw-block filesystem cases completed a guest raw read and then failed to mount ext4 with `can't read superblock on /dev/testdisk`. All three direct-volume registrations succeeded, but container creation reported `/dev/vdb` mount `EIO` before guest workload execution.
 
-Results remain pending until an approved run produces evidence. Direct pre-mount raw writes are not implemented because the installed runtime has not demonstrated a safe attach-without-mount interface; mount-failure-time guest and Cloud Hypervisor evidence is collected instead. Host syscall tracing also depends on a node-installed `strace` with FD filtering and is explicitly unsupported/insufficient when absent. No success, failure, performance, or root-cause conclusion should be inferred from the harness or its empty result templates.
+The isolated raw diagnostic completed seeded reads and two guest direct writes. Reversing path order did not change the observed raw or direct behavior: prior raw use was not required for direct `EIO`, and a failed direct attempt did not prevent subsequent raw access. Neither ordered path completed a filesystem write or persistence marker, syscall tracing was unavailable, and direct runtime evidence remained insufficient, so the run establishes no path winner or root cause. Sanitized evidence and cleanup details are retained in `experiments/kata-direct-volume-ab/evidence.md`.
 
 ## Retained Experiment State
 
-- The earlier completed experiment cluster and resource group were deleted after evidence collection; the pending A/B harness has not provisioned resources as part of this repository change.
-- Kata runtime configuration is restored to its supported default.
-- Direct-volume metadata, loop mapping, backing file, local-NVMe mount, and tracefs instance are removed.
-- Temporary probe, diagnostic, and benchmark Kubernetes resources were removed.
+- Separate destruction evidence records topology validation and successful deletion waits for the exact primary and node resource groups.
+- The run bundle records complete cleanup for `same-ab`, `fresh-ba`, and `isolated-direct`, but preserves an isolated-raw final-cleanup failure.
+- No retained transcript independently proves pre-destruction removal of the remaining isolated-raw node-local state; that state was ultimately discarded with the experiment nodes.
