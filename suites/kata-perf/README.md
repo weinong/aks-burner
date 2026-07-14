@@ -25,8 +25,10 @@ plus Prometheus pod resource metrics.
 | `smoke` | 20 | 20 | 20 | 20 |
 | `full` | 90 | 50 | 50 | 50 |
 
-Both modes run both jobs, enable cleanup, wait for the jobs to finish, and
-preload images.
+Both modes run both jobs, enable cleanup, wait for the jobs to finish, preload
+images, and pause each job for 6 minutes before stopping kube-burner
+measurements so pod latency callbacks can drain. Prometheus metrics close
+before this drain pause by setting `metricsClosing: afterJob`.
 
 ## Measurements
 
