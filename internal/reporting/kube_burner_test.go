@@ -7,6 +7,7 @@ package reporting
 // names and UUIDs, and retain all structural fields before updating these tests.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -87,8 +88,228 @@ func TestReadKubeBurnerMetricsAcceptsUnlabeledPrometheusScalar(t *testing.T) {
 	}
 }
 
+func TestReadKubeBurnerMetricsNormalizesDefaultRuntimeHandler(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels string
+		want   string
+	}{
+		{name: "absent", labels: `{}`, want: "default"},
+		{name: "empty", labels: `{"runtime_handler":""}`, want: "default"},
+		{name: "kata", labels: `{"runtime_handler":"kata"}`, want: "kata"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			document := map[string]json.RawMessage{
+				"jobName": json.RawMessage(`"job"`),
+				"value":   json.RawMessage(`1`),
+				"labels":  json.RawMessage(tc.labels),
+			}
+			_, _, handler, err := sandboxCounterDocument(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if handler != tc.want {
+				t.Fatalf("handler = %q, want %q", handler, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadKubeBurnerMetricsDerivesSandboxCountAndMeanFromCapturedCounters(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxCount-start.json", `[
+  {"metricName":"runPodSandboxCount-start","value":10,"timestamp":"2026-07-14T00:00:00Z","jobName":"startup-smoke","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxCount.json", `[
+  {"metricName":"runPodSandboxCount","value":15,"timestamp":"2026-07-14T00:01:00Z","jobName":"startup-smoke","labels":{"runtime_handler":"kata"}},
+  {"metricName":"runPodSandboxCount","value":2,"timestamp":"2026-07-14T00:01:00Z","jobName":"startup-default-runtime","labels":{}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxSum-start.json", `[
+  {"metricName":"runPodSandboxSum-start","value":20,"timestamp":"2026-07-14T00:00:00Z","jobName":"startup-smoke","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxSum.json", `[
+  {"metricName":"runPodSandboxSum","value":25,"timestamp":"2026-07-14T00:01:00Z","jobName":"startup-smoke","labels":{"runtime_handler":"kata"}},
+  {"metricName":"runPodSandboxSum","value":0.5,"timestamp":"2026-07-14T00:01:00Z","jobName":"startup-default-runtime","labels":{}}
+]`)
+	rows, files, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, []string{"runPodSandboxCount", "runPodSandboxSum"}, map[string]string{"runPodSandboxCount": "count", "runPodSandboxSum": "seconds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 4 || len(rows) != 4 {
+		t.Fatalf("files/rows = %d/%#v", files, rows)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		if row.Source != "derived/run-podsandbox" {
+			t.Fatalf("source = %q", row.Source)
+		}
+		got[row.Dimensions["kubeBurner.jobName"]+"/"+row.Dimensions["label.runtime_handler"]+"/"+row.Metric] = row.Value.Text
+	}
+	want := map[string]string{
+		"startup-smoke/kata/runPodSandboxCount":              "5",
+		"startup-smoke/kata/runPodSandboxMean":               "1",
+		"startup-default-runtime/default/runPodSandboxCount": "2",
+		"startup-default-runtime/default/runPodSandboxMean":  "0.25",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sandbox rows = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsInvalidSandboxCounterSets(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		documents string
+		want      string
+	}{
+		{name: "duplicate", documents: `[
+  {"metricName":"runPodSandboxCount","value":2,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxCount","value":3,"jobName":"job","labels":{}}
+]`, want: "duplicate runPodSandboxCount"},
+		{name: "missing sum end", documents: `[
+  {"metricName":"runPodSandboxCount","value":2,"jobName":"job","labels":{}}
+]`, want: "incomplete RunPodSandbox counters"},
+		{name: "count reset", documents: `[
+  {"metricName":"runPodSandboxCount-start","value":5,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxCount","value":2,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxSum-start","value":5,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxSum","value":6,"jobName":"job","labels":{}}
+]`, want: "RunPodSandbox count delta must be positive"},
+		{name: "nonintegral count", documents: `[
+  {"metricName":"runPodSandboxCount","value":2.5,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxSum","value":1,"jobName":"job","labels":{}}
+]`, want: "RunPodSandbox count delta must be an integer"},
+		{name: "sum reset", documents: `[
+  {"metricName":"runPodSandboxCount-start","value":1,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxCount","value":2,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxSum-start","value":5,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxSum","value":4,"jobName":"job","labels":{}}
+]`, want: "RunPodSandbox sum delta must not be negative"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			writeKubeBurnerMetric(t, runDir, "sandbox.json", tc.documents)
+			_, _, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadKubeBurnerMetricsDerivesPostSandboxContainerLaunchSummary(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","jobName":"startup-smoke","readyToStartContainersLatency":1000,"containersStartedLatency":1010},
+  {"metricName":"podLatencyMeasurement","jobName":"startup-smoke","readyToStartContainersLatency":1000,"containersStartedLatency":1020},
+  {"metricName":"podLatencyMeasurement","jobName":"startup-smoke","readyToStartContainersLatency":1000,"containersStartedLatency":1030},
+  {"metricName":"podLatencyMeasurement","jobName":"startup-smoke","readyToStartContainersLatency":1000,"containersStartedLatency":1040},
+  {"metricName":"podLatencyMeasurement","jobName":"startup-smoke","readyToStartContainersLatency":1000,"containersStartedLatency":1050}
+]`)
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement-part2.json", `[
+  {"metricName":"podLatencyMeasurement","jobName":"startup-default-runtime","readyToStartContainersLatency":2000,"containersStartedLatency":2100},
+  {"metricName":"podLatencyMeasurement","jobName":"startup-smoke","readyToStartContainersLatency":1000,"containersStartedLatency":1060}
+]`)
+	rows, files, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 2 || len(rows) != 12 {
+		t.Fatalf("files/rows = %d/%#v", files, rows)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		if row.Source != "derived/post-sandbox-container-launch" {
+			t.Fatalf("derived row source = %q", row.Source)
+		}
+		got[row.Dimensions["jobName"]+"/"+row.Metric+"/"+row.Unit] = row.Value.Text
+	}
+	want := map[string]string{
+		"startup-smoke/post_sandbox_container_launch_latency_p50/milliseconds":               "30",
+		"startup-smoke/post_sandbox_container_launch_latency_p95/milliseconds":               "55",
+		"startup-smoke/post_sandbox_container_launch_latency_p99/milliseconds":               "55",
+		"startup-smoke/post_sandbox_container_launch_latency_max/milliseconds":               "60",
+		"startup-smoke/post_sandbox_container_launch_latency_avg/milliseconds":               "35",
+		"startup-smoke/post_sandbox_container_launch_latency_sample_count/samples":           "6",
+		"startup-default-runtime/post_sandbox_container_launch_latency_p50/milliseconds":     "100",
+		"startup-default-runtime/post_sandbox_container_launch_latency_p95/milliseconds":     "100",
+		"startup-default-runtime/post_sandbox_container_launch_latency_p99/milliseconds":     "100",
+		"startup-default-runtime/post_sandbox_container_launch_latency_max/milliseconds":     "100",
+		"startup-default-runtime/post_sandbox_container_launch_latency_avg/milliseconds":     "100",
+		"startup-default-runtime/post_sandbox_container_launch_latency_sample_count/samples": "1",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("derived metrics = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsInvalidPostSandboxSamples(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		want     string
+	}{
+		{name: "missing started", document: `{"metricName":"podLatencyMeasurement","jobName":"job","readyToStartContainersLatency":10}`, want: "containersStartedLatency field is required"},
+		{name: "nonnumeric ready", document: `{"metricName":"podLatencyMeasurement","jobName":"job","readyToStartContainersLatency":"bad","containersStartedLatency":20}`, want: "readyToStartContainersLatency must be a JSON number"},
+		{name: "zero started", document: `{"metricName":"podLatencyMeasurement","jobName":"job","readyToStartContainersLatency":0,"containersStartedLatency":0}`, want: "containersStartedLatency must be greater than zero"},
+		{name: "negative difference", document: `{"metricName":"podLatencyMeasurement","jobName":"job","readyToStartContainersLatency":20,"containersStartedLatency":10}`, want: "post-sandbox container launch latency must not be negative"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", "["+tc.document+"]")
+			_, _, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadKubeBurnerMetricsExcludesAmbiguousZeroSandboxReadySample(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","jobName":"job","readyToStartContainersLatency":0,"containersStartedLatency":10},
+  {"metricName":"podLatencyMeasurement","jobName":"job","readyToStartContainersLatency":100,"containersStartedLatency":120}
+]`)
+	rows, _, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Metric == "post_sandbox_container_launch_latency_sample_count" && row.Value.Text != "1" {
+			t.Fatalf("sample count = %s, want 1", row.Value.Text)
+		}
+	}
+}
+
+func TestReadKubeBurnerMetricsReportsZeroValidPostSandboxSamples(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","jobName":"job","readyToStartContainersLatency":0,"containersStartedLatency":10}
+]`)
+	rows, _, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Metric != "post_sandbox_container_launch_latency_sample_count" || rows[0].Value.Text != "0" {
+		t.Fatalf("rows = %#v", rows)
+	}
+}
+
+func TestReadKubeBurnerMetricsReadsPinnedPodLatencyFixture(t *testing.T) {
+	runDir := copyKubeBurnerFixtures(t, "podLatencyMeasurement.json")
+	rows, files, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || len(rows) != 6 {
+		t.Fatalf("files/rows = %d/%#v", files, rows)
+	}
+}
+
 func TestReadKubeBurnerMetricsIgnoresUnsupportedDocuments(t *testing.T) {
-	runDir := copyKubeBurnerFixtures(t, "ignored-podLatencyMeasurement.json", "jobSummary.json")
+	runDir := copyKubeBurnerFixtures(t, "jobSummary.json")
 	writeKubeBurnerMetric(t, runDir, "unknown.json", `[{"metricName":"notDeclared","value":1,"timestamp":"2026-07-11T00:00:00Z","labels":{}}]`)
 	writeKubeBurnerMetric(t, runDir, "unit-only.json", `[{"metricName":"unitOnly","value":1,"timestamp":"2026-07-11T00:00:00Z","labels":{}}]`)
 

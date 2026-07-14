@@ -1,12 +1,12 @@
-iterations: 20
-iterationsPerNamespace: 20
-qps: 20
-burst: 20
+iterations: 5
+iterationsPerNamespace: 1
+qps: 5
+burst: 5
 cleanup: true
-waitWhenFinished: true
+waitWhenFinished: false
 preLoadImages: true
-jobPause: 6m
-metricsClosing: afterJob
+jobPause: 1m
+metricsClosing: afterMeasurements
 templateVars:
   app: kata-perf
 imageVars:
