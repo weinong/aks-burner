@@ -10,7 +10,7 @@ metadata:
 spec:
   restartPolicy: Never
   nodeSelector:
-    perf.azure.com/node-role: workload
+    perf.azure.com/node-role: {{.nodeRole}}
   containers:
     - name: preload
       image: {{.benchmarkImage}}

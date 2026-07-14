@@ -17,6 +17,13 @@ SAMPLE_WORK_DIR="${WORK_DIR}/${RUN_ID}/${SCENARIO}/${SAMPLE_ID}"
 
 mkdir -p "$OUT_DIR" "$SAMPLE_WORK_DIR"
 
+{
+  printf 'fio --version: '; fio --version 2>&1 || true
+  printf 'git --version: '; git --version 2>&1 || true
+  printf 'mkfs.ext4 -V: '; mkfs.ext4 -V 2>&1 || true
+  printf 'mount --version: '; mount --version 2>&1 || true
+} > "$OUT_DIR/tool-versions.txt"
+
 start_ns="$(date +%s%N)"
 cat /proc/self/io > "$OUT_DIR/proc-self-io-before.txt" || true
 df -h "$SAMPLE_WORK_DIR" > "$OUT_DIR/df-before.txt" || true
@@ -85,6 +92,7 @@ if [ "$exit_code" -eq 0 ]; then
 fi
 active_runtime_seconds="$(awk "BEGIN { print (${read_runtime_seconds} > ${write_runtime_seconds}) ? ${read_runtime_seconds} : ${write_runtime_seconds} }")"
 setup_overhead_seconds="$(awk "BEGIN { value = ${duration_seconds} - ${active_runtime_seconds}; print (value > 0 ? value : 0) }")"
+block_setup_duration="${BLOCK_SETUP_DURATION_SECONDS:-0}"
 
 jq -n \
   --arg runtime "$RUNTIME" \
@@ -95,6 +103,7 @@ jq -n \
   --argjson totalDuration "$duration_seconds" \
   --argjson activeRuntime "$active_runtime_seconds" \
   --argjson setupOverhead "$setup_overhead_seconds" \
+  --argjson blockSetupDuration "$block_setup_duration" \
   --argjson exitCode "$exit_code" \
   --argjson readIOPS "$read_iops" \
   --argjson writeIOPS "$write_iops" \
@@ -106,6 +115,7 @@ jq -n \
     {name:"total_duration",value:$totalDuration,unit:"seconds"},
     {name:"active_runtime",value:$activeRuntime,unit:"seconds"},
     {name:"setup_overhead",value:$setupOverhead,unit:"seconds"},
+    {name:"block_setup_duration",value:$blockSetupDuration,unit:"seconds"},
     {name:"exit_code",value:$exitCode,unit:"code"},
     {name:"read_iops",value:$readIOPS,unit:"operations/second"},
     {name:"write_iops",value:$writeIOPS,unit:"operations/second"},

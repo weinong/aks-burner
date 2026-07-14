@@ -22,6 +22,17 @@ requires:
         labels:
           perf.azure.com/node-role: workload
         taints: []
+      - name: patchpool
+        mode: User
+        count: 4
+        vmSize: Standard_D8s_v5
+        osType: Linux
+        osSKU: AzureLinux
+        workloadRuntime: KataMshvVmIsolation
+        labels:
+          perf.azure.com/node-role: patchpool
+        taints:
+          - perf.azure.com/kata-shim-patch=pending:NoSchedule
   kubernetes:
     minVersion: "1.36"
   nodeSelectors:
@@ -31,6 +42,12 @@ requires:
       minNodes: 1
       labels:
         perf.azure.com/node-role: workload
+    - name: patched-kata
+      pool: patchpool
+      required: true
+      minNodes: 4
+      labels:
+        perf.azure.com/node-role: patchpool
   images:
     builds:
       - key: benchmark

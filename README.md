@@ -105,7 +105,11 @@ Both modes load and validate `requirements.yml`, including node-pool and selecto
 
 When Prometheus is `required` and `install: true`, `run-suite` installs Prometheus before running the workload.
 
-`kata-io` provisions a Kata Pod Sandboxing-capable AKS workload pool, builds a benchmark image, installs Prometheus and kube-state-metrics, runs fio and Git clone workloads, and copies raw artifacts from the results PVC into the local run directory.
+`kata-io` provisions two Kata workload pools: an unpatched baseline pool for filesystem-backed storage scenarios and a patched pool for raw-block Azure Disk scenarios. Patched nodes start with a `perf.azure.com/kata-shim-patch=pending:NoSchedule` taint, so raw-block jobs cannot schedule until the setup DaemonSet verifies and atomically installs the exact experimental `/usr/local/bin/containerd-shim-kata-v2` binary. The DaemonSet preserves and verifies the shim's numeric mode, UID, and GID, removes only its own exact readiness taint through a least-privilege node `get`/`patch` service account, then sleeps without host access. Every `run-suite` restarts the DaemonSet to rerun init verification on every patched node. The patch remains idempotent and does not restart containerd. Raw-block results use the `storage-azure-disk-block` storage dimension and `runtime-kata-patched` runtime dimension.
+
+The benchmark image pins the Ubuntu 24.04 base image digest. Apt package versions remain unpinned because no repository snapshot is configured; each fio and Git sample records `fio`, `git`, `mkfs.ext4`, and `mount` versions in `tool-versions.txt` beside its summary and raw artifacts.
+
+The default infrastructure uses one `Standard_D4s_v5` system node, four `Standard_D8s_v5` baseline Kata nodes, and four `Standard_D8s_v5` patched Kata nodes. Ensure the target region has sufficient DSv5-family quota before provisioning; any quota increase is an external prerequisite.
 
 `destroy` without `--resource-group` derives and deletes only the signed-in user's default `rg-aks-burner-<suite>-<alias>` resource group. An explicit resource group skips identity lookup and requires `--allow-non-default-resource-group`, including for legacy shared resource groups such as `rg-aks-burner-<suite>`.
 

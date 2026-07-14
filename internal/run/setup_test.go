@@ -134,6 +134,37 @@ func TestApplySetupAppliesResourcesAndWaitsInOrder(t *testing.T) {
 	}
 }
 
+func TestApplySetupRestartsResourceAfterApplyBeforeWait(t *testing.T) {
+	suiteDir := t.TempDir()
+	manifestPath := filepath.Join(suiteDir, "setup", "daemonset.yml")
+	if err := ensureFile(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	setup := suite.Setup{Resources: []suite.SetupResource{{
+		Name:    "node-prep",
+		Path:    "setup/daemonset.yml",
+		Restart: suite.RestartRule{Resource: "daemonset/node-prep", Namespace: "kube-system"},
+		Wait:    []suite.WaitRule{{Kind: "rollout", Resource: "daemonset/node-prep", Namespace: "kube-system", Timeout: "10m"}},
+	}}}
+	var calls [][]string
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return []byte("ok"), nil
+	}
+
+	if err := applySetup(context.Background(), setupTestTarget, suiteDir, setup, runner); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"kubectl", "--context", "preview", "apply", "-f", manifestPath},
+		{"kubectl", "--context", "preview", "rollout", "restart", "daemonset/node-prep", "--namespace", "kube-system"},
+		{"kubectl", "--context", "preview", "rollout", "status", "daemonset/node-prep", "--timeout", "10m", "--namespace", "kube-system"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("kubectl calls = %#v, want %#v", calls, want)
+	}
+}
+
 func TestApplySetupWithEmptyTargetPreservesKubectlCommand(t *testing.T) {
 	suiteDir := t.TempDir()
 	manifestPath := filepath.Join(suiteDir, "setup", "runtimeclass.yml")

@@ -26,9 +26,15 @@ type Setup struct {
 }
 
 type SetupResource struct {
-	Name string     `yaml:"name"`
-	Path string     `yaml:"path"`
-	Wait []WaitRule `yaml:"wait"`
+	Name    string      `yaml:"name"`
+	Path    string      `yaml:"path"`
+	Restart RestartRule `yaml:"restart"`
+	Wait    []WaitRule  `yaml:"wait"`
+}
+
+type RestartRule struct {
+	Resource  string `yaml:"resource"`
+	Namespace string `yaml:"namespace"`
 }
 
 type WaitRule struct {

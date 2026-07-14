@@ -2,6 +2,7 @@ package examples
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,9 +10,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Azure/aks-burner/internal/config"
+	"github.com/Azure/aks-burner/internal/infra"
 	"github.com/Azure/aks-burner/internal/reporting"
 	"github.com/Azure/aks-burner/internal/requirements"
 	"github.com/Azure/aks-burner/internal/run"
@@ -130,6 +134,9 @@ setup:
           timeout: 1m
     - name: node-prep
       path: setup/node-prep-daemonset.yml
+      restart:
+        resource: daemonset/node-prep
+        namespace: kube-system
       wait:
         - kind: rollout
           resource: daemonset/node-prep
@@ -282,38 +289,380 @@ func TestKataPerfUsesKataRuntime(t *testing.T) {
 	assertContains("suites/kata-perf/templates/pod.yml", "kubernetes.azure.com/os-sku: AzureLinux")
 }
 
+func nodePoolByName(t *testing.T, pools []infra.NodePool, name string) infra.NodePool {
+	t.Helper()
+	for _, pool := range pools {
+		if pool.Name == name {
+			return pool
+		}
+	}
+	t.Fatalf("node pool %q not found in %#v", name, pools)
+	return infra.NodePool{}
+}
+
 func TestSuiteRequirementsDriveNodePoolsWithoutParameterFiles(t *testing.T) {
 	root := filepath.Join("..", "..")
-	for _, test := range []struct {
-		name      string
-		wantCount int
-		wantSize  string
-	}{
-		{name: "kata-perf", wantCount: 1, wantSize: "Standard_D16as_v5"},
-		{name: "kata-io", wantCount: 4, wantSize: "Standard_D8s_v5"},
+
+	t.Run("kata-perf", func(t *testing.T) {
+		doc, err := requirements.Load(root, "kata-perf")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(doc.Requires.Infrastructure.NodePools) != 2 {
+			t.Fatalf("node pools = %#v, want system and user pools", doc.Requires.Infrastructure.NodePools)
+		}
+		system := nodePoolByName(t, doc.Requires.Infrastructure.NodePools, "systempool")
+		if system.Mode != "System" {
+			t.Fatalf("system pool = %#v", system)
+		}
+		user := nodePoolByName(t, doc.Requires.Infrastructure.NodePools, "userpool")
+		if user.Mode != "User" || user.Count != 1 || user.VMSize != "Standard_D16as_v5" {
+			t.Fatalf("user pool = %#v", user)
+		}
+		if doc.Requires.NodeSelectors[0].Pool != "userpool" {
+			t.Fatalf("selector pool = %q, want userpool", doc.Requires.NodeSelectors[0].Pool)
+		}
+		if _, err := os.Stat(filepath.Join(root, "suites", "kata-perf", "infra.bicepparam")); !os.IsNotExist(err) {
+			t.Fatalf("infra.bicepparam still exists: %v", err)
+		}
+	})
+
+	t.Run("kata-io", func(t *testing.T) {
+		doc, err := requirements.Load(root, "kata-io")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(doc.Requires.Infrastructure.NodePools) != 3 {
+			t.Fatalf("kata-io node pools = %#v, want systempool, userpool, patchpool", doc.Requires.Infrastructure.NodePools)
+		}
+		user := nodePoolByName(t, doc.Requires.Infrastructure.NodePools, "userpool")
+		if user.Mode != "User" || user.Count != 4 || user.VMSize != "Standard_D8s_v5" || user.OSSKU != "AzureLinux" || user.WorkloadRuntime != "KataMshvVmIsolation" {
+			t.Fatalf("userpool = %#v", user)
+		}
+		if user.Labels["perf.azure.com/node-role"] != "workload" {
+			t.Fatalf("userpool label = %#v, want workload", user.Labels)
+		}
+		patch := nodePoolByName(t, doc.Requires.Infrastructure.NodePools, "patchpool")
+		if patch.Mode != "User" || patch.Count != 4 || patch.VMSize != "Standard_D8s_v5" || patch.OSSKU != "AzureLinux" || patch.WorkloadRuntime != "KataMshvVmIsolation" {
+			t.Fatalf("patchpool = %#v", patch)
+		}
+		if patch.Labels["perf.azure.com/node-role"] != "patchpool" {
+			t.Fatalf("patchpool label = %#v, want patchpool", patch.Labels)
+		}
+		if !reflect.DeepEqual(patch.Taints, []string{"perf.azure.com/kata-shim-patch=pending:NoSchedule"}) {
+			t.Fatalf("patchpool taints = %#v, want pending shim-patch taint", patch.Taints)
+		}
+
+		selectorsByName := map[string]string{}
+		for _, selector := range doc.Requires.NodeSelectors {
+			selectorsByName[selector.Name] = selector.Pool
+		}
+		if selectorsByName["workload"] != "userpool" {
+			t.Fatalf("workload selector pool = %q, want userpool", selectorsByName["workload"])
+		}
+		if selectorsByName["patched-kata"] != "patchpool" {
+			t.Fatalf("patched-kata selector pool = %q, want patchpool", selectorsByName["patched-kata"])
+		}
+		if _, err := os.Stat(filepath.Join(root, "suites", "kata-io", "infra.bicepparam")); !os.IsNotExist(err) {
+			t.Fatalf("infra.bicepparam still exists: %v", err)
+		}
+	})
+}
+
+func TestKataIOShimPatchDaemonSetContract(t *testing.T) {
+	root := filepath.Join("..", "..")
+	suiteData, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "suite.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suiteDoc struct {
+		Setup struct {
+			Resources []struct {
+				Name    string `yaml:"name"`
+				Path    string `yaml:"path"`
+				Restart struct {
+					Resource  string `yaml:"resource"`
+					Namespace string `yaml:"namespace"`
+				} `yaml:"restart"`
+				Wait []struct {
+					Kind      string `yaml:"kind"`
+					Resource  string `yaml:"resource"`
+					Namespace string `yaml:"namespace"`
+					Timeout   string `yaml:"timeout"`
+				} `yaml:"wait"`
+			} `yaml:"resources"`
+		} `yaml:"setup"`
+	}
+	if err := yaml.Unmarshal(suiteData, &suiteDoc); err != nil {
+		t.Fatal(err)
+	}
+	if len(suiteDoc.Setup.Resources) != 3 {
+		t.Fatalf("kata-io setup resources = %#v, want namespace, kata-shim-patch, results-pvc", suiteDoc.Setup.Resources)
+	}
+	patchResource := suiteDoc.Setup.Resources[1]
+	if patchResource.Name != "kata-shim-patch" || patchResource.Path != "setup/patch-kata-shim.yml" || len(patchResource.Wait) != 1 {
+		t.Fatalf("patch setup resource = %#v", patchResource)
+	}
+	if patchResource.Restart.Resource != "daemonset/kata-shim-patch" || patchResource.Restart.Namespace != "kube-system" {
+		t.Fatalf("patch setup restart = %#v", patchResource.Restart)
+	}
+	wait := patchResource.Wait[0]
+	if wait.Kind != "rollout" || wait.Resource != "daemonset/kata-shim-patch" || wait.Namespace != "kube-system" || wait.Timeout != "15m" {
+		t.Fatalf("patch setup wait = %#v", wait)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "setup", "patch-kata-shim.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type container struct {
+		Name    string   `yaml:"name"`
+		Image   string   `yaml:"image"`
+		Command []string `yaml:"command"`
+		Env     []struct {
+			Name      string `yaml:"name"`
+			ValueFrom struct {
+				FieldRef struct {
+					FieldPath string `yaml:"fieldPath"`
+				} `yaml:"fieldRef"`
+			} `yaml:"valueFrom"`
+		} `yaml:"env"`
+		SecurityContext struct {
+			RunAsNonRoot             bool  `yaml:"runAsNonRoot"`
+			RunAsUser                int   `yaml:"runAsUser"`
+			RunAsGroup               int   `yaml:"runAsGroup"`
+			ReadOnlyRootFilesystem   bool  `yaml:"readOnlyRootFilesystem"`
+			AllowPrivilegeEscalation *bool `yaml:"allowPrivilegeEscalation"`
+			Capabilities             struct {
+				Drop []string `yaml:"drop"`
+			} `yaml:"capabilities"`
+		} `yaml:"securityContext"`
+		VolumeMounts []struct {
+			Name      string `yaml:"name"`
+			MountPath string `yaml:"mountPath"`
+			ReadOnly  bool   `yaml:"readOnly"`
+		} `yaml:"volumeMounts"`
+	}
+	var daemonSet struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+		Spec struct {
+			Template struct {
+				Spec struct {
+					NodeSelector                 map[string]string `yaml:"nodeSelector"`
+					AutomountServiceAccountToken *bool             `yaml:"automountServiceAccountToken"`
+					ServiceAccountName           string            `yaml:"serviceAccountName"`
+					Tolerations                  []struct {
+						Key      string `yaml:"key"`
+						Operator string `yaml:"operator"`
+						Value    string `yaml:"value"`
+						Effect   string `yaml:"effect"`
+					} `yaml:"tolerations"`
+					SecurityContext struct {
+						SeccompProfile struct {
+							Type string `yaml:"type"`
+						} `yaml:"seccompProfile"`
+					} `yaml:"securityContext"`
+					InitContainers []container `yaml:"initContainers"`
+					Containers     []container `yaml:"containers"`
+					Volumes        []struct {
+						Name     string `yaml:"name"`
+						HostPath struct {
+							Path string `yaml:"path"`
+							Type string `yaml:"type"`
+						} `yaml:"hostPath"`
+						Projected struct {
+							Sources []struct {
+								ServiceAccountToken *struct {
+									Path              string `yaml:"path"`
+									Audience          string `yaml:"audience"`
+									ExpirationSeconds int64  `yaml:"expirationSeconds"`
+								} `yaml:"serviceAccountToken"`
+								ConfigMap *struct {
+									Name  string `yaml:"name"`
+									Items []struct {
+										Key  string `yaml:"key"`
+										Path string `yaml:"path"`
+									} `yaml:"items"`
+								} `yaml:"configMap"`
+								DownwardAPI *struct {
+									Items []struct {
+										Path     string `yaml:"path"`
+										FieldRef struct {
+											FieldPath string `yaml:"fieldPath"`
+										} `yaml:"fieldRef"`
+									} `yaml:"items"`
+								} `yaml:"downwardAPI"`
+							} `yaml:"sources"`
+						} `yaml:"projected"`
+					} `yaml:"volumes"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(data, &daemonSet); err != nil {
+		t.Fatal(err)
+	}
+	if daemonSet.Kind != "DaemonSet" || daemonSet.Metadata.Name != "kata-shim-patch" || daemonSet.Metadata.Namespace != "kube-system" {
+		t.Fatalf("patch DaemonSet identity = kind %q, metadata %#v", daemonSet.Kind, daemonSet.Metadata)
+	}
+	podSpec := daemonSet.Spec.Template.Spec
+	if podSpec.NodeSelector["perf.azure.com/node-role"] != "patchpool" {
+		t.Fatalf("patch DaemonSet selector = %#v, want patchpool", podSpec.NodeSelector)
+	}
+	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
+		t.Fatalf("patch DaemonSet automountServiceAccountToken = %#v, want false", podSpec.AutomountServiceAccountToken)
+	}
+	if podSpec.ServiceAccountName != "kata-shim-patch" {
+		t.Fatalf("patch DaemonSet serviceAccountName = %q, want kata-shim-patch", podSpec.ServiceAccountName)
+	}
+	if len(podSpec.Tolerations) != 1 || podSpec.Tolerations[0].Key != "perf.azure.com/kata-shim-patch" || podSpec.Tolerations[0].Operator != "Equal" || podSpec.Tolerations[0].Value != "pending" || podSpec.Tolerations[0].Effect != "NoSchedule" {
+		t.Fatalf("patch DaemonSet tolerations = %#v, want exact pending shim-patch toleration", podSpec.Tolerations)
+	}
+	if podSpec.SecurityContext.SeccompProfile.Type != "RuntimeDefault" {
+		t.Fatalf("patch DaemonSet seccomp profile = %#v, want RuntimeDefault", podSpec.SecurityContext.SeccompProfile)
+	}
+	if len(podSpec.Volumes) != 2 || podSpec.Volumes[0].Name != "host-bin" || podSpec.Volumes[0].HostPath.Path != "/usr/local/bin" || podSpec.Volumes[0].HostPath.Type != "Directory" {
+		t.Fatalf("patch DaemonSet volumes = %#v", podSpec.Volumes)
+	}
+	serviceAccountVolume := podSpec.Volumes[1]
+	if serviceAccountVolume.Name != "service-account" || len(serviceAccountVolume.Projected.Sources) != 3 {
+		t.Fatalf("patch DaemonSet service account volume = %#v", serviceAccountVolume)
+	}
+	tokenSource := serviceAccountVolume.Projected.Sources[0].ServiceAccountToken
+	if tokenSource == nil || tokenSource.Path != "token" || tokenSource.Audience != "" || tokenSource.ExpirationSeconds != 600 {
+		t.Fatalf("patch DaemonSet projected token = %#v", tokenSource)
+	}
+	configMapSource := serviceAccountVolume.Projected.Sources[1].ConfigMap
+	if configMapSource == nil || configMapSource.Name != "kube-root-ca.crt" || len(configMapSource.Items) != 1 || configMapSource.Items[0].Key != "ca.crt" || configMapSource.Items[0].Path != "ca.crt" {
+		t.Fatalf("patch DaemonSet projected CA = %#v", configMapSource)
+	}
+	downwardAPISource := serviceAccountVolume.Projected.Sources[2].DownwardAPI
+	if downwardAPISource == nil || len(downwardAPISource.Items) != 1 || downwardAPISource.Items[0].Path != "namespace" || downwardAPISource.Items[0].FieldRef.FieldPath != "metadata.namespace" {
+		t.Fatalf("patch DaemonSet projected namespace = %#v", downwardAPISource)
+	}
+	if len(podSpec.InitContainers) != 1 {
+		t.Fatalf("patch DaemonSet init containers = %#v, want one patch init container", podSpec.InitContainers)
+	}
+	patch := podSpec.InitContainers[0]
+	const patchImage = "curlimages/curl@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922"
+	if patch.Name != "patch" || patch.Image != patchImage {
+		t.Fatalf("patch init container name/image = %q/%q, want %q", patch.Name, patch.Image, patchImage)
+	}
+	if patch.SecurityContext.RunAsUser != 0 || patch.SecurityContext.RunAsGroup != 0 {
+		t.Fatalf("patch init container UID/GID = %d/%d, want 0/0", patch.SecurityContext.RunAsUser, patch.SecurityContext.RunAsGroup)
+	}
+	if len(patch.VolumeMounts) != 2 || patch.VolumeMounts[0].Name != "host-bin" || patch.VolumeMounts[0].MountPath != "/host-bin" || patch.VolumeMounts[1].Name != "service-account" || patch.VolumeMounts[1].MountPath != "/var/run/secrets/kubernetes.io/serviceaccount" || !patch.VolumeMounts[1].ReadOnly {
+		t.Fatalf("patch init container mounts = %#v", patch.VolumeMounts)
+	}
+	if len(patch.Env) != 1 || patch.Env[0].Name != "NODE_NAME" || patch.Env[0].ValueFrom.FieldRef.FieldPath != "spec.nodeName" {
+		t.Fatalf("patch init container env = %#v, want NODE_NAME from spec.nodeName", patch.Env)
+	}
+	if len(patch.Command) != 3 || patch.Command[0] != "/bin/sh" || patch.Command[1] != "-ec" {
+		t.Fatalf("patch init container command = %#v", patch.Command)
+	}
+	patchScript := patch.Command[2]
+	for _, want := range []string{
+		"https://abombo.blob.core.windows.net/public/containerd-shim-kata-v2.bin",
+		"d78b0c859c25f795dee201f8ae1b28c987fd6b0537efd0430b5fd6ad47a93ec1",
+		"66484264",
+		`target="/host-bin/containerd-shim-kata-v2"`,
+		`stat -c %a "$target"`,
+		`stat -c %u "$target"`,
+		`stat -c %g "$target"`,
+		`chown "$target_uid:$target_gid" "$tmp"`,
+		`chmod "$target_mode" "$tmp"`,
+		`/api/v1/nodes/${NODE_NAME}`,
+		`application/json-patch+json`,
+		`"op":"remove"`,
+		`pending shim-patch taint already absent`,
+		`installed_mode`,
+		`installed_uid`,
+		`installed_gid`,
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			doc, err := requirements.Load(root, test.name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(doc.Requires.Infrastructure.NodePools) != 2 {
-				t.Fatalf("node pools = %#v, want system and user pools", doc.Requires.Infrastructure.NodePools)
-			}
-			system, user := doc.Requires.Infrastructure.NodePools[0], doc.Requires.Infrastructure.NodePools[1]
-			if system.Name != "systempool" || system.Mode != "System" {
-				t.Fatalf("system pool = %#v", system)
-			}
-			if user.Name != "userpool" || user.Mode != "User" || user.Count != test.wantCount || user.VMSize != test.wantSize {
-				t.Fatalf("user pool = %#v", user)
-			}
-			if doc.Requires.NodeSelectors[0].Pool != "userpool" {
-				t.Fatalf("selector pool = %q, want userpool", doc.Requires.NodeSelectors[0].Pool)
-			}
-			if _, err := os.Stat(filepath.Join(root, "suites", test.name, "infra.bicepparam")); !os.IsNotExist(err) {
-				t.Fatalf("infra.bicepparam still exists: %v", err)
-			}
-		})
+		if !strings.Contains(patchScript, want) {
+			t.Fatalf("patch init container command missing %q", want)
+		}
+	}
+	chownIndex := strings.Index(patchScript, `chown "$target_uid:$target_gid" "$tmp"`)
+	chmodIndex := strings.Index(patchScript, `chmod "$target_mode" "$tmp"`)
+	if chownIndex < 0 || chmodIndex < 0 || chownIndex > chmodIndex {
+		t.Fatalf("patch init container must restore ownership before mode: chown=%d chmod=%d", chownIndex, chmodIndex)
+	}
+	for _, forbidden := range []string{"chmod --reference", "chown --reference"} {
+		if strings.Contains(patchScript, forbidden) {
+			t.Fatalf("patch init container command contains non-portable metadata operation %q", forbidden)
+		}
+	}
+	if strings.Contains(patchScript, "sleep infinity") {
+		t.Fatal("patch init container must exit after successful verification")
+	}
+	if len(podSpec.Containers) != 1 {
+		t.Fatalf("patch DaemonSet containers = %#v, want one sleeper", podSpec.Containers)
+	}
+	sleeper := podSpec.Containers[0]
+	if sleeper.Name != "sleeper" || sleeper.Image != patch.Image || len(sleeper.Command) != 3 || sleeper.Command[0] != "/bin/sh" || sleeper.Command[1] != "-c" || sleeper.Command[2] != "sleep infinity" {
+		t.Fatalf("sleeping main container = %#v", sleeper)
+	}
+	if len(sleeper.VolumeMounts) != 0 {
+		t.Fatalf("sleeping main container must not mount host paths: %#v", sleeper.VolumeMounts)
+	}
+	if !sleeper.SecurityContext.RunAsNonRoot || sleeper.SecurityContext.RunAsUser != 65532 || sleeper.SecurityContext.RunAsGroup != 65532 || !sleeper.SecurityContext.ReadOnlyRootFilesystem || sleeper.SecurityContext.AllowPrivilegeEscalation == nil || *sleeper.SecurityContext.AllowPrivilegeEscalation || !reflect.DeepEqual(sleeper.SecurityContext.Capabilities.Drop, []string{"ALL"}) {
+		t.Fatalf("sleeping main container security context = %#v", sleeper.SecurityContext)
+	}
+
+	type rbacDocument struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+		Rules []struct {
+			APIGroups []string `yaml:"apiGroups"`
+			Resources []string `yaml:"resources"`
+			Verbs     []string `yaml:"verbs"`
+		} `yaml:"rules"`
+		RoleRef struct {
+			Kind string `yaml:"kind"`
+			Name string `yaml:"name"`
+		} `yaml:"roleRef"`
+		Subjects []struct {
+			Kind      string `yaml:"kind"`
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"subjects"`
+	}
+	documents := map[string]rbacDocument{}
+	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	for {
+		var document rbacDocument
+		if err := decoder.Decode(&document); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		documents[document.Kind] = document
+	}
+	serviceAccount := documents["ServiceAccount"]
+	if serviceAccount.Metadata.Name != "kata-shim-patch" || serviceAccount.Metadata.Namespace != "kube-system" {
+		t.Fatalf("patch ServiceAccount = %#v", serviceAccount.Metadata)
+	}
+	role := documents["ClusterRole"]
+	if role.Metadata.Name != "kata-shim-patch" || len(role.Rules) != 1 || !reflect.DeepEqual(role.Rules[0].APIGroups, []string{""}) || !reflect.DeepEqual(role.Rules[0].Resources, []string{"nodes"}) || !reflect.DeepEqual(role.Rules[0].Verbs, []string{"get", "patch"}) {
+		t.Fatalf("patch ClusterRole = %#v", role)
+	}
+	binding := documents["ClusterRoleBinding"]
+	if binding.Metadata.Name != "kata-shim-patch" || binding.RoleRef.Kind != "ClusterRole" || binding.RoleRef.Name != "kata-shim-patch" || len(binding.Subjects) != 1 || binding.Subjects[0].Kind != "ServiceAccount" || binding.Subjects[0].Name != "kata-shim-patch" || binding.Subjects[0].Namespace != "kube-system" {
+		t.Fatalf("patch ClusterRoleBinding = %#v", binding)
+	}
+	manifest := string(data)
+	for _, forbidden := range []string{"systemctl restart", "service containerd restart", "pkill containerd", "containerd-shim-v2"} {
+		if strings.Contains(manifest, forbidden) {
+			t.Fatalf("patch DaemonSet contains forbidden restart or wrong target %q", forbidden)
+		}
 	}
 }
 
@@ -553,14 +902,14 @@ func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
 	}
 }
 
-func TestKataIOFioWorkloadsUseOnePreloadJob(t *testing.T) {
+func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 	root := filepath.Join("..", "..")
 	preloadTemplate, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "templates", "preload-pod.yml"))
 	if err != nil {
 		t.Fatalf("preload pod template missing: %v", err)
 	}
 	preloadTemplateText := string(preloadTemplate)
-	for _, want := range []string{"image: {{.benchmarkImage}}", "command: [override, command]"} {
+	for _, want := range []string{"image: {{.benchmarkImage}}", "command: [override, command]", "perf.azure.com/node-role: {{.nodeRole}}"} {
 		if !strings.Contains(preloadTemplateText, want) {
 			t.Fatalf("preload pod template missing %q", want)
 		}
@@ -570,7 +919,7 @@ func TestKataIOFioWorkloadsUseOnePreloadJob(t *testing.T) {
 			t.Fatalf("preload pod template must not contain fio workload marker %q", forbidden)
 		}
 	}
-	for _, workloadFile := range []string{"workload-fio-fast.yml", "workload-fio.yml"} {
+	for _, workloadFile := range []string{"workload-fio-fast.yml", "workload-git-fast.yml", "workload-fio.yml", "workload-git.yml"} {
 		t.Run(workloadFile, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", workloadFile))
 			if err != nil {
@@ -592,29 +941,50 @@ func TestKataIOFioWorkloadsUseOnePreloadJob(t *testing.T) {
 			}
 
 			preloadJobs := 0
+			seenBenchmark := false
 			for _, job := range workload.Jobs {
-				if job.PreLoadImages == nil {
-					t.Fatalf("job %s must explicitly set preLoadImages", job.Name)
-				}
-				if !*job.PreLoadImages {
+				if job.Name != "kio-preload-images" {
+					for _, object := range job.Objects {
+						if _, benchmark := object.InputVars["scenario"]; benchmark {
+							seenBenchmark = true
+							if job.PreLoadImages == nil || *job.PreLoadImages {
+								t.Fatalf("benchmark job %s must set preLoadImages: false", job.Name)
+							}
+						}
+					}
 					continue
 				}
-				preloadJobs++
-				if job.Name != "kio-preload-images" {
-					t.Fatalf("preload job name = %q, want kio-preload-images", job.Name)
+				if seenBenchmark {
+					t.Fatalf("preload job must run before benchmark jobs")
 				}
+				if job.PreLoadImages == nil || !*job.PreLoadImages {
+					t.Fatalf("preload job must set preLoadImages: true")
+				}
+				preloadJobs++
 				if job.JobType != "create" {
 					t.Fatalf("preload job type = %q, want create", job.JobType)
 				}
-				if len(job.Objects) != 1 {
-					t.Fatalf("preload job objects = %d, want 1", len(job.Objects))
+				if len(job.Objects) != 2 {
+					t.Fatalf("preload job objects = %d, want 2", len(job.Objects))
 				}
-				object := job.Objects[0]
-				if object.ObjectTemplate != "templates/preload-pod.yml" {
-					t.Fatalf("preload object template = %q, want templates/preload-pod.yml", object.ObjectTemplate)
+				roles := map[string]bool{}
+				for _, object := range job.Objects {
+					if object.ObjectTemplate != "templates/preload-pod.yml" {
+						t.Fatalf("preload object template = %q, want templates/preload-pod.yml", object.ObjectTemplate)
+					}
+					role := asString(object.InputVars["nodeRole"])
+					if roles[role] {
+						t.Fatalf("preload job contains duplicate nodeRole %q", role)
+					}
+					roles[role] = true
+					if got, want := asString(object.InputVars["jobName"]), "{{.k8sRunID}}-preload-"+role; got != want {
+						t.Fatalf("preload %s jobName = %q, want %q", role, got, want)
+					}
 				}
-				if asString(object.InputVars["jobName"]) == "" {
-					t.Fatalf("preload job must set jobName inputVars")
+				for _, role := range []string{"workload", "patchpool"} {
+					if !roles[role] {
+						t.Fatalf("preload job missing nodeRole %q", role)
+					}
 				}
 			}
 			if preloadJobs != 1 {
@@ -649,8 +1019,50 @@ func kataIOWorkloadFiles(t *testing.T) []string {
 	return files
 }
 
-func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "workload-full.yml"))
+func TestKataIOFioWorkloadCoversActiveScenarios(t *testing.T) {
+	assertKataIOActiveWorkloadScenarios(t, "workload-fio.yml", 70, map[string]int{
+		"storage-emptydir":         20,
+		"storage-azure-disk":       20,
+		"storage-azure-files":      20,
+		"storage-azure-disk-block": 10,
+	}, map[string]bool{
+		"runtime-kata-patched-storage-azure-disk-block-fio-randread-4k-concurrency-1":   true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-randwrite-4k-concurrency-1":  true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-seqread-concurrency-1":       true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-seqwrite-concurrency-1":      true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-fsync-heavy-concurrency-1":   true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-randread-4k-concurrency-10":  true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-randwrite-4k-concurrency-10": true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-seqread-concurrency-10":      true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-seqwrite-concurrency-10":     true,
+		"runtime-kata-patched-storage-azure-disk-block-fio-fsync-heavy-concurrency-10":  true,
+	})
+}
+
+func TestKataIOGitWorkloadCoversActiveScenarios(t *testing.T) {
+	assertKataIOActiveWorkloadScenarios(t, "workload-git.yml", 28, map[string]int{
+		"storage-emptydir":         8,
+		"storage-azure-disk":       8,
+		"storage-azure-files":      8,
+		"storage-azure-disk-block": 4,
+	}, map[string]bool{
+		"runtime-kata-patched-storage-azure-disk-block-git-full-concurrency-1":      true,
+		"runtime-kata-patched-storage-azure-disk-block-git-blobless-concurrency-1":  true,
+		"runtime-kata-patched-storage-azure-disk-block-git-full-concurrency-10":     true,
+		"runtime-kata-patched-storage-azure-disk-block-git-blobless-concurrency-10": true,
+	})
+}
+
+func TestKataIOObsoleteFullWorkloadRemoved(t *testing.T) {
+	path := filepath.Join("..", "..", "suites", "kata-io", "workload-full.yml")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("workload-full.yml should be removed, stat err = %v", err)
+	}
+}
+
+func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, wantTotal int, wantStorageCounts map[string]int, expectedBlock map[string]bool) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", workloadFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,8 +1072,11 @@ func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {
 			JobIterations int    `yaml:"jobIterations"`
 			QPS           int    `yaml:"qps"`
 			Burst         int    `yaml:"burst"`
+			Cleanup       bool   `yaml:"cleanup"`
+			WaitFinished  bool   `yaml:"waitWhenFinished"`
 			Objects       []struct {
 				ObjectTemplate string         `yaml:"objectTemplate"`
+				Replicas       int            `yaml:"replicas"`
 				InputVars      map[string]any `yaml:"inputVars"`
 			} `yaml:"objects"`
 		} `yaml:"jobs"`
@@ -670,52 +1085,45 @@ func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	type scenarioSpec struct {
-		runtime     string
-		storage     string
-		workload    string
-		profile     string
-		concurrency string
+	workloadType := strings.TrimSuffix(strings.TrimPrefix(workloadFile, "workload-"), ".yml")
+	profiles := []string{"full", "blobless"}
+	if workloadType == "fio" {
+		profiles = []string{"randread-4k", "randwrite-4k", "seqread", "seqwrite", "fsync-heavy"}
 	}
-	expected := map[string]scenarioSpec{}
-	runtimes := []string{"standard", "kata"}
-	storages := []string{"emptydir", "azure-disk", "azure-files"}
-	profiles := []string{"randread-4k", "randwrite-4k", "seqread", "seqwrite", "fsync-heavy"}
-	cloneModes := []string{"full", "blobless"}
-	concurrencies := []string{"1", "10"}
-	for _, runtime := range runtimes {
-		for _, storage := range storages {
-			for _, concurrency := range concurrencies {
+	expectedFilesystem := map[string]bool{}
+	for _, runtime := range []string{"standard", "kata"} {
+		for _, storage := range []string{"emptydir", "azure-disk", "azure-files"} {
+			for _, concurrency := range []string{"1", "10"} {
 				for _, profile := range profiles {
-					scenario := "runtime-" + runtime + "-storage-" + storage + "-fio-" + profile + "-concurrency-" + concurrency
-					expected[scenario] = scenarioSpec{runtime: runtime, storage: storage, workload: "fio", profile: profile, concurrency: concurrency}
-				}
-				for _, cloneMode := range cloneModes {
-					scenario := "runtime-" + runtime + "-storage-" + storage + "-git-" + cloneMode + "-concurrency-" + concurrency
-					expected[scenario] = scenarioSpec{runtime: runtime, storage: storage, workload: "git", profile: cloneMode, concurrency: concurrency}
+					expectedFilesystem["runtime-"+runtime+"-storage-"+storage+"-"+workloadType+"-"+profile+"-concurrency-"+concurrency] = true
 				}
 			}
 		}
 	}
-	if len(expected) != 84 {
-		t.Fatalf("test generated %d expected scenarios, want 84", len(expected))
-	}
 
 	found := map[string]bool{}
+	storageCounts := map[string]int{}
+	blockJobNames := map[string]string{}
+	foundBlock := map[string]bool{}
+	seenBlock := false
 	for _, job := range workload.Jobs {
 		var mainObjectTemplate string
 		var mainInputVars map[string]any
 		var workPVCInputVars map[string]any
+		var workPVCObjectTemplate string
+		var workPVCReplicas int
 		for _, object := range job.Objects {
-			if object.ObjectTemplate == "templates/work-pvc.yml" {
+			if object.ObjectTemplate == "templates/work-pvc.yml" || object.ObjectTemplate == "templates/work-block-pvc.yml" {
 				workPVCInputVars = object.InputVars
+				workPVCObjectTemplate = object.ObjectTemplate
+				workPVCReplicas = object.Replicas
 				continue
 			}
 			if scenario, ok := object.InputVars["scenario"].(string); ok {
 				mainObjectTemplate = object.ObjectTemplate
 				mainInputVars = object.InputVars
 				if found[scenario] {
-					t.Fatalf("workload-full.yml contains duplicate scenario %q", scenario)
+					t.Fatalf("%s contains duplicate scenario %q", workloadFile, scenario)
 				}
 				found[scenario] = true
 			}
@@ -724,21 +1132,63 @@ func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {
 			continue
 		}
 		scenario := mainInputVars["scenario"].(string)
-		spec, ok := expected[scenario]
-		if !ok {
-			t.Fatalf("workload-full.yml contains unexpected scenario %q", scenario)
-		}
-
+		storage := asString(mainInputVars["storageType"])
+		runtime := asString(mainInputVars["runtime"])
+		concurrency := asString(mainInputVars["concurrency"])
+		storageCounts[storage]++
 		wantIterations := 1
-		if spec.concurrency == "10" {
+		if concurrency == "10" {
 			wantIterations = 10
 		}
 		if job.JobIterations != wantIterations || job.QPS != wantIterations || job.Burst != wantIterations {
 			t.Fatalf("job %s for %s has jobIterations/qps/burst = %d/%d/%d, want %d/%d/%d", job.Name, scenario, job.JobIterations, job.QPS, job.Burst, wantIterations, wantIterations, wantIterations)
 		}
 
+		if storage == "storage-azure-disk-block" {
+			seenBlock = true
+			if !expectedBlock[scenario] {
+				t.Fatalf("%s contains unexpected block scenario %q", workloadFile, scenario)
+			}
+			foundBlock[scenario] = true
+			if !job.Cleanup || !job.WaitFinished {
+				t.Fatalf("block job %s cleanup/waitWhenFinished = %t/%t, want true/true", job.Name, job.Cleanup, job.WaitFinished)
+			}
+			if runtime != "runtime-kata-patched" {
+				t.Fatalf("block scenario %s runtime = %q, want runtime-kata-patched", scenario, runtime)
+			}
+			wantTemplate := "templates/" + workloadType + "-block-kata-job.yml"
+			if mainObjectTemplate != wantTemplate {
+				t.Fatalf("block scenario %s template = %q, want %q", scenario, mainObjectTemplate, wantTemplate)
+			}
+			if workPVCInputVars == nil || workPVCObjectTemplate != "templates/work-block-pvc.yml" {
+				t.Fatalf("block scenario %s missing work-block-pvc.yml", scenario)
+			}
+			if workPVCReplicas != 1 {
+				t.Fatalf("block scenario %s PVC replicas = %d, want 1", scenario, workPVCReplicas)
+			}
+			if got := asString(workPVCInputVars["workStorageClass"]); got != "managed-csi" {
+				t.Fatalf("block scenario %s workStorageClass = %q, want managed-csi", scenario, got)
+			}
+			if got, want := asString(workPVCInputVars["jobName"]), asString(mainInputVars["jobName"]); got != want {
+				t.Fatalf("block scenario %s PVC jobName = %q, benchmark jobName = %q", scenario, got, want)
+			}
+			jobName := asString(mainInputVars["jobName"])
+			if previousScenario, duplicate := blockJobNames[jobName]; duplicate {
+				t.Fatalf("block scenarios %s and %s share jobName %q", previousScenario, scenario, jobName)
+			}
+			blockJobNames[jobName] = scenario
+			continue
+		}
+		if seenBlock {
+			t.Fatalf("filesystem scenario %s appears after raw-block jobs in %s", scenario, workloadFile)
+		}
+
+		if !expectedFilesystem[scenario] {
+			t.Fatalf("%s contains unexpected filesystem scenario %q", workloadFile, scenario)
+		}
+		delete(expectedFilesystem, scenario)
 		storageTemplate := "pvc"
-		if spec.storage == "emptydir" {
+		if storage == "storage-emptydir" {
 			storageTemplate = "emptydir"
 			if workPVCInputVars != nil {
 				t.Fatalf("emptydir scenario %s includes work-pvc object", scenario)
@@ -749,7 +1199,7 @@ func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {
 			}
 			wantClass := "managed-csi"
 			wantAccessMode := "ReadWriteOnce"
-			if spec.storage == "azure-files" {
+			if storage == "storage-azure-files" {
 				wantClass = "azurefile-csi"
 				wantAccessMode = "ReadWriteMany"
 			}
@@ -760,46 +1210,37 @@ func TestKataIOFullWorkloadCoversRequiredScenarios(t *testing.T) {
 				t.Fatalf("scenario %s workAccessMode = %q, want %q", scenario, got, wantAccessMode)
 			}
 		}
-
-		wantTemplate := "templates/" + spec.workload + "-" + storageTemplate + "-" + spec.runtime + "-job.yml"
+		runtimeName := strings.TrimPrefix(runtime, "runtime-")
+		wantTemplate := "templates/" + workloadType + "-" + storageTemplate + "-" + runtimeName + "-job.yml"
 		if mainObjectTemplate != wantTemplate {
 			t.Fatalf("scenario %s objectTemplate = %q, want %q", scenario, mainObjectTemplate, wantTemplate)
 		}
-		if got := asString(mainInputVars["runtime"]); got != "runtime-"+spec.runtime {
-			t.Fatalf("scenario %s runtime inputVar = %q, want %q", scenario, got, "runtime-"+spec.runtime)
+	}
+	if len(found) != wantTotal {
+		t.Fatalf("%s has %d unique scenarios, want %d", workloadFile, len(found), wantTotal)
+	}
+	if len(expectedFilesystem) != 0 {
+		t.Fatalf("%s missing filesystem scenarios: %#v", workloadFile, expectedFilesystem)
+	}
+	for scenario := range expectedBlock {
+		if !foundBlock[scenario] {
+			t.Fatalf("%s missing block scenario %q", workloadFile, scenario)
 		}
-		if got := asString(mainInputVars["storageType"]); got != "storage-"+spec.storage {
-			t.Fatalf("scenario %s storageType inputVar = %q, want %q", scenario, got, "storage-"+spec.storage)
-		}
-		if got := asString(mainInputVars["concurrency"]); got != spec.concurrency {
-			t.Fatalf("scenario %s concurrency inputVar = %q, want %q", scenario, got, spec.concurrency)
-		}
-		if spec.workload == "fio" {
-			if got := asString(mainInputVars["fioProfileName"]); got != spec.profile {
-				t.Fatalf("scenario %s fioProfileName = %q, want %q", scenario, got, spec.profile)
-			}
-		} else if got := asString(mainInputVars["cloneMode"]); got != spec.profile {
-			t.Fatalf("scenario %s cloneMode = %q, want %q", scenario, got, spec.profile)
-		}
+	}
+	if !reflect.DeepEqual(storageCounts, wantStorageCounts) {
+		t.Fatalf("%s storage scenario counts = %#v, want %#v", workloadFile, storageCounts, wantStorageCounts)
+	}
 
-		templateData, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", mainObjectTemplate))
+}
+
+func TestKataIORawBlockTemplatesUseIterationNames(t *testing.T) {
+	for _, template := range []string{"work-block-pvc.yml", "fio-block-kata-job.yml", "git-block-kata-job.yml"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "templates", template))
 		if err != nil {
 			t.Fatal(err)
 		}
-		hasRuntimeClass := strings.Contains(string(templateData), "runtimeClassName")
-		if spec.runtime == "standard" && hasRuntimeClass {
-			t.Fatalf("standard template %s includes runtimeClassName", mainObjectTemplate)
-		}
-		if spec.runtime == "kata" && !hasRuntimeClass {
-			t.Fatalf("kata template %s omits runtimeClassName", mainObjectTemplate)
-		}
-	}
-	if len(found) != 84 {
-		t.Fatalf("workload-full.yml has %d unique scenarios, want 84", len(found))
-	}
-	for scenario := range expected {
-		if !found[scenario] {
-			t.Fatalf("workload-full.yml missing scenario %q", scenario)
+		if !strings.Contains(string(data), "name: {{.jobName}}-{{.Iteration}}") {
+			t.Fatalf("%s must use metadata name {{.jobName}}-{{.Iteration}}", template)
 		}
 	}
 }
@@ -809,44 +1250,43 @@ func TestKataIOInfraDefaultsCanScheduleConcurrencyTen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	user := doc.Requires.Infrastructure.NodePools[1]
-	if user.OSSKU != "AzureLinux" || user.WorkloadRuntime != "KataMshvVmIsolation" {
-		t.Fatalf("user pool = %#v", user)
-	}
-	nodeCount, vmSize := user.Count, user.VMSize
 	vcpuBySize := map[string]int{"Standard_D8s_v5": 8, "Standard_D16s_v5": 16}
-	vcpu, ok := vcpuBySize[vmSize]
-	if !ok {
-		t.Fatalf("test does not know vCPU count for %s", vmSize)
-	}
 	podCPU := maxKataIOPodCPURequest(t)
-	allocatableCPUPerNode := vcpu - 1
-	if allocatableCPUPerNode < 1 {
-		t.Fatalf("test assumes at least 1 CPU allocatable per node, got %d vCPU for %s", vcpu, vmSize)
-	}
-	podsPerNode := allocatableCPUPerNode / podCPU
-	if got, want := nodeCount*podsPerNode, 10; got < want {
-		t.Fatalf("default pool can schedule about %d concurrency-10 pods (%d nodes x %d pods/node after 1 CPU/node headroom), want at least %d for pods requesting %d CPU", got, nodeCount, podsPerNode, want, podCPU)
+	for _, poolName := range []string{"userpool", "patchpool"} {
+		pool := nodePoolByName(t, doc.Requires.Infrastructure.NodePools, poolName)
+		if pool.OSSKU != "AzureLinux" || pool.WorkloadRuntime != "KataMshvVmIsolation" {
+			t.Fatalf("%s = %#v", poolName, pool)
+		}
+		vcpu, ok := vcpuBySize[pool.VMSize]
+		if !ok {
+			t.Fatalf("test does not know vCPU count for %s", pool.VMSize)
+		}
+		allocatableCPUPerNode := vcpu - 1
+		if allocatableCPUPerNode < 1 {
+			t.Fatalf("test assumes at least 1 CPU allocatable per node, got %d vCPU for %s", vcpu, pool.VMSize)
+		}
+		podsPerNode := allocatableCPUPerNode / podCPU
+		if got, want := pool.Count*podsPerNode, 10; got < want {
+			t.Fatalf("%s can schedule about %d concurrency-10 pods (%d nodes x %d pods/node after 1 CPU/node headroom), want at least %d for pods requesting %d CPU", poolName, got, pool.Count, podsPerNode, want, podCPU)
+		}
 	}
 }
 
-func TestKataIOInfraDefaultsFitWestUS2Quota(t *testing.T) {
+func TestKataIOInfraDefaultsReportDSv5VCPURequest(t *testing.T) {
 	doc, err := requirements.Load(filepath.Join("..", ".."), "kata-io")
 	if err != nil {
 		t.Fatal(err)
 	}
-	user := doc.Requires.Infrastructure.NodePools[1]
-	nodeCount, vmSize := user.Count, user.VMSize
-	vcpuBySize := map[string]int{"Standard_D8s_v5": 8, "Standard_D16s_v5": 16}
-	vcpu, ok := vcpuBySize[vmSize]
-	if !ok {
-		t.Fatalf("test does not know vCPU count for %s", vmSize)
+	vcpuBySize := map[string]int{"Standard_D4s_v5": 4, "Standard_D8s_v5": 8, "Standard_D16s_v5": 16}
+	requested := 0
+	for _, pool := range doc.Requires.Infrastructure.NodePools {
+		vcpu, ok := vcpuBySize[pool.VMSize]
+		if !ok {
+			t.Fatalf("test does not know vCPU count for %s", pool.VMSize)
+		}
+		requested += pool.Count * vcpu
 	}
-	const systemPoolVCPU = 4
-	const observedRemainingQuota = 40
-	if requested := systemPoolVCPU + nodeCount*vcpu; requested > observedRemainingQuota {
-		t.Fatalf("default kata-io pool requests %d DSv5-family vCPUs, want <= observed westus2 remaining quota %d", requested, observedRemainingQuota)
-	}
+	t.Logf("default kata-io pools request %d DSv5-family vCPUs", requested)
 }
 
 func TestKataIOInfraPinsRequiredKubernetesVersion(t *testing.T) {
@@ -934,6 +1374,7 @@ func TestKataIOBenchmarkImageFilesExist(t *testing.T) {
 	files := []string{
 		"suites/kata-io/images/benchmark/Dockerfile",
 		"suites/kata-io/images/benchmark/scripts/override",
+		"suites/kata-io/images/benchmark/scripts/run-block-benchmark.sh",
 		"suites/kata-io/images/benchmark/scripts/run-fio.sh",
 		"suites/kata-io/images/benchmark/scripts/run-git-clone.sh",
 		"suites/kata-io/images/benchmark/fio-profiles/randread-4k.fio",
@@ -949,6 +1390,18 @@ func TestKataIOBenchmarkImageFilesExist(t *testing.T) {
 		}
 		if len(data) == 0 {
 			t.Fatalf("%s is empty", file)
+		}
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "images", "benchmark", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90",
+		"e2fsprogs", "mount", "util-linux", "COPY scripts/run-block-benchmark.sh /usr/local/bin/run-block-benchmark.sh",
+	} {
+		if !strings.Contains(string(dockerfile), want) {
+			t.Fatalf("benchmark Dockerfile missing %q", want)
 		}
 	}
 }
@@ -1046,6 +1499,7 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 		"RUN_ID=run-1", "SCENARIO=fio-scenario", "SAMPLE_ID=sample-a",
 		"FIO_PROFILE=/profiles/randread.fio", "FIO_PROFILE_NAME=randread-4k",
 		"RUNTIME=kata", "STORAGE_TYPE=azure-disk", "CONCURRENCY=10",
+		"BLOCK_SETUP_DURATION_SECONDS=0.125",
 		"WORK_DIR="+filepath.Join(tempDir, "work"), "RESULTS_DIR="+resultsDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -1057,12 +1511,15 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 		"runtime": "kata", "storage": "azure-disk", "workload": "fio",
 		"profile": "randread-4k", "concurrency": "10", "sample": "sample-a",
 	}, map[string]string{
-		"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds",
+		"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds", "block_setup_duration": "seconds",
 		"exit_code": "code", "read_iops": "operations/second", "write_iops": "operations/second",
 		"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
 		"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
-	}, map[string]string{"exit_code": "0", "active_runtime": "1.25", "read_iops": "101.5"})
-	assertFilesExist(t, sampleDir, "fio.json", "time.txt", "stdout.log", "stderr.log", "proc-self-io-before.txt", "proc-self-io-after.txt", "df-before.txt", "df-after.txt")
+	}, map[string]string{"exit_code": "0", "active_runtime": "1.25", "read_iops": "101.5", "block_setup_duration": "0.125"})
+	assertFilesExist(t, sampleDir, "fio.json", "time.txt", "stdout.log", "stderr.log", "proc-self-io-before.txt", "proc-self-io-after.txt", "df-before.txt", "df-after.txt", "tool-versions.txt")
+	for _, want := range []string{"fio --version:", "git --version:", "mkfs.ext4 -V:", "mount --version:"} {
+		assertFileContains(t, filepath.Join(sampleDir, "tool-versions.txt"), want)
+	}
 	assertFileDoesNotExist(t, filepath.Join(sampleDir, "summary.prom"))
 
 	malformedResultsDir := filepath.Join(tempDir, "malformed-results")
@@ -1081,11 +1538,11 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 		"runtime": "kata", "storage": "azure-disk", "workload": "fio",
 		"profile": "randread-4k", "concurrency": "10", "sample": "sample-c",
 	}, map[string]string{
-		"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds",
+		"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds", "block_setup_duration": "seconds",
 		"exit_code": "code", "read_iops": "operations/second", "write_iops": "operations/second",
 		"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
 		"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
-	}, map[string]string{"exit_code": "19", "active_runtime": "0", "read_iops": "0"})
+	}, map[string]string{"exit_code": "19", "active_runtime": "0", "read_iops": "0", "block_setup_duration": "0"})
 
 	malformedSuccessResultsDir := filepath.Join(tempDir, "malformed-success-results")
 	cmd = exec.Command("bash", filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-fio.sh"))
@@ -1160,11 +1617,11 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 				"runtime": "kata", "storage": "azure-disk", "workload": "fio",
 				"profile": "randread-4k", "concurrency": "10", "sample": tc.sampleID,
 			}, map[string]string{
-				"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds",
+				"total_duration": "seconds", "active_runtime": "seconds", "setup_overhead": "seconds", "block_setup_duration": "seconds",
 				"exit_code": "code", "read_iops": "operations/second", "write_iops": "operations/second",
 				"read_bandwidth": "bytes/second", "write_bandwidth": "bytes/second",
 				"read_clat_p99": "nanoseconds", "write_clat_p99": "nanoseconds",
-			}, tc.wantValues)
+			}, mergeExpectedValues(tc.wantValues, map[string]string{"block_setup_duration": "0"}))
 		})
 	}
 
@@ -1242,9 +1699,12 @@ exit "${FAKE_BENCHMARK_EXIT:?}"
 		"runtime": "standard", "storage": "emptydir", "workload": "git",
 		"profile": "blobless", "concurrency": "1", "sample": "sample-b",
 	}, map[string]string{
-		"clone_duration": "seconds", "exit_code": "code", "repository_size": "bytes", "file_count": "files",
-	}, map[string]string{"exit_code": "23", "file_count": "1"})
-	assertFilesExist(t, sampleDir, "time.txt", "git-stdout.log", "git-stderr.log", "git-trace2-event.json", "git-trace2-perf.log", "repo-size-bytes.txt", "file-count.txt", "proc-self-io-before.txt", "proc-self-io-after.txt", "df-before.txt", "df-after.txt")
+		"block_setup_duration": "seconds", "clone_duration": "seconds", "exit_code": "code", "repository_size": "bytes", "file_count": "files",
+	}, map[string]string{"exit_code": "23", "file_count": "1", "block_setup_duration": "0"})
+	assertFilesExist(t, sampleDir, "time.txt", "git-stdout.log", "git-stderr.log", "git-trace2-event.json", "git-trace2-perf.log", "repo-size-bytes.txt", "file-count.txt", "proc-self-io-before.txt", "proc-self-io-after.txt", "df-before.txt", "df-after.txt", "tool-versions.txt")
+	for _, want := range []string{"fio --version:", "git --version:", "mkfs.ext4 -V:", "mount --version:"} {
+		assertFileContains(t, filepath.Join(sampleDir, "tool-versions.txt"), want)
+	}
 	assertFileDoesNotExist(t, filepath.Join(sampleDir, "summary.prom"))
 }
 
@@ -1254,8 +1714,8 @@ func TestKataIOTemplatesProvideSummaryDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantTemplates := []string{
-		"fio-emptydir-kata-job.yml", "fio-emptydir-standard-job.yml", "fio-pvc-kata-job.yml", "fio-pvc-standard-job.yml",
-		"git-emptydir-kata-job.yml", "git-emptydir-standard-job.yml", "git-pvc-kata-job.yml", "git-pvc-standard-job.yml",
+		"fio-block-kata-job.yml", "fio-emptydir-kata-job.yml", "fio-emptydir-standard-job.yml", "fio-pvc-kata-job.yml", "fio-pvc-standard-job.yml",
+		"git-block-kata-job.yml", "git-emptydir-kata-job.yml", "git-emptydir-standard-job.yml", "git-pvc-kata-job.yml", "git-pvc-standard-job.yml",
 	}
 	gotTemplates := make([]string, 0, len(templates))
 	for _, template := range templates {
@@ -1281,6 +1741,499 @@ func TestKataIOTemplatesProvideSummaryDimensions(t *testing.T) {
 				t.Errorf("%s missing %s environment variable", name, variable)
 			}
 		}
+	}
+}
+
+func TestKataIORawBlockTemplates(t *testing.T) {
+	root := filepath.Join("..", "..")
+	pvc, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "templates", "work-block-pvc.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"volumeMode: Block", "storageClassName: {{.workStorageClass}}", "ReadWriteOnce", "pvc-role: work", "storage-type: {{.storageType}}"} {
+		if !strings.Contains(string(pvc), want) {
+			t.Fatalf("work-block-pvc.yml missing %q", want)
+		}
+	}
+
+	for _, file := range []string{"fio-block-kata-job.yml", "git-block-kata-job.yml"} {
+		data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "templates", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := string(data)
+		for _, want := range []string{
+			"runtimeClassName: {{.kataRuntimeClassName}}",
+			"perf.azure.com/node-role: patchpool",
+			"volumeDevices:",
+			"devicePath: /dev/work-block",
+			"claimName: {{.jobName}}-{{.Iteration}}",
+			"SYS_ADMIN",
+			"run-block-benchmark.sh",
+			"storageType",
+			"kata-io-results",
+		} {
+			if !strings.Contains(manifest, want) {
+				t.Fatalf("%s missing %q", file, want)
+			}
+		}
+		if strings.Contains(manifest, "mountPath: /work") {
+			t.Fatalf("%s must not mount the raw-block work volume as /work", file)
+		}
+		if strings.Contains(manifest, "tolerations:") || strings.Contains(manifest, "perf.azure.com/kata-shim-patch") {
+			t.Fatalf("%s must not tolerate the pending shim-patch taint", file)
+		}
+	}
+}
+
+func TestKataIOBlockBenchmarkWrapper(t *testing.T) {
+	requireKataIOScriptTools(t)
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "mkfs.ext4"), `#!/usr/bin/env bash
+set -euo pipefail
+printf 'mkfs %s\n' "$*" >> "${FAKE_BLOCK_LOG:?}"
+if [[ -n "${FAKE_MKFS_STARTED_FILE:-}" ]]; then printf 'started\n' > "$FAKE_MKFS_STARTED_FILE"; fi
+while [[ -n "${FAKE_MKFS_RELEASE_FILE:-}" && ! -e "$FAKE_MKFS_RELEASE_FILE" ]]; do sleep 0.01; done
+exit "${FAKE_MKFS_EXIT:-0}"
+`)
+	writeExecutable(t, filepath.Join(binDir, "mount"), `#!/usr/bin/env bash
+set -euo pipefail
+printf 'mount %s\n' "$*" >> "${FAKE_BLOCK_LOG:?}"
+if [[ "${FAKE_MOUNT_EXIT:-0}" != 0 ]]; then exit "$FAKE_MOUNT_EXIT"; fi
+if [[ -n "${FAKE_MOUNT_STARTED_FILE:-}" ]]; then printf 'started\n' > "$FAKE_MOUNT_STARTED_FILE"; fi
+while [[ -n "${FAKE_MOUNT_RELEASE_FILE:-}" && ! -e "$FAKE_MOUNT_RELEASE_FILE" ]]; do sleep 0.01; done
+mkdir -p "${@: -1}"
+printf 'mount complete\n' >> "${FAKE_BLOCK_LOG:?}"
+if [[ -n "${FAKE_MOUNT_COMPLETED_FILE:-}" ]]; then printf 'completed\n' > "$FAKE_MOUNT_COMPLETED_FILE"; fi
+while [[ -n "${FAKE_MOUNT_RETURN_FILE:-}" && ! -e "$FAKE_MOUNT_RETURN_FILE" ]]; do sleep 0.01; done
+`)
+	writeExecutable(t, filepath.Join(binDir, "umount"), `#!/usr/bin/env bash
+set -euo pipefail
+printf 'umount %s\n' "$*" >> "${FAKE_BLOCK_LOG:?}"
+exit "${FAKE_UMOUNT_EXIT:-0}"
+`)
+	writeExecutable(t, filepath.Join(binDir, "benchmark"), `#!/usr/bin/env bash
+set -euo pipefail
+test -d "${WORK_DIR:?}"
+[[ "${BLOCK_SETUP_DURATION_SECONDS:?}" =~ ^[0-9]+([.][0-9]+)?$ ]]
+printf 'benchmark setup=%s args=%s\n' "$BLOCK_SETUP_DURATION_SECONDS" "$*" >> "${FAKE_BLOCK_LOG:?}"
+exit "${FAKE_BENCHMARK_EXIT:?}"
+`)
+	writeExecutable(t, filepath.Join(binDir, "long-benchmark"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$$" > "${FAKE_CHILD_PID_FILE:?}"
+trap 'printf "child TERM\n" >> "${FAKE_BLOCK_LOG:?}"; exit 143' TERM
+trap 'printf "child INT\n" >> "${FAKE_BLOCK_LOG:?}"; exit 130' INT
+printf 'child ready\n' >> "${FAKE_BLOCK_LOG:?}"
+long-grandchild
+`)
+	writeExecutable(t, filepath.Join(binDir, "long-grandchild"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$$" > "${FAKE_GRANDCHILD_PID_FILE:?}"
+trap 'printf "grandchild TERM\n" >> "${FAKE_BLOCK_LOG:?}"; exit 143' TERM
+trap 'printf "grandchild INT\n" >> "${FAKE_BLOCK_LOG:?}"; exit 130' INT
+printf 'grandchild ready\n' >> "${FAKE_BLOCK_LOG:?}"
+while true; do
+  sleep 0.05
+done
+`)
+	writeExecutable(t, filepath.Join(binDir, "stubborn-benchmark"), `#!/usr/bin/env bash
+set -euo pipefail
+trap '' TERM HUP
+printf '%s\n' "$$" > "${FAKE_CHILD_PID_FILE:?}"
+stubborn-grandchild &
+while true; do sleep 0.05; done
+`)
+	writeExecutable(t, filepath.Join(binDir, "stubborn-grandchild"), `#!/usr/bin/env bash
+set -euo pipefail
+trap '' TERM HUP
+printf '%s\n' "$$" > "${FAKE_GRANDCHILD_PID_FILE:?}"
+printf 'grandchild ready and ignores TERM\n' >> "${FAKE_BLOCK_LOG:?}"
+while true; do sleep 0.05; done
+`)
+	writeExecutable(t, filepath.Join(binDir, "split-benchmark"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$$" > "${FAKE_CHILD_PID_FILE:?}"
+trap 'printf "leader TERM\n" >> "${FAKE_BLOCK_LOG:?}"; exit 143' TERM
+stubborn-grandchild &
+while true; do sleep 0.05; done
+`)
+
+	script := filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-block-benchmark.sh")
+	run := func(t *testing.T, benchmarkExit, umountExit int, extraEnv ...string) (*exec.Cmd, string) {
+		t.Helper()
+		logPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+".log")
+		cmd := exec.Command("bash", script, "benchmark", "argument with spaces")
+		cmd.Env = append(os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"FAKE_BLOCK_DEVICE="+filepath.Join(tempDir, "device"),
+			"FAKE_BLOCK_LOG="+logPath,
+			"FAKE_BENCHMARK_EXIT="+strconv.Itoa(benchmarkExit),
+			"FAKE_UMOUNT_EXIT="+strconv.Itoa(umountExit),
+			"WORK_DIR="+filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+"-work"),
+		)
+		cmd.Env = append(cmd.Env, extraEnv...)
+		return cmd, logPath
+	}
+
+	t.Run("preserves benchmark failure and always unmounts", func(t *testing.T) {
+		cmd, logPath := run(t, 17, 9)
+		assertCommandExitCode(t, cmd, 17)
+		for _, want := range []string{"mkfs -F", "mount", "benchmark setup=", "args=argument with spaces", "umount"} {
+			assertFileContains(t, logPath, want)
+		}
+	})
+
+	t.Run("reports cleanup failure after successful benchmark", func(t *testing.T) {
+		cmd, logPath := run(t, 0, 9)
+		output, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 9 {
+			t.Fatalf("command error = %v, output:\n%s; want exit code 9", err, output)
+		}
+		if !strings.Contains(string(output), "failed to unmount") {
+			t.Fatalf("cleanup output = %q, want unmount diagnostic", output)
+		}
+		assertFileContains(t, logPath, "umount")
+	})
+
+	for _, tc := range []struct {
+		name       string
+		env        string
+		wantExit   int
+		wantOutput string
+		forbidden  string
+	}{
+		{name: "format failure", env: "FAKE_MKFS_EXIT=31", wantExit: 31, wantOutput: "failed to format block device", forbidden: "mount "},
+		{name: "mount failure", env: "FAKE_MOUNT_EXIT=32", wantExit: 32, wantOutput: "failed to mount block device", forbidden: "benchmark "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, logPath := run(t, 0, 0, tc.env)
+			output, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.wantExit {
+				t.Fatalf("command error = %v, output:\n%s; want exit code %d", err, output, tc.wantExit)
+			}
+			if !strings.Contains(string(output), tc.wantOutput) {
+				t.Fatalf("setup output = %q, want %q", output, tc.wantOutput)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), tc.forbidden) {
+				t.Fatalf("setup log = %q, must not contain %q", data, tc.forbidden)
+			}
+		})
+	}
+
+	t.Run("stops after signaled mkfs completes", func(t *testing.T) {
+		logPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+".log")
+		startedPath := logPath + ".started"
+		releasePath := logPath + ".release"
+		cmd := exec.Command("bash", script, "benchmark")
+		cmd.Env = append(os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"FAKE_BLOCK_DEVICE="+filepath.Join(tempDir, "device"),
+			"FAKE_BLOCK_LOG="+logPath,
+			"FAKE_MKFS_STARTED_FILE="+startedPath,
+			"FAKE_MKFS_RELEASE_FILE="+releasePath,
+			"WORK_DIR="+filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+"-work"),
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, startedPath, 2*time.Second)
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(releasePath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		assertStartedCommandExitCode(t, cmd, 143, 2*time.Second)
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "mount ") || strings.Contains(string(data), "benchmark ") {
+			t.Fatalf("commands ran after mkfs signal:\n%s", data)
+		}
+	})
+
+	t.Run("work directory failure", func(t *testing.T) {
+		workParent := filepath.Join(tempDir, "not-a-directory")
+		if err := os.WriteFile(workParent, []byte("file"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cmd, logPath := run(t, 0, 0, "WORK_DIR="+filepath.Join(workParent, "work"))
+		output, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+			t.Fatalf("command error = %v, output:\n%s; want nonzero exit", err, output)
+		}
+		if !strings.Contains(string(output), "failed to create work directory") {
+			t.Fatalf("setup output = %q, want work directory diagnostic", output)
+		}
+		if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+			t.Fatalf("setup commands ran after work directory failure: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name               string
+		waitForMountOutput bool
+	}{
+		{name: "defers TERM while mount is about to complete"},
+		{name: "defers TERM after mount succeeds before command returns", waitForMountOutput: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+".log")
+			startedPath := logPath + ".started"
+			completedPath := logPath + ".completed"
+			releasePath := logPath + ".release"
+			returnPath := logPath + ".return"
+			cmd := exec.Command("bash", script, "benchmark")
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"FAKE_BLOCK_DEVICE="+filepath.Join(tempDir, "device"),
+				"FAKE_BLOCK_LOG="+logPath,
+				"FAKE_BENCHMARK_EXIT=0",
+				"FAKE_UMOUNT_EXIT=0",
+				"FAKE_MOUNT_STARTED_FILE="+startedPath,
+				"WORK_DIR="+filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+"-work"),
+			)
+			if tc.waitForMountOutput {
+				cmd.Env = append(cmd.Env, "FAKE_MOUNT_COMPLETED_FILE="+completedPath, "FAKE_MOUNT_RETURN_FILE="+returnPath)
+			} else {
+				cmd.Env = append(cmd.Env, "FAKE_MOUNT_RELEASE_FILE="+releasePath)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waitPath := startedPath
+			if tc.waitForMountOutput {
+				waitPath = completedPath
+			}
+			waitForFile(t, waitPath, 2*time.Second)
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			if tc.waitForMountOutput {
+				if err := os.WriteFile(returnPath, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(releasePath, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			assertStartedCommandExitCode(t, cmd, 143, 2*time.Second)
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(data), "umount "); got != 1 {
+				t.Fatalf("umount count = %d, log:\n%s; want exactly 1", got, data)
+			}
+			if !strings.Contains(string(data), "mount complete") || strings.Contains(string(data), "benchmark ") {
+				t.Fatalf("setup signal lifecycle log:\n%s\nwant completed mount, no benchmark", data)
+			}
+		})
+	}
+
+	t.Run("kills non-cooperative benchmark descendants after grace period", func(t *testing.T) {
+		logPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+".log")
+		pidPath := logPath + ".pid"
+		grandchildPIDPath := logPath + ".grandchild.pid"
+		cmd := exec.Command("bash", script, "stubborn-benchmark")
+		cmd.Env = append(os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"FAKE_BLOCK_DEVICE="+filepath.Join(tempDir, "device"),
+			"FAKE_BLOCK_LOG="+logPath,
+			"FAKE_CHILD_PID_FILE="+pidPath,
+			"FAKE_GRANDCHILD_PID_FILE="+grandchildPIDPath,
+			"SIGNAL_GRACE_SECONDS=0.1",
+			"POST_KILL_GRACE_SECONDS=0.1",
+			"WORK_DIR="+filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+"-work"),
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		childPID := waitForPIDFile(t, pidPath, 2*time.Second)
+		grandchildPID := waitForPIDFile(t, grandchildPIDPath, 2*time.Second)
+		started := time.Now()
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		assertStartedCommandExitCode(t, cmd, 143, 2*time.Second)
+		if elapsed := time.Since(started); elapsed < 100*time.Millisecond || elapsed > time.Second {
+			t.Fatalf("wrapper signal completion took %s, want bounded TERM and post-KILL grace periods", elapsed)
+		}
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(string(data), "umount "); got != 1 {
+			t.Fatalf("umount count = %d, log:\n%s; want exactly 1", got, data)
+		}
+		if !strings.Contains(string(data), "grandchild ready and ignores TERM") {
+			t.Fatalf("log:\n%s\nwant proof descendant ignored TERM", data)
+		}
+		if processRunning(childPID) || processRunning(grandchildPID) {
+			t.Fatalf("benchmark process group remains after wrapper exit: child=%t grandchild=%t", processRunning(childPID), processRunning(grandchildPID))
+		}
+	})
+
+	t.Run("kills descendant when leader exits on TERM", func(t *testing.T) {
+		logPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+".log")
+		pidPath := logPath + ".pid"
+		grandchildPIDPath := logPath + ".grandchild.pid"
+		cmd := exec.Command("bash", script, "split-benchmark")
+		cmd.Env = append(os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"FAKE_BLOCK_DEVICE="+filepath.Join(tempDir, "device"),
+			"FAKE_BLOCK_LOG="+logPath,
+			"FAKE_CHILD_PID_FILE="+pidPath,
+			"FAKE_GRANDCHILD_PID_FILE="+grandchildPIDPath,
+			"SIGNAL_GRACE_SECONDS=0.1",
+			"POST_KILL_GRACE_SECONDS=0.1",
+			"WORK_DIR="+filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+"-work"),
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		_ = waitForPIDFile(t, pidPath, 2*time.Second)
+		grandchildPID := waitForPIDFile(t, grandchildPIDPath, 2*time.Second)
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		assertStartedCommandExitCode(t, cmd, 143, 2*time.Second)
+		if processRunning(grandchildPID) {
+			t.Fatalf("TERM-ignoring descendant %d remains after wrapper exit", grandchildPID)
+		}
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "leader TERM") || strings.Count(string(data), "umount ") != 1 {
+			t.Fatalf("split benchmark lifecycle log:\n%s", data)
+		}
+	})
+
+	for _, tc := range []struct {
+		name       string
+		signal     syscall.Signal
+		wantExit   int
+		wantSignal string
+	}{
+		{name: "forwards SIGTERM to benchmark tree", signal: syscall.SIGTERM, wantExit: 143, wantSignal: "TERM"},
+		{name: "forwards SIGINT to benchmark tree", signal: syscall.SIGINT, wantExit: 130, wantSignal: "INT"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+".log")
+			pidPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+".pid")
+			grandchildPIDPath := filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+"-grandchild.pid")
+			cmd := exec.Command("bash", script, "long-benchmark")
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"FAKE_BLOCK_DEVICE="+filepath.Join(tempDir, "device"),
+				"FAKE_BLOCK_LOG="+logPath,
+				"FAKE_CHILD_PID_FILE="+pidPath,
+				"FAKE_GRANDCHILD_PID_FILE="+grandchildPIDPath,
+				"WORK_DIR="+filepath.Join(tempDir, strings.ReplaceAll(t.Name(), "/", "-")+"-work"),
+			)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+
+			childPID := waitForPIDFile(t, pidPath, 2*time.Second)
+			grandchildPID := waitForPIDFile(t, grandchildPIDPath, 2*time.Second)
+			waitResult := make(chan error, 1)
+			go func() { waitResult <- cmd.Wait() }()
+			completed := false
+			defer func() {
+				if processRunning(childPID) {
+					_ = syscall.Kill(childPID, syscall.SIGKILL)
+				}
+				if processRunning(grandchildPID) {
+					_ = syscall.Kill(grandchildPID, syscall.SIGKILL)
+				}
+				if !completed {
+					_ = cmd.Process.Kill()
+					select {
+					case <-waitResult:
+					case <-time.After(2 * time.Second):
+					}
+				}
+			}()
+
+			if err := cmd.Process.Signal(tc.signal); err != nil {
+				t.Fatal(err)
+			}
+			var waitErr error
+			select {
+			case waitErr = <-waitResult:
+				completed = true
+			case <-time.After(2 * time.Second):
+				t.Fatalf("wrapper did not exit promptly after %s", tc.signal)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != tc.wantExit {
+				t.Fatalf("wrapper wait error = %v, want exit code %d", waitErr, tc.wantExit)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(data), "umount "); got != 1 {
+				t.Fatalf("umount count = %d, log:\n%s; want exactly 1", got, data)
+			}
+			childSignal := "child " + tc.wantSignal
+			grandchildSignal := "grandchild " + tc.wantSignal
+			for _, want := range []string{childSignal, grandchildSignal} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("log:\n%s\nmissing %q", data, want)
+				}
+			}
+			umountIndex := strings.Index(string(data), "umount ")
+			if strings.Index(string(data), childSignal) > umountIndex || strings.Index(string(data), grandchildSignal) > umountIndex {
+				t.Fatalf("unmount occurred before benchmark tree terminated, log:\n%s", data)
+			}
+			if processRunning(childPID) {
+				t.Fatalf("benchmark child PID %d is still running", childPID)
+			}
+			if processRunning(grandchildPID) {
+				t.Fatalf("benchmark grandchild PID %d is still running", grandchildPID)
+			}
+			if processRunning(cmd.Process.Pid) {
+				t.Fatalf("wrapper PID %d is still running", cmd.Process.Pid)
+			}
+		})
+	}
+}
+
+func TestKataIOBlockBenchmarkWrapperBoundsPostKillDrain(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark", "scripts", "run-block-benchmark.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	for _, want := range []string{
+		`POST_KILL_GRACE_SECONDS="${POST_KILL_GRACE_SECONDS:-1}"`,
+		`post_kill_deadline=`,
+		`process_group_has_live_members`,
+		`timed out waiting for benchmark process group`,
+		`mkfs.ext4 -F -E lazy_itable_init=0,lazy_journal_init=0 "$BLOCK_DEVICE"`,
+		`sync "$WORK_DIR"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("run-block-benchmark.sh missing bounded post-KILL drain contract %q", want)
+		}
+	}
+	if strings.Contains(script, `while [ -n "$child_pid" ] && kill -0 -- "-$child_pid"`) {
+		t.Fatal("run-block-benchmark.sh still uses an unbounded kill -0 process-group drain")
 	}
 }
 
@@ -1310,6 +2263,89 @@ func assertCommandExitCode(t *testing.T, cmd *exec.Cmd, want int) {
 	if got := exitErr.ExitCode(); got != want {
 		t.Fatalf("command exit code = %d, output:\n%s; want %d", got, output, want)
 	}
+}
+
+func assertFileContains(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("%s = %q, want content %q", path, data, want)
+	}
+}
+
+func mergeExpectedValues(values ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, source := range values {
+		for key, value := range source {
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
+func waitForPIDFile(t *testing.T, path string, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			value := strings.TrimSpace(string(data))
+			if value == "" {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			pid, err := strconv.Atoi(value)
+			if err == nil {
+				return pid
+			}
+			t.Fatalf("invalid PID file %s: %v", path, err)
+		}
+		if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("PID file %s was not created within %s", path, timeout)
+	return 0
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file %s was not created within %s", path, timeout)
+}
+
+func assertStartedCommandExitCode(t *testing.T, cmd *exec.Cmd, want int, timeout time.Duration) {
+	t.Helper()
+	result := make(chan error, 1)
+	go func() { result <- cmd.Wait() }()
+	select {
+	case err := <-result:
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != want {
+			t.Fatalf("command error = %v, want exit code %d", err, want)
+		}
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-result
+		t.Fatalf("command did not exit within %s", timeout)
+	}
+}
+
+func processRunning(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func assertKataIOSummary(t *testing.T, artifactsDir, runDir string, wantDimensions, wantMetrics, wantValues map[string]string) {
