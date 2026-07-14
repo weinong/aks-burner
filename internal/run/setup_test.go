@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -285,6 +286,34 @@ func TestApplySetupFailsBeforeNextResourceWhenWaitFails(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("kubectl calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestCommandOutputReturnsCombinedOutput(t *testing.T) {
+	output, err := commandOutput(context.Background(), "sh", "-c", "printf stdout; printf stderr >&2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(output); got != "stdoutstderr" {
+		t.Fatalf("commandOutput() = %q, want combined output", got)
+	}
+}
+
+func TestCommandOutputIncludesTrimmedOutputInError(t *testing.T) {
+	_, err := commandOutput(context.Background(), "sh", "-c", "printf ' stdout '; printf ' stderr ' >&2; exit 1")
+	if err == nil || !strings.Contains(err.Error(), "stdout  stderr") {
+		t.Fatalf("commandOutput() error = %v, want combined trimmed output", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("commandOutput() error = %T, want wrapped *exec.ExitError", err)
+	}
+}
+
+func TestCommandOutputOmitsEmptyOutputSuffix(t *testing.T) {
+	_, err := commandOutput(context.Background(), "sh", "-c", "exit 1")
+	if err == nil || err.Error() != "exit status 1" {
+		t.Fatalf("commandOutput() error = %q, want bare exit error", err)
 	}
 }
 

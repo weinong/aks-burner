@@ -128,5 +128,13 @@ func applySetup(ctx context.Context, target kubetarget.Target, suiteDir string, 
 }
 
 func commandOutput(ctx context.Context, command ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, command[0], command[1:]...).Output()
+	output, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput()
+	if err == nil {
+		return output, nil
+	}
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		return output, err
+	}
+	return output, fmt.Errorf("%w: %s", err, message)
 }
