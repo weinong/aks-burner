@@ -13,6 +13,16 @@ setup:
         - kind: exists
           resource: namespace/kata-io
           timeout: 1m
+    - name: kata-shim-patch
+      path: setup/patch-kata-shim.yml
+      restart:
+        resource: daemonset/kata-shim-patch
+        namespace: kube-system
+      wait:
+        - kind: rollout
+          resource: daemonset/kata-shim-patch
+          namespace: kube-system
+          timeout: 15m
     - name: results-pvc
       path: setup/results-pvc.yml
       wait:

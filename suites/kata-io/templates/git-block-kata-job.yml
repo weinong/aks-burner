@@ -1,0 +1,89 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{.jobName}}-{{.Iteration}}
+  namespace: {{.namespace}}
+  labels:
+    app: kata-io
+    benchmark: io
+    runtime: {{.runtime}}
+    storage-type: {{.storageType}}
+    workload-type: git
+    clone-mode: {{.cloneMode}}
+    concurrency: "{{.concurrency}}"
+  annotations:
+    scenario: {{.scenario}}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: kata-io
+        benchmark: io
+        runtime: {{.runtime}}
+        storage-type: {{.storageType}}
+        workload-type: git
+        clone-mode: {{.cloneMode}}
+        concurrency: "{{.concurrency}}"
+      annotations:
+        scenario: {{.scenario}}
+    spec:
+      restartPolicy: Never
+      runtimeClassName: {{.kataRuntimeClassName}}
+      nodeSelector:
+        perf.azure.com/node-role: patchpool
+      containers:
+        - name: git-clone
+          image: {{.benchmarkImage}}
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/run-block-benchmark.sh]
+          args: [/usr/local/bin/run-git-clone.sh]
+          securityContext:
+            capabilities:
+              add:
+                - SYS_ADMIN
+          env:
+            - name: RUN_ID
+              value: {{.runID}}
+            - name: SCENARIO
+              value: {{.scenario}}
+            - name: SAMPLE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REPO_URL
+              value: {{.repoURL}}
+            - name: CLONE_MODE
+              value: {{.cloneMode}}
+            - name: RUNTIME
+              value: {{.runtime}}
+            - name: STORAGE_TYPE
+              value: {{.storageType}}
+            - name: CONCURRENCY
+              value: "{{.concurrency}}"
+            - name: BLOCK_DEVICE
+              value: /dev/work-block
+            - name: WORK_DIR
+              value: /work
+            - name: RESULTS_DIR
+              value: /results
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "2"
+              memory: 8Gi
+          volumeDevices:
+            - name: work
+              devicePath: /dev/work-block
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: work
+          persistentVolumeClaim:
+            claimName: {{.jobName}}-{{.Iteration}}
+        - name: results
+          persistentVolumeClaim:
+            claimName: kata-io-results

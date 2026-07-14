@@ -57,7 +57,13 @@ jobs:
   - objectTemplate: templates/preload-pod.yml
     replicas: 1
     inputVars:
-      jobName: '{{.k8sRunID}}-preload-images'
+      jobName: '{{.k8sRunID}}-preload-workload'
+      nodeRole: workload
+  - objectTemplate: templates/preload-pod.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-preload-patchpool'
+      nodeRole: patchpool
 - name: kio-1
   jobType: create
   namespace: kata-io
@@ -1654,6 +1660,287 @@ jobs:
       scenario: runtime-kata-storage-azure-files-fio-fsync-heavy-concurrency-10
       runtime: runtime-kata
       storageType: storage-azure-files
+      workloadType: fio
+      fioProfile: /profiles/fsync-heavy.fio
+      fioProfileName: fsync-heavy
+      concurrency: '10'
+
+- name: kio-block-randread-4k-1
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randread-4k-1'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randread-4k-1'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-randread-4k-concurrency-1
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/randread-4k.fio
+      fioProfileName: randread-4k
+      concurrency: '1'
+- name: kio-block-randwrite-4k-1
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randwrite-4k-1'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randwrite-4k-1'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-randwrite-4k-concurrency-1
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/randwrite-4k.fio
+      fioProfileName: randwrite-4k
+      concurrency: '1'
+- name: kio-block-seqread-1
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqread-1'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqread-1'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-seqread-concurrency-1
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/seqread.fio
+      fioProfileName: seqread
+      concurrency: '1'
+- name: kio-block-seqwrite-1
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqwrite-1'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqwrite-1'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-seqwrite-concurrency-1
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/seqwrite.fio
+      fioProfileName: seqwrite
+      concurrency: '1'
+- name: kio-block-fsync-heavy-1
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-fsync-heavy-1'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-fsync-heavy-1'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-fsync-heavy-concurrency-1
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/fsync-heavy.fio
+      fioProfileName: fsync-heavy
+      concurrency: '1'
+- name: kio-block-randread-4k-10
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randread-4k-10'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randread-4k-10'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-randread-4k-concurrency-10
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/randread-4k.fio
+      fioProfileName: randread-4k
+      concurrency: '10'
+- name: kio-block-randwrite-4k-10
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randwrite-4k-10'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-randwrite-4k-10'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-randwrite-4k-concurrency-10
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/randwrite-4k.fio
+      fioProfileName: randwrite-4k
+      concurrency: '10'
+- name: kio-block-seqread-10
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqread-10'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqread-10'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-seqread-concurrency-10
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/seqread.fio
+      fioProfileName: seqread
+      concurrency: '10'
+- name: kio-block-seqwrite-10
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqwrite-10'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-seqwrite-10'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-seqwrite-concurrency-10
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
+      workloadType: fio
+      fioProfile: /profiles/seqwrite.fio
+      fioProfileName: seqwrite
+      concurrency: '10'
+- name: kio-block-fsync-heavy-10
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 10
+  qps: 10
+  burst: 10
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
+  objects:
+  - objectTemplate: templates/work-block-pvc.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-fsync-heavy-10'
+      storageType: storage-azure-disk-block
+      workStorageClass: managed-csi
+  - objectTemplate: templates/fio-block-kata-job.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-kio-block-fsync-heavy-10'
+      scenario: runtime-kata-patched-storage-azure-disk-block-fio-fsync-heavy-concurrency-10
+      runtime: runtime-kata-patched
+      storageType: storage-azure-disk-block
       workloadType: fio
       fioProfile: /profiles/fsync-heavy.fio
       fioProfileName: fsync-heavy

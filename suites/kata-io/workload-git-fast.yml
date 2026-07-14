@@ -39,7 +39,7 @@ jobs:
     labelSelector:
       app: kata-io
       benchmark: io
-- name: kio-smoke-3
+- name: kio-preload-images
   jobType: create
   namespace: kata-io
   namespacedIterations: false
@@ -49,6 +49,28 @@ jobs:
   cleanup: true
   waitWhenFinished: true
   preLoadImages: true
+  skipIndexing: true
+  objects:
+  - objectTemplate: templates/preload-pod.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-preload-workload'
+      nodeRole: workload
+  - objectTemplate: templates/preload-pod.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-preload-patchpool'
+      nodeRole: patchpool
+- name: kio-smoke-3
+  jobType: create
+  namespace: kata-io
+  namespacedIterations: false
+  jobIterations: 1
+  qps: 1
+  burst: 1
+  cleanup: true
+  waitWhenFinished: true
+  preLoadImages: false
   objects:
   - objectTemplate: templates/git-emptydir-standard-job.yml
     replicas: 1
@@ -69,7 +91,7 @@ jobs:
   burst: 1
   cleanup: true
   waitWhenFinished: true
-  preLoadImages: true
+  preLoadImages: false
   objects:
   - objectTemplate: templates/git-emptydir-kata-job.yml
     replicas: 1

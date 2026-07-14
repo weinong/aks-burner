@@ -57,7 +57,13 @@ jobs:
   - objectTemplate: templates/preload-pod.yml
     replicas: 1
     inputVars:
-      jobName: '{{.k8sRunID}}-preload-images'
+      jobName: '{{.k8sRunID}}-preload-workload'
+      nodeRole: workload
+  - objectTemplate: templates/preload-pod.yml
+    replicas: 1
+    inputVars:
+      jobName: '{{.k8sRunID}}-preload-patchpool'
+      nodeRole: patchpool
 - name: kio-smoke-1
   jobType: create
   namespace: kata-io

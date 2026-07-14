@@ -113,6 +113,16 @@ func applySetup(ctx context.Context, target kubetarget.Target, suiteDir string, 
 		if _, err := runner(ctx, command...); err != nil {
 			return fmt.Errorf("apply setup resource %s: %w", resource.Name, err)
 		}
+		if resource.Restart.Resource != "" {
+			args := []string{"rollout", "restart", resource.Restart.Resource}
+			if resource.Restart.Namespace != "" {
+				args = append(args, "--namespace", resource.Restart.Namespace)
+			}
+			command := target.KubectlCommand(args...)
+			if _, err := runner(ctx, command...); err != nil {
+				return fmt.Errorf("restart setup resource %s: %w", resource.Name, err)
+			}
+		}
 		for _, wait := range resource.Wait {
 			args, err := WaitRuleArgs(wait)
 			if err != nil {

@@ -19,6 +19,13 @@ TARGET_DIR="${TARGET_DIR:-${SAMPLE_WORK_DIR}/repo}"
 mkdir -p "$OUT_DIR" "$SAMPLE_WORK_DIR"
 rm -rf "$TARGET_DIR"
 
+{
+  printf 'fio --version: '; fio --version 2>&1 || true
+  printf 'git --version: '; git --version 2>&1 || true
+  printf 'mkfs.ext4 -V: '; mkfs.ext4 -V 2>&1 || true
+  printf 'mount --version: '; mount --version 2>&1 || true
+} > "$OUT_DIR/tool-versions.txt"
+
 export GIT_TERMINAL_PROMPT=0
 export GIT_TRACE2_EVENT="$OUT_DIR/git-trace2-event.json"
 export GIT_TRACE2_PERF="$OUT_DIR/git-trace2-perf.log"
@@ -58,6 +65,7 @@ df -h "$SAMPLE_WORK_DIR" > "$OUT_DIR/df-after.txt" || true
 
 repo_size_bytes="$(awk '{print $1}' "$OUT_DIR/repo-size-bytes.txt")"
 file_count="$(tr -d ' ' < "$OUT_DIR/file-count.txt")"
+block_setup_duration="${BLOCK_SETUP_DURATION_SECONDS:-0}"
 
 jq -n \
   --arg runtime "$RUNTIME" \
@@ -65,11 +73,13 @@ jq -n \
   --arg profile "$CLONE_MODE" \
   --arg concurrency "$CONCURRENCY" \
   --arg sample "$SAMPLE_ID" \
+  --argjson blockSetupDuration "$block_setup_duration" \
   --argjson cloneDuration "$duration_seconds" \
   --argjson exitCode "$exit_code" \
   --argjson repositorySize "$repo_size_bytes" \
   --argjson fileCount "$file_count" \
   '{schemaVersion:1,dimensions:{runtime:$runtime,storage:$storage,workload:"git",profile:$profile,concurrency:$concurrency,sample:$sample},metrics:[
+    {name:"block_setup_duration",value:$blockSetupDuration,unit:"seconds"},
     {name:"clone_duration",value:$cloneDuration,unit:"seconds"},
     {name:"exit_code",value:$exitCode,unit:"code"},
     {name:"repository_size",value:$repositorySize,unit:"bytes"},
