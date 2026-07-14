@@ -12,8 +12,9 @@ RUN apt-get update \
        time \
     && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/override /usr/local/bin/override
 COPY scripts/run-fio.sh /usr/local/bin/run-fio.sh
 COPY scripts/run-git-clone.sh /usr/local/bin/run-git-clone.sh
 COPY fio-profiles /profiles
 
-RUN chmod +x /usr/local/bin/run-fio.sh /usr/local/bin/run-git-clone.sh
+RUN chmod +x /usr/local/bin/override /usr/local/bin/run-fio.sh /usr/local/bin/run-git-clone.sh

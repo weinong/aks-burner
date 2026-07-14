@@ -807,6 +807,7 @@ func TestKataIOBenchmarkImageFilesExist(t *testing.T) {
 	root := filepath.Join("..", "..")
 	files := []string{
 		"suites/kata-io/images/benchmark/Dockerfile",
+		"suites/kata-io/images/benchmark/scripts/override",
 		"suites/kata-io/images/benchmark/scripts/run-fio.sh",
 		"suites/kata-io/images/benchmark/scripts/run-git-clone.sh",
 		"suites/kata-io/images/benchmark/fio-profiles/randread-4k.fio",
@@ -823,6 +824,42 @@ func TestKataIOBenchmarkImageFilesExist(t *testing.T) {
 		if len(data) == 0 {
 			t.Fatalf("%s is empty", file)
 		}
+	}
+}
+
+func TestKataIOBenchmarkImageSupportsKubeBurnerPreloadCommand(t *testing.T) {
+	root := filepath.Join("..", "..", "suites", "kata-io", "images", "benchmark")
+	script := filepath.Join(root, "scripts", "override")
+	binDir := t.TempDir()
+	target := filepath.Join(binDir, "override")
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cmd := exec.Command("override", "command")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("override command failed: %v\n%s", err, output)
+	}
+
+	for _, args := range [][]string{nil, {"command", "extra"}, {"other"}} {
+		cmd := exec.Command("override", args...)
+		output, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "unsupported kube-burner preload command") {
+			t.Fatalf("override %v error = %v, output = %q", args, err, output)
+		}
+	}
+
+	dockerfile, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerfile), "COPY scripts/override /usr/local/bin/override") {
+		t.Fatal("benchmark Dockerfile does not install the kube-burner override command")
 	}
 }
 

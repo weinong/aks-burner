@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -eq 1 ] && [ "$1" = "command" ]; then
+    exit 0
+fi
+
+printf '%s\n' 'unsupported kube-burner preload command' >&2
+exit 64
