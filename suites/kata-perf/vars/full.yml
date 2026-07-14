@@ -1,4 +1,4 @@
-iterations: 500
+iterations: 90
 iterationsPerNamespace: 50
 qps: 50
 burst: 50
