@@ -30,7 +30,9 @@ preloading is enabled for both jobs. Each job enables per-job garbage
 collection, waits for its pods to finish, pauses for 6 minutes so pod latency
 callbacks can drain, and then deletes its generated namespaces before the next
 runtime job starts. Prometheus metrics close before the drain pause by setting
-`metricsClosing: afterJob`.
+`metricsClosing: afterJob`. The installed Prometheus deployment is pinned to
+the AKS system node pool so monitoring traffic does not share the Kata workload
+node during the startup burst.
 
 ## Measurements
 
@@ -43,7 +45,7 @@ The Prometheus queries in `metrics.yml` aggregate by pod and namespace across
 the cluster. CPU and memory rows in the summary therefore include system and
 monitoring namespaces as well as `kata-perf-*` workload rows.
 
-## Full Run Result: 2026-07-14T05:27:29Z
+## Full Run Result: 2026-07-14T05:59:17Z
 
 This `mode=full` run used a freshly provisioned cluster and the per-job
 garbage-collection barrier. The kube-burner log shows `startup-smoke`
@@ -52,32 +54,32 @@ post-run check found no benchmark pods or namespaces remaining.
 
 Result file:
 
-`results/2026-07-14T05-27-29.296529536Z_kata-perf_full/summary/results.csv`
+`results/2026-07-14T05-59-17.242475499Z_kata-perf_full/summary/results.csv`
 
-This `mode=full` run produced 1029 summary rows across the `startup-smoke` and
+This `mode=full` run produced 887 summary rows across the `startup-smoke` and
 `startup-default-runtime` jobs:
 
 | Source | Rows |
 | --- | ---: |
-| `raw/metrics/podCPUUsage.json` | 372 |
-| `raw/metrics/podMemoryWorkingSet.json` | 597 |
+| `raw/metrics/podCPUUsage.json` | 339 |
+| `raw/metrics/podMemoryWorkingSet.json` | 488 |
 | `raw/metrics/podLatencyQuantilesMeasurement-startup-smoke.json` | 30 |
 | `raw/metrics/podLatencyQuantilesMeasurement-startup-default-runtime.json` | 30 |
 
-The `startup-smoke` job produced 415 rows: 118 CPU, 267 memory, and 30 latency
-rows. The `startup-default-runtime` job produced 614 rows: 254 CPU, 330 memory,
+The `startup-smoke` job produced 261 rows: 73 CPU, 158 memory, and 30 latency
+rows. The `startup-default-runtime` job produced 626 rows: 266 CPU, 330 memory,
 and 30 latency rows.
 
 Latency highlights from the CSV:
 
 | Job | Milestone | p50 | p95 | p99 | max |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `startup-smoke` | `PodScheduled` | 0.757 s | 1.320 s | 1.467 s | 1.468 s |
-| `startup-smoke` | `ContainersStarted` | 25.626 s | 30.919 s | 31.217 s | 31.225 s |
-| `startup-smoke` | `Ready` | 25.000 s | 30.000 s | 31.000 s | 31.000 s |
-| `startup-default-runtime` | `PodScheduled` | 0.834 s | 1.448 s | 1.594 s | 1.623 s |
-| `startup-default-runtime` | `ContainersStarted` | 13.224 s | 17.336 s | 17.832 s | 18.146 s |
-| `startup-default-runtime` | `Ready` | 13.000 s | 17.000 s | 17.500 s | 18.000 s |
+| `startup-smoke` | `PodScheduled` | 1.058 s | 1.660 s | 1.728 s | 1.729 s |
+| `startup-smoke` | `ContainersStarted` | 21.710 s | 27.001 s | 27.339 s | 27.476 s |
+| `startup-smoke` | `Ready` | 21.000 s | 26.500 s | 27.000 s | 27.000 s |
+| `startup-default-runtime` | `PodScheduled` | 1.138 s | 1.559 s | 1.697 s | 1.726 s |
+| `startup-default-runtime` | `ContainersStarted` | 16.887 s | 20.355 s | 20.746 s | 20.811 s |
+| `startup-default-runtime` | `Ready` | 16.000 s | 20.000 s | 20.000 s | 20.000 s |
 
 The `kata-perf` workload appeared in `kata-perf-0` and `kata-perf-1` namespaces.
 CPU and memory rows include those workload namespaces, and also include

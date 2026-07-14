@@ -1,8 +1,10 @@
 package prometheus
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Azure/aks-burner/internal/kubetarget"
+	"gopkg.in/yaml.v3"
 )
 
 func TestEndpointURL(t *testing.T) {
@@ -112,6 +115,62 @@ func TestRenderManifestWithScrapeTargetIncludesKubeStateMetrics(t *testing.T) {
 			t.Fatalf("manifest missing %q:\n%s", want, rendered)
 		}
 	}
+}
+
+func TestPrometheusManifestTargetsSystemNodePool(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "observability", "prometheus", "prometheus.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type toleration struct {
+		Key      string `yaml:"key"`
+		Operator string `yaml:"operator"`
+		Value    string `yaml:"value"`
+		Effect   string `yaml:"effect"`
+	}
+	type manifest struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+		Spec struct {
+			Template struct {
+				Spec struct {
+					NodeSelector map[string]string `yaml:"nodeSelector"`
+					Tolerations  []toleration      `yaml:"tolerations"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var deployment manifest
+	for {
+		var document manifest
+		if err := decoder.Decode(&document); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if document.Kind == "Deployment" && document.Metadata.Name == "prometheus" {
+			deployment = document
+			break
+		}
+	}
+
+	if deployment.Kind == "" {
+		t.Fatal("missing Deployment/prometheus in Prometheus manifest")
+	}
+	if got, want := deployment.Spec.Template.Spec.NodeSelector["kubernetes.azure.com/mode"], "system"; got != want {
+		t.Fatalf("Prometheus node selector = %q, want %q", got, want)
+	}
+	for _, item := range deployment.Spec.Template.Spec.Tolerations {
+		if item.Key == "CriticalAddonsOnly" && item.Operator == "Equal" && item.Value == "true" && item.Effect == "NoSchedule" {
+			return
+		}
+	}
+	t.Fatalf("Prometheus tolerations = %#v, want CriticalAddonsOnly=true:NoSchedule", deployment.Spec.Template.Spec.Tolerations)
 }
 
 func TestWaitReadyWithTimeoutReturnsDeadline(t *testing.T) {

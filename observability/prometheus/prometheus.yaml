@@ -91,6 +91,13 @@ spec:
         app: prometheus
     spec:
       serviceAccountName: prometheus
+      nodeSelector:
+        kubernetes.azure.com/mode: system
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
       containers:
         - name: prometheus
           image: {{PROMETHEUS_IMAGE}}
