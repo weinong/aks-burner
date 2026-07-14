@@ -4,6 +4,7 @@ global:
 jobs:
   - name: startup-smoke
     jobType: create
+    gc: true
     namespace: kata-perf
     namespacedIterations: true
     objects:
@@ -12,6 +13,7 @@ jobs:
         inputVars: {}
   - name: startup-default-runtime
     jobType: create
+    gc: true
     namespace: kata-perf
     namespacedIterations: true
     objects:

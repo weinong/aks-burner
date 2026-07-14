@@ -96,6 +96,9 @@ func TestKataPerfModesRenderPodLatencyDrainMitigation(t *testing.T) {
 		for _, item := range jobs {
 			job := item.(map[string]any)
 			name := job["name"]
+			if got, want := job["gc"], true; got != want {
+				t.Fatalf("kata-perf %s job %v gc = %#v, want %#v", modeName, name, got, want)
+			}
 			if got, want := job["waitWhenFinished"], true; got != want {
 				t.Fatalf("kata-perf %s job %v waitWhenFinished = %#v, want %#v", modeName, name, got, want)
 			}

@@ -25,10 +25,12 @@ plus Prometheus pod resource metrics.
 | `smoke` | 20 | 20 | 20 | 20 |
 | `full` | 90 | 50 | 50 | 50 |
 
-Both modes run both jobs, enable cleanup, wait for the jobs to finish, preload
-images, and pause each job for 6 minutes before stopping kube-burner
-measurements so pod latency callbacks can drain. Prometheus metrics close
-before this drain pause by setting `metricsClosing: afterJob`.
+Both modes run the Kata job first and the default-runtime job second. Image
+preloading is enabled for both jobs. Each job enables per-job garbage
+collection, waits for its pods to finish, pauses for 6 minutes so pod latency
+callbacks can drain, and then deletes its generated namespaces before the next
+runtime job starts. Prometheus metrics close before the drain pause by setting
+`metricsClosing: afterJob`.
 
 ## Measurements
 
@@ -41,7 +43,13 @@ The Prometheus queries in `metrics.yml` aggregate by pod and namespace across
 the cluster. CPU and memory rows in the summary therefore include system and
 monitoring namespaces as well as `kata-perf-*` workload rows.
 
-## Full Run Result: 2026-07-14T04:00:07Z
+## Historical Full Run Result: 2026-07-14T04:00:07Z
+
+This historical `mode=full` result predates the per-job garbage-collection
+barrier and is not a valid isolated runtime comparison. The default-runtime job
+ran after the Kata pods remained resident on the single workload node. Replace
+these numbers after reprovisioning the cluster and rerunning `mode=full` with
+the isolation barrier enabled.
 
 Result file:
 
