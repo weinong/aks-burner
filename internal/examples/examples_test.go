@@ -73,7 +73,7 @@ func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
 	}
 }
 
-func TestKataPerfModesRenderPodLatencyDrainMitigation(t *testing.T) {
+func TestKataPerfModesRenderSerializedLatencyJobs(t *testing.T) {
 	root := filepath.Join("..", "..")
 	images, err := config.LoadImages(filepath.Join(root, "config/images.yml"))
 	if err != nil {
@@ -84,7 +84,7 @@ func TestKataPerfModesRenderPodLatencyDrainMitigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, modeName := range []string{"smoke", "full"} {
+	for modeName, expectedIterations := range map[string]int{"smoke": 5, "full": 20} {
 		var mode run.Mode
 		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", modeName+".yml"), &mode); err != nil {
 			t.Fatal(err)
@@ -97,22 +97,105 @@ func TestKataPerfModesRenderPodLatencyDrainMitigation(t *testing.T) {
 		if len(jobs) != 2 {
 			t.Fatalf("kata-perf %s rendered %d jobs, want 2", modeName, len(jobs))
 		}
-		for _, item := range jobs {
+		for index, item := range jobs {
 			job := item.(map[string]any)
 			name := job["name"]
+			expectedNames := []string{"startup-smoke", "startup-default-runtime"}
+			if name != expectedNames[index] {
+				t.Fatalf("kata-perf %s job %d name = %#v, want %#v", modeName, index, name, expectedNames[index])
+			}
 			if got, want := job["gc"], true; got != want {
 				t.Fatalf("kata-perf %s job %v gc = %#v, want %#v", modeName, name, got, want)
 			}
-			if got, want := job["waitWhenFinished"], true; got != want {
+			if got, want := job["podWait"], true; got != want {
+				t.Fatalf("kata-perf %s job %v podWait = %#v, want %#v", modeName, name, got, want)
+			}
+			if got, want := job["waitWhenFinished"], false; got != want {
 				t.Fatalf("kata-perf %s job %v waitWhenFinished = %#v, want %#v", modeName, name, got, want)
 			}
-			if got, want := job["jobPause"], "6m"; got != want {
+			if got, want := job["jobIterations"], expectedIterations; got != want {
+				t.Fatalf("kata-perf %s job %v jobIterations = %#v, want %#v", modeName, name, got, want)
+			}
+			if got, want := job["iterationsPerNamespace"], 1; got != want {
+				t.Fatalf("kata-perf %s job %v iterationsPerNamespace = %#v, want %#v", modeName, name, got, want)
+			}
+			if got, want := job["qps"], 5; got != want {
+				t.Fatalf("kata-perf %s job %v qps = %#v, want %#v", modeName, name, got, want)
+			}
+			if got, want := job["burst"], 5; got != want {
+				t.Fatalf("kata-perf %s job %v burst = %#v, want %#v", modeName, name, got, want)
+			}
+			if got, want := job["jobPause"], "1m"; got != want {
 				t.Fatalf("kata-perf %s job %v jobPause = %#v, want %#v", modeName, name, got, want)
 			}
-			if got, want := job["metricsClosing"], "afterJob"; got != want {
+			if got, want := job["metricsClosing"], "afterMeasurements"; got != want {
 				t.Fatalf("kata-perf %s job %v metricsClosing = %#v, want %#v", modeName, name, got, want)
 			}
 		}
+	}
+}
+
+func TestKataPerfReportsWorkloadSandboxMetrics(t *testing.T) {
+	root := filepath.Join("..", "..")
+	var metrics []struct {
+		Query        string `yaml:"query"`
+		MetricName   string `yaml:"metricName"`
+		Instant      bool   `yaml:"instant"`
+		CaptureStart bool   `yaml:"captureStart"`
+	}
+	if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/metrics.yml"), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	wantQueries := map[string][]string{
+		"runPodSandboxCount": {
+			"kubelet_run_podsandbox_duration_seconds_count",
+			`perf_azure_com_node_role="workload"`,
+			"sum by (runtime_handler)",
+		},
+		"runPodSandboxSum": {
+			"kubelet_run_podsandbox_duration_seconds_sum",
+			`perf_azure_com_node_role="workload"`,
+			"sum by (runtime_handler)",
+		},
+	}
+	if len(metrics) != len(wantQueries) {
+		t.Fatalf("kata-perf metrics count = %d, want %d: %#v", len(metrics), len(wantQueries), metrics)
+	}
+	for _, metric := range metrics {
+		if !metric.Instant {
+			t.Fatalf("%s must be an instant query", metric.MetricName)
+		}
+		if !metric.CaptureStart {
+			t.Fatalf("%s must capture the job-start baseline", metric.MetricName)
+		}
+		parts, ok := wantQueries[metric.MetricName]
+		if !ok {
+			t.Fatalf("unexpected kata-perf metric %q", metric.MetricName)
+		}
+		for _, part := range parts {
+			if !strings.Contains(metric.Query, part) {
+				t.Fatalf("%s query missing %q: %s", metric.MetricName, part, metric.Query)
+			}
+		}
+		if strings.Contains(metric.Query, "_bucket") || strings.Contains(metric.Query, "histogram_quantile") {
+			t.Fatalf("%s must not use underspecified sandbox histogram quantiles: %s", metric.MetricName, metric.Query)
+		}
+		if strings.Contains(metric.Query, "increase(") || strings.Contains(metric.Query, "offset") {
+			t.Fatalf("%s must capture raw start/end counters: %s", metric.MetricName, metric.Query)
+		}
+	}
+
+	req, err := requirements.Load(root, "kata-perf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantUnits := map[string]string{"runPodSandboxCount": "count", "runPodSandboxSum": "seconds"}
+	if !reflect.DeepEqual(req.Requires.Reporting.PrometheusMetricUnits, wantUnits) {
+		t.Fatalf("kata-perf metric units = %#v, want %#v", req.Requires.Reporting.PrometheusMetricUnits, wantUnits)
+	}
+	wantRequired := []string{"kubelet_run_podsandbox_duration_seconds_count", "kubelet_run_podsandbox_duration_seconds_sum"}
+	if !reflect.DeepEqual(req.Requires.Observability.Prometheus.Metrics, wantRequired) {
+		t.Fatalf("kata-perf required metrics = %#v, want %#v", req.Requires.Observability.Prometheus.Metrics, wantRequired)
 	}
 }
 

@@ -8,7 +8,7 @@
     "containersStartedLatency": 2710,
     "readyToStartContainersLatency": 2630,
     "metricName": "podLatencyMeasurement",
-    "uuid": "23c0b5fd-c17e-4326-a389-b3aebc774c82",
+    "uuid": "fixture-uuid",
     "jobName": "startup-smoke",
     "jobIteration": 0,
     "replica": 0,

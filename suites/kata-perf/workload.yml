@@ -5,6 +5,7 @@ jobs:
   - name: startup-smoke
     jobType: create
     gc: true
+    podWait: true
     namespace: kata-perf
     namespacedIterations: true
     objects:
@@ -14,6 +15,7 @@ jobs:
   - name: startup-default-runtime
     jobType: create
     gc: true
+    podWait: true
     namespace: kata-perf
     namespacedIterations: true
     objects:

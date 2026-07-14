@@ -1,94 +1,93 @@
 # Kata Performance Suite
 
-`kata-perf` measures Kata and default-runtime pod startup behavior on AKS by
-creating short-lived pause pods through kube-burner and collecting pod latency
-plus Prometheus pod resource metrics.
+`kata-perf` compares serialized Kata and default-runtime pod startup latency on
+AKS. It creates pause pods through kube-burner and separates end-to-end sandbox
+readiness, the CRI `RunPodSandbox` call, and post-sandbox container launch.
 
 ## What It Tests
 
-- Runs the `startup-smoke` and `startup-default-runtime` kube-burner create
-  jobs from `workload.yml`.
-- Creates one Kata pod per iteration with `runtimeClassName: kata-vm-isolation`
-  and one default-runtime pod per iteration without a runtime class.
-- Uses the `pause` image from `config/images.yml`:
-  `mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2`.
-- Schedules the pods only onto Azure Linux workload nodes matching:
-  `perf.azure.com/node-role=workload` and
-  `kubernetes.azure.com/os-sku=AzureLinux`.
-- Requires an AKS cluster with Kubernetes `>= 1.36`, a Ubuntu OCI system pool,
-  and an AzureLinux user pool configured for `KataMshvVmIsolation`.
+- Runs Kata first with `runtimeClassName: kata-vm-isolation`, then the default
+  runtime without a runtime class.
+- Creates one pod and waits for it to become ready before creating the next.
+- Uses `mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2`, preloaded before the
+  jobs start.
+- Schedules workload pods only on Azure Linux nodes labeled
+  `perf.azure.com/node-role=workload`.
+- Deletes all namespaces from the first runtime before the second starts.
+- Pins installed Prometheus to the AKS system node pool.
 
 ## Modes
 
-| Mode | Iterations | Iterations per namespace | QPS | Burst |
-| --- | ---: | ---: | ---: | ---: |
-| `smoke` | 20 | 20 | 20 | 20 |
-| `full` | 90 | 50 | 50 | 50 |
+| Mode | Samples per runtime | Iterations per namespace | QPS | Burst | Drain pause |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `smoke` | 5 | 1 | 5 | 5 | 1 minute |
+| `full` | 20 | 1 | 5 | 5 | 1 minute |
 
-Both modes run the Kata job first and the default-runtime job second. Image
-preloading is enabled for both jobs. Each job enables per-job garbage
-collection, waits for its pods to finish, pauses for 6 minutes so pod latency
-callbacks can drain, and then deletes its generated namespaces before the next
-runtime job starts. Prometheus metrics close before the drain pause by setting
-`metricsClosing: afterJob`. The installed Prometheus deployment is pinned to
-the AKS system node pool so monitoring traffic does not share the Kata workload
-node during the startup burst.
+Both jobs use `podWait: true` and `waitWhenFinished: false`. In kube-burner
+2.7.3 this combination waits after every iteration. One namespace per
+iteration prevents a previously waited namespace from allowing later pods to
+queue. QPS and burst limit Kubernetes API traffic; they do not provide the
+serialization.
+
+Prometheus closes each job's metric window after the one-minute event-drain
+pause. This guarantees multiple 15-second Prometheus scrapes even when five
+serialized pods start quickly. No additional sandbox operations occur during
+the pause. Per-job garbage collection then waits for namespace deletion before
+the next runtime starts.
 
 ## Measurements
 
-- kube-burner `podLatency` quantiles for pod lifecycle milestones such as
-  `PodScheduled`, `ContainersStarted`, and `Ready`.
-- Prometheus `podCPUUsage`, reported in cores.
-- Prometheus `podMemoryWorkingSet`, reported in bytes.
+### Sandbox Ready
 
-The Prometheus queries in `metrics.yml` aggregate by pod and namespace across
-the cluster. CPU and memory rows in the summary therefore include system and
-monitoring namespaces as well as `kata-perf-*` workload rows.
+kube-burner `PodReadyToStartContainers` quantiles report elapsed time from pod
+creation until Kubernetes says the sandbox and networking are ready. This
+includes scheduling and kubelet queueing before the CRI call.
 
-## Full Run Result: 2026-07-14T05:59:17Z
+### CRI Sandbox Call
 
-This `mode=full` run used a freshly provisioned cluster and the per-job
-garbage-collection barrier. The kube-burner log shows `startup-smoke`
-namespaces were deleted before `startup-default-runtime` started, and a
-post-run check found no benchmark pods or namespaces remaining.
+Prometheus reports `runPodSandboxCount` and `runPodSandboxMean` from
+`kubelet_run_podsandbox_duration_seconds_count` and `_sum`, filtered to the
+workload node and grouped by `runtime_handler`. The empty default handler is
+shown as `default`; Kata is shown as `kata`.
+
+The suite captures raw counters at each job's exact start and end; reporting
+derives the count delta and mean from those values. CRI retries or unrelated
+workload-node pods can still add operations, so handler labels and counts remain
+visible rather than being collapsed into one runtime value.
+Histogram p95/p99 are intentionally omitted: this ALPHA metric's final finite
+default bucket is 10 seconds, so slower calls make high quantiles infinite.
+
+### Post-Sandbox Container Launch
+
+The reporter derives per-pod launch latency as:
+
+`containersStartedLatency - readyToStartContainersLatency`
+
+It reports p50, p95, p99, max, average, and valid sample count for each runtime
+job. Kube-burner condition timestamps have one-second precision, so a valid
+subsecond sandbox-ready transition can appear as zero and is excluded as
+ambiguous. The sample-count row makes this visible. Missing container-start
+events, malformed fields, and negative differences fail reporting.
+
+## Serialized Full Result: 2026-07-14T18:58:30Z
 
 Result file:
 
-`results/2026-07-14T05-59-17.242475499Z_kata-perf_full/summary/results.csv`
+`results/2026-07-14T18-58-30.413356933Z_kata-perf_full/summary/results.csv`
 
-This `mode=full` run produced 887 summary rows across the `startup-smoke` and
-`startup-default-runtime` jobs:
+The run created 20 pods serially for each runtime. The kube-burner log shows a
+wait for every iteration and deletion of all 20 Kata namespaces before the
+default-runtime job started. No benchmark namespaces remained afterward.
 
-| Source | Rows |
-| --- | ---: |
-| `raw/metrics/podCPUUsage.json` | 339 |
-| `raw/metrics/podMemoryWorkingSet.json` | 488 |
-| `raw/metrics/podLatencyQuantilesMeasurement-startup-smoke.json` | 30 |
-| `raw/metrics/podLatencyQuantilesMeasurement-startup-default-runtime.json` | 30 |
+| Runtime | Sandbox-ready p50 | Sandbox-ready p95 | Sandbox-ready p99 | CRI sandbox count | CRI sandbox mean | Post-sandbox p50 | Post-sandbox p95 | Valid launch samples |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Kata | 1.000 s | 2.000 s | 2.000 s | 20 | 1.111 s | 0.856 s | 1.195 s | 20/20 |
+| Default | 1.000 s | 1.000 s | 1.000 s | 20 | 0.391 s | 0.561 s | 0.818 s | 15/20 |
 
-The `startup-smoke` job produced 261 rows: 73 CPU, 158 memory, and 30 latency
-rows. The `startup-default-runtime` job produced 626 rows: 266 CPU, 330 memory,
-and 30 latency rows.
+These full-run launch percentiles were produced before the adapter was aligned
+to kube-burner's pinned percentile algorithm. The count/mean and lifecycle
+values remain valid; replace the launch percentile values after the next
+serialized full run.
 
-Latency highlights from the CSV:
-
-| Job | Milestone | p50 | p95 | p99 | max |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `startup-smoke` | `PodScheduled` | 1.058 s | 1.660 s | 1.728 s | 1.729 s |
-| `startup-smoke` | `ContainersStarted` | 21.710 s | 27.001 s | 27.339 s | 27.476 s |
-| `startup-smoke` | `Ready` | 21.000 s | 26.500 s | 27.000 s | 27.000 s |
-| `startup-default-runtime` | `PodScheduled` | 1.138 s | 1.559 s | 1.697 s | 1.726 s |
-| `startup-default-runtime` | `ContainersStarted` | 16.887 s | 20.355 s | 20.746 s | 20.811 s |
-| `startup-default-runtime` | `Ready` | 16.000 s | 20.000 s | 20.000 s | 20.000 s |
-
-The `kata-perf` workload appeared in `kata-perf-0` and `kata-perf-1` namespaces.
-CPU and memory rows include those workload namespaces, and also include
-namespaces such as `kube-system`, `gatekeeper-system`, `perf-monitoring`, and
-`preload-kube-burner-54555` because metric collection is cluster-wide.
-Prometheus CPU and memory rows can still include recently deleted workload pods
-from the prior runtime because the metrics are collected after the run and use
-range queries. Use kube-burner `podLatency` rows for the isolated startup
-comparison.
-
-These numbers document one observed run and should not be treated as a stable
-performance baseline without repeated runs on comparable cluster capacity.
+One run is not a stable baseline. Repeat runs on comparable cluster capacity
+before drawing performance conclusions.

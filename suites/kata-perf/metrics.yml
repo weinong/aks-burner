@@ -1,4 +1,8 @@
-- query: sum(rate(container_cpu_usage_seconds_total[2m])) by (pod, namespace)
-  metricName: podCPUUsage
-- query: sum(container_memory_working_set_bytes) by (pod, namespace)
-  metricName: podMemoryWorkingSet
+- query: sum by (runtime_handler) (kubelet_run_podsandbox_duration_seconds_count{perf_azure_com_node_role="workload"})
+  metricName: runPodSandboxCount
+  instant: true
+  captureStart: true
+- query: sum by (runtime_handler) (kubelet_run_podsandbox_duration_seconds_sum{perf_azure_com_node_role="workload"})
+  metricName: runPodSandboxSum
+  instant: true
+  captureStart: true

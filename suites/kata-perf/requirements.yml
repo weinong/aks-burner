@@ -37,8 +37,8 @@ requires:
       standardSummary: false
       kubeBurner: true
     prometheusMetricUnits:
-      podCPUUsage: cores
-      podMemoryWorkingSet: bytes
+      runPodSandboxCount: count
+      runPodSandboxSum: seconds
   observability:
     prometheus:
       required: true
@@ -49,5 +49,5 @@ requires:
       servicePort: 9090
       localPort: 9090
       requiredMetrics:
-        - container_cpu_usage_seconds_total
-        - container_memory_working_set_bytes
+        - kubelet_run_podsandbox_duration_seconds_count
+        - kubelet_run_podsandbox_duration_seconds_sum
