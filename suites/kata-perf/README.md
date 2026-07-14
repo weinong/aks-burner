@@ -1,13 +1,15 @@
 # Kata Performance Suite
 
-`kata-perf` measures Kata pod startup behavior on AKS by creating short-lived
-pause pods through kube-burner and collecting pod latency plus Prometheus pod
-resource metrics.
+`kata-perf` measures Kata and default-runtime pod startup behavior on AKS by
+creating short-lived pause pods through kube-burner and collecting pod latency
+plus Prometheus pod resource metrics.
 
 ## What It Tests
 
-- Runs the `startup-smoke` kube-burner create job from `workload.yml`.
-- Creates one pod per iteration with `runtimeClassName: kata-vm-isolation`.
+- Runs the `startup-smoke` and `startup-default-runtime` kube-burner create
+  jobs from `workload.yml`.
+- Creates one Kata pod per iteration with `runtimeClassName: kata-vm-isolation`
+  and one default-runtime pod per iteration without a runtime class.
 - Uses the `pause` image from `config/images.yml`:
   `mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2`.
 - Schedules the pods only onto Azure Linux workload nodes matching:
@@ -23,7 +25,8 @@ resource metrics.
 | `smoke` | 20 | 20 | 20 | 20 |
 | `full` | 90 | 50 | 50 | 50 |
 
-Both modes enable cleanup, wait for the job to finish, and preload images.
+Both modes run both jobs, enable cleanup, wait for the jobs to finish, and
+preload images.
 
 ## Measurements
 
@@ -43,8 +46,8 @@ Result file committed with this README:
 
 `results/2026-07-14T01-39-33.336647736Z_kata-perf_full/summary/results.csv`
 
-This run used `mode=full`. It produced 344 summary rows for the single
-`startup-smoke` job:
+This historical run used `mode=full` before the default-runtime job was added.
+It produced 344 summary rows for the single `startup-smoke` job:
 
 | Source | Rows |
 | --- | ---: |

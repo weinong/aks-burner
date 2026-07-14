@@ -10,3 +10,11 @@ jobs:
       - objectTemplate: templates/pod.yml
         replicas: 1
         inputVars: {}
+  - name: startup-default-runtime
+    jobType: create
+    namespace: kata-perf
+    namespacedIterations: true
+    objects:
+      - objectTemplate: templates/pod-oci.yml
+        replicas: 1
+        inputVars: {}
