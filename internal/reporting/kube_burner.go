@@ -179,9 +179,12 @@ func sandboxCounterDocument(document map[string]json.RawMessage) (string, float6
 }
 
 func appendRunPodSandboxRows(rows []Row, counters map[string]map[string]float64) ([]Row, error) {
+	activeJobs := map[string]bool{}
+	seenJobs := map[string]bool{}
 	for key, values := range counters {
 		parts := strings.SplitN(key, "\x00", 2)
 		jobName, handler := parts[0], parts[1]
+		seenJobs[jobName] = true
 		countEnd, hasCountEnd := values["runPodSandboxCount"]
 		sumEnd, hasSumEnd := values["runPodSandboxSum"]
 		countStart, hasCountStart := values["runPodSandboxCount-start"]
@@ -191,7 +194,7 @@ func appendRunPodSandboxRows(rows []Row, counters map[string]map[string]float64)
 		}
 		count := countEnd - countStart
 		sum := sumEnd - sumStart
-		if count <= 0 {
+		if count < 0 {
 			return nil, fmt.Errorf("RunPodSandbox count delta must be positive for job %s handler %s", jobName, handler)
 		}
 		if count != math.Trunc(count) {
@@ -200,11 +203,23 @@ func appendRunPodSandboxRows(rows []Row, counters map[string]map[string]float64)
 		if sum < 0 {
 			return nil, fmt.Errorf("RunPodSandbox sum delta must not be negative for job %s handler %s", jobName, handler)
 		}
+		if count == 0 {
+			if sum != 0 {
+				return nil, fmt.Errorf("RunPodSandbox sum delta must be zero when count delta is zero for job %s handler %s", jobName, handler)
+			}
+			continue
+		}
+		activeJobs[jobName] = true
 		dimensions := map[string]string{"kubeBurner.jobName": jobName, "label.runtime_handler": handler}
 		rows = append(rows,
 			Row{Source: "derived/run-podsandbox", Dimensions: dimensions, Metric: "runPodSandboxCount", Value: Number{Text: strconv.FormatFloat(count, 'g', -1, 64)}, Unit: "count"},
 			Row{Source: "derived/run-podsandbox", Dimensions: dimensions, Metric: "runPodSandboxMean", Value: Number{Text: strconv.FormatFloat(sum/count, 'g', -1, 64)}, Unit: "seconds"},
 		)
+	}
+	for jobName := range seenJobs {
+		if !activeJobs[jobName] {
+			return nil, fmt.Errorf("RunPodSandbox count delta must be positive for job %s", jobName)
+		}
 	}
 	return rows, nil
 }

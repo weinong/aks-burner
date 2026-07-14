@@ -156,6 +156,64 @@ func TestReadKubeBurnerMetricsDerivesSandboxCountAndMeanFromCapturedCounters(t *
 	}
 }
 
+func TestReadKubeBurnerMetricsSkipsInactiveSandboxCounterSeries(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxCount-start.json", `[
+  {"metricName":"runPodSandboxCount-start","value":351,"timestamp":"2026-07-14T21:01:46Z","jobName":"startup-default-runtime","labels":{}},
+  {"metricName":"runPodSandboxCount-start","value":335,"timestamp":"2026-07-14T21:01:46Z","jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxCount.json", `[
+  {"metricName":"runPodSandboxCount","value":371,"timestamp":"2026-07-14T21:03:09Z","jobName":"startup-default-runtime","labels":{}},
+  {"metricName":"runPodSandboxCount","value":335,"timestamp":"2026-07-14T21:03:09Z","jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxSum-start.json", `[
+  {"metricName":"runPodSandboxSum-start","value":2108.892588011,"timestamp":"2026-07-14T21:01:46Z","jobName":"startup-default-runtime","labels":{}},
+  {"metricName":"runPodSandboxSum-start","value":5004.852577800997,"timestamp":"2026-07-14T21:01:46Z","jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxSum.json", `[
+  {"metricName":"runPodSandboxSum","value":2116.3522677230003,"timestamp":"2026-07-14T21:03:09Z","jobName":"startup-default-runtime","labels":{}},
+  {"metricName":"runPodSandboxSum","value":5004.852577800997,"timestamp":"2026-07-14T21:03:09Z","jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+
+	rows, _, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, []string{"runPodSandboxCount", "runPodSandboxSum"}, map[string]string{"runPodSandboxCount": "count", "runPodSandboxSum": "seconds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	for _, row := range rows {
+		got[row.Dimensions["kubeBurner.jobName"]+"/"+row.Dimensions["label.runtime_handler"]+"/"+row.Metric] = row.Value.Text
+	}
+	want := map[string]string{
+		"startup-default-runtime/default/runPodSandboxCount": "20",
+		"startup-default-runtime/default/runPodSandboxMean":  "0.3729839856000126",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sandbox rows = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsJobWithNoActiveSandboxCounters(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxCount-start.json", `[
+  {"metricName":"runPodSandboxCount-start","value":335,"jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxCount.json", `[
+  {"metricName":"runPodSandboxCount","value":335,"jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxSum-start.json", `[
+  {"metricName":"runPodSandboxSum-start","value":5004.852577800997,"jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxSum.json", `[
+  {"metricName":"runPodSandboxSum","value":5004.852577800997,"jobName":"startup-default-runtime","labels":{"runtime_handler":"kata"}}
+]`)
+
+	_, _, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "RunPodSandbox count delta must be positive for job startup-default-runtime") {
+		t.Fatalf("error = %v, want inactive job failure", err)
+	}
+}
+
 func TestReadKubeBurnerMetricsRejectsInvalidSandboxCounterSets(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -185,6 +243,12 @@ func TestReadKubeBurnerMetricsRejectsInvalidSandboxCounterSets(t *testing.T) {
   {"metricName":"runPodSandboxSum-start","value":5,"jobName":"job","labels":{}},
   {"metricName":"runPodSandboxSum","value":4,"jobName":"job","labels":{}}
 ]`, want: "RunPodSandbox sum delta must not be negative"},
+		{name: "zero count with positive sum", documents: `[
+  {"metricName":"runPodSandboxCount-start","value":2,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxCount","value":2,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxSum-start","value":5,"jobName":"job","labels":{}},
+  {"metricName":"runPodSandboxSum","value":6,"jobName":"job","labels":{}}
+]`, want: "RunPodSandbox sum delta must be zero when count delta is zero"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runDir := t.TempDir()
