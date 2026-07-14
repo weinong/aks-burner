@@ -41,41 +41,41 @@ The Prometheus queries in `metrics.yml` aggregate by pod and namespace across
 the cluster. CPU and memory rows in the summary therefore include system and
 monitoring namespaces as well as `kata-perf-*` workload rows.
 
-## Full Run Result: 2026-07-14T02:44:56Z
+## Full Run Result: 2026-07-14T04:00:07Z
 
 Result file:
 
-`results/2026-07-14T02-44-56.875253731Z_kata-perf_full/summary/results.csv`
+`results/2026-07-14T04-00-07.742764611Z_kata-perf_full/summary/results.csv`
 
-This `mode=full` run produced 975 summary rows across the `startup-smoke` and
+This `mode=full` run produced 1273 summary rows across the `startup-smoke` and
 `startup-default-runtime` jobs:
 
 | Source | Rows |
 | --- | ---: |
-| `raw/metrics/podCPUUsage.json` | 295 |
-| `raw/metrics/podMemoryWorkingSet.json` | 620 |
+| `raw/metrics/podCPUUsage.json` | 513 |
+| `raw/metrics/podMemoryWorkingSet.json` | 700 |
 | `raw/metrics/podLatencyQuantilesMeasurement-startup-smoke.json` | 30 |
 | `raw/metrics/podLatencyQuantilesMeasurement-startup-default-runtime.json` | 30 |
 
-The `startup-smoke` job produced 435 rows: 123 CPU, 282 memory, and 30 latency
-rows. The `startup-default-runtime` job produced 540 rows: 172 CPU, 338 memory,
+The `startup-smoke` job produced 274 rows: 84 CPU, 160 memory, and 30 latency
+rows. The `startup-default-runtime` job produced 999 rows: 429 CPU, 540 memory,
 and 30 latency rows.
 
 Latency highlights from the CSV:
 
 | Job | Milestone | p50 | p95 | p99 | max |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `startup-smoke` | `PodScheduled` | 2.046 s | 2.729 s | 2.934 s | 2.978 s |
-| `startup-smoke` | `ContainersStarted` | 27.040 s | 33.568 s | 33.770 s | 33.809 s |
-| `startup-smoke` | `Ready` | 26.500 s | 33.000 s | 33.000 s | 33.000 s |
-| `startup-default-runtime` | `PodScheduled` | 963 ms | 976 ms | 976 ms | 976 ms |
-| `startup-default-runtime` | `ContainersStarted` | 2.808 s | 3.708 s | 3.708 s | 3.809 s |
-| `startup-default-runtime` | `Ready` | 3.000 s | 3.000 s | 3.000 s | 3.000 s |
+| `startup-smoke` | `PodScheduled` | 1.467 s | 2.404 s | 2.405 s | 2.406 s |
+| `startup-smoke` | `ContainersStarted` | 21.676 s | 27.778 s | 28.058 s | 28.067 s |
+| `startup-smoke` | `Ready` | 21.000 s | 27.000 s | 28.000 s | 28.000 s |
+| `startup-default-runtime` | `PodScheduled` | 2.399 s | 3.296 s | 3.506 s | 3.714 s |
+| `startup-default-runtime` | `ContainersStarted` | 33.112 s | 37.143 s | 37.907 s | 38.139 s |
+| `startup-default-runtime` | `Ready` | 33.000 s | 37.000 s | 37.500 s | 38.000 s |
 
 The `kata-perf` workload appeared in `kata-perf-0` and `kata-perf-1` namespaces.
 CPU and memory rows include those workload namespaces, and also include
 namespaces such as `kube-system`, `gatekeeper-system`, `perf-monitoring`, and
-`preload-kube-burner-98343` because metric collection is cluster-wide.
+`preload-kube-burner-54555` because metric collection is cluster-wide.
 
 These numbers document one observed run and should not be treated as a stable
 performance baseline without repeated runs on comparable cluster capacity.
