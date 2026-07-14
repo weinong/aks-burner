@@ -550,6 +550,89 @@ func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
 	}
 }
 
+func TestKataIOFioWorkloadsUseOnePreloadJob(t *testing.T) {
+	root := filepath.Join("..", "..")
+	preloadTemplate, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "templates", "preload-pod.yml"))
+	if err != nil {
+		t.Fatalf("preload pod template missing: %v", err)
+	}
+	preloadTemplateText := string(preloadTemplate)
+	for _, want := range []string{"image: {{.benchmarkImage}}", "command: [override, command]"} {
+		if !strings.Contains(preloadTemplateText, want) {
+			t.Fatalf("preload pod template missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"run-fio.sh", "fioProfile", "/profiles/", "workload-type: fio"} {
+		if strings.Contains(preloadTemplateText, forbidden) {
+			t.Fatalf("preload pod template must not contain fio workload marker %q", forbidden)
+		}
+	}
+	for _, workloadFile := range []string{"workload-fio-fast.yml", "workload-fio.yml"} {
+		t.Run(workloadFile, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", workloadFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var workload struct {
+				Jobs []struct {
+					Name          string `yaml:"name"`
+					JobType       string `yaml:"jobType"`
+					PreLoadImages *bool  `yaml:"preLoadImages"`
+					Objects       []struct {
+						ObjectTemplate string         `yaml:"objectTemplate"`
+						InputVars      map[string]any `yaml:"inputVars"`
+					} `yaml:"objects"`
+				} `yaml:"jobs"`
+			}
+			if err := yaml.Unmarshal(data, &workload); err != nil {
+				t.Fatal(err)
+			}
+
+			preloadJobs := 0
+			for _, job := range workload.Jobs {
+				if job.PreLoadImages == nil {
+					t.Fatalf("job %s must explicitly set preLoadImages", job.Name)
+				}
+				if !*job.PreLoadImages {
+					continue
+				}
+				preloadJobs++
+				if job.Name != "kio-preload-images" {
+					t.Fatalf("preload job name = %q, want kio-preload-images", job.Name)
+				}
+				if job.JobType != "create" {
+					t.Fatalf("preload job type = %q, want create", job.JobType)
+				}
+				if len(job.Objects) != 1 {
+					t.Fatalf("preload job objects = %d, want 1", len(job.Objects))
+				}
+				object := job.Objects[0]
+				if object.ObjectTemplate != "templates/preload-pod.yml" {
+					t.Fatalf("preload object template = %q, want templates/preload-pod.yml", object.ObjectTemplate)
+				}
+				if asString(object.InputVars["jobName"]) == "" {
+					t.Fatalf("preload job must set jobName inputVars")
+				}
+			}
+			if preloadJobs != 1 {
+				t.Fatalf("%s preload-enabled jobs = %d, want 1", workloadFile, preloadJobs)
+			}
+		})
+	}
+
+	for _, mode := range []string{"fio-fast", "fio"} {
+		var vars struct {
+			PreLoadImages bool `yaml:"preLoadImages"`
+		}
+		if err := config.LoadYAML(filepath.Join(root, "suites", "kata-io", "vars", mode+".yml"), &vars); err != nil {
+			t.Fatal(err)
+		}
+		if vars.PreLoadImages {
+			t.Fatalf("%s mode must default preLoadImages to false", mode)
+		}
+	}
+}
+
 func kataIOWorkloadFiles(t *testing.T) []string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join("..", "..", "suites", "kata-io", "workload*.yml"))

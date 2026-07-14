@@ -4,7 +4,7 @@ qps: 1
 burst: 1
 cleanup: false
 waitWhenFinished: true
-preLoadImages: true
+preLoadImages: false
 workloadFile: workload-fio-fast.yml
 templateVars:
   namespace: kata-io
