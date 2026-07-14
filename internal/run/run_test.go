@@ -120,13 +120,15 @@ func TestRenderWorkloadPreservesExplicitJobScheduling(t *testing.T) {
 				"cleanup":                false,
 				"waitWhenFinished":       true,
 				"preLoadImages":          false,
+				"jobPause":               "30s",
+				"metricsClosing":         "afterJobPause",
 				"objects": []any{
 					map[string]any{"objectTemplate": "templates/job.yml", "replicas": 1, "inputVars": map[string]any{}},
 				},
 			},
 		},
 	}
-	mode := Mode{Iterations: 1, IterationsPerNamespace: 1, QPS: 1, Burst: 1, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true}
+	mode := Mode{Iterations: 1, IterationsPerNamespace: 1, QPS: 1, Burst: 1, Cleanup: true, WaitWhenFinished: true, PreLoadImages: true, JobPause: "6m", MetricsClosing: "afterJob"}
 	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "", false)
 	if err != nil {
 		t.Fatal(err)
@@ -140,11 +142,66 @@ func TestRenderWorkloadPreservesExplicitJobScheduling(t *testing.T) {
 		"cleanup":                false,
 		"waitWhenFinished":       true,
 		"preLoadImages":          false,
+		"jobPause":               "30s",
+		"metricsClosing":         "afterJobPause",
 	}
 	for key, want := range checks {
 		if got := job[key]; got != want {
 			t.Fatalf("job[%s] = %#v, want %#v", key, got, want)
 		}
+	}
+}
+
+func TestRenderWorkloadAppliesOptionalMeasurementDrainDefaults(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"name": "startup",
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/pod.yml", "replicas": 1, "inputVars": map[string]any{}},
+				},
+			},
+		},
+	}
+	mode := Mode{JobPause: "6m", MetricsClosing: "afterJob"}
+
+	rendered, err := RenderWorkload(workload, mode, map[string]string{}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job := rendered["jobs"].([]any)[0].(map[string]any)
+	if got, want := job["jobPause"], "6m"; got != want {
+		t.Fatalf("jobPause = %#v, want %#v", got, want)
+	}
+	if got, want := job["metricsClosing"], "afterJob"; got != want {
+		t.Fatalf("metricsClosing = %#v, want %#v", got, want)
+	}
+}
+
+func TestRenderWorkloadOmitsUnsetMeasurementDrainDefaults(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"name": "startup",
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/pod.yml", "replicas": 1, "inputVars": map[string]any{}},
+				},
+			},
+		},
+	}
+
+	rendered, err := RenderWorkload(workload, Mode{}, map[string]string{}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job := rendered["jobs"].([]any)[0].(map[string]any)
+	if _, exists := job["jobPause"]; exists {
+		t.Fatalf("unexpected jobPause default: %#v", job)
+	}
+	if _, exists := job["metricsClosing"]; exists {
+		t.Fatalf("unexpected metricsClosing default: %#v", job)
 	}
 }
 

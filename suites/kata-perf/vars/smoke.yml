@@ -5,6 +5,8 @@ burst: 20
 cleanup: true
 waitWhenFinished: true
 preLoadImages: true
+jobPause: 6m
+metricsClosing: afterJob
 templateVars:
   app: kata-perf
 imageVars:

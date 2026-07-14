@@ -27,6 +27,8 @@ type Mode struct {
 	Cleanup                bool              `yaml:"cleanup"`
 	WaitWhenFinished       bool              `yaml:"waitWhenFinished"`
 	PreLoadImages          bool              `yaml:"preLoadImages"`
+	JobPause               string            `yaml:"jobPause,omitempty"`
+	MetricsClosing         string            `yaml:"metricsClosing,omitempty"`
 	WorkloadFile           string            `yaml:"workloadFile,omitempty"`
 	RunTimestamp           time.Time         `yaml:"-"`
 	TemplateVars           map[string]any    `yaml:"templateVars"`
@@ -106,6 +108,12 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 		setDefault(job, "cleanup", mode.Cleanup)
 		setDefault(job, "waitWhenFinished", mode.WaitWhenFinished)
 		setDefault(job, "preLoadImages", mode.PreLoadImages)
+		if mode.JobPause != "" {
+			setDefault(job, "jobPause", mode.JobPause)
+		}
+		if mode.MetricsClosing != "" {
+			setDefault(job, "metricsClosing", mode.MetricsClosing)
+		}
 		objects, _ := job["objects"].([]any)
 		for _, objectItem := range objects {
 			object, ok := objectItem.(map[string]any)

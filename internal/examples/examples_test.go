@@ -69,6 +69,46 @@ func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
 	}
 }
 
+func TestKataPerfModesRenderPodLatencyDrainMitigation(t *testing.T) {
+	root := filepath.Join("..", "..")
+	images, err := config.LoadImages(filepath.Join(root, "config/images.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workload map[string]any
+	if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/workload.yml"), &workload); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, modeName := range []string{"smoke", "full"} {
+		var mode run.Mode
+		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", modeName+".yml"), &mode); err != nil {
+			t.Fatal(err)
+		}
+		rendered, err := run.RenderWorkload(workload, mode, images, "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobs := rendered["jobs"].([]any)
+		if len(jobs) != 2 {
+			t.Fatalf("kata-perf %s rendered %d jobs, want 2", modeName, len(jobs))
+		}
+		for _, item := range jobs {
+			job := item.(map[string]any)
+			name := job["name"]
+			if got, want := job["waitWhenFinished"], true; got != want {
+				t.Fatalf("kata-perf %s job %v waitWhenFinished = %#v, want %#v", modeName, name, got, want)
+			}
+			if got, want := job["jobPause"], "6m"; got != want {
+				t.Fatalf("kata-perf %s job %v jobPause = %#v, want %#v", modeName, name, got, want)
+			}
+			if got, want := job["metricsClosing"], "afterJob"; got != want {
+				t.Fatalf("kata-perf %s job %v metricsClosing = %#v, want %#v", modeName, name, got, want)
+			}
+		}
+	}
+}
+
 func TestSuiteSchemaAcceptsSetupResources(t *testing.T) {
 	root := filepath.Join("..", "..")
 	dir := t.TempDir()
