@@ -432,8 +432,8 @@ func TestSuiteRequirementsDriveNodePoolsWithoutParameterFiles(t *testing.T) {
 		if patch.Labels["perf.azure.com/node-role"] != "patchpool" {
 			t.Fatalf("patchpool label = %#v, want patchpool", patch.Labels)
 		}
-		if !reflect.DeepEqual(patch.Taints, []string{"perf.azure.com/kata-shim-patch=pending:NoSchedule"}) {
-			t.Fatalf("patchpool taints = %#v, want pending shim-patch taint", patch.Taints)
+		if len(patch.Taints) != 0 {
+			t.Fatalf("patchpool taints = %#v, want no taints", patch.Taints)
 		}
 
 		selectorsByName := map[string]string{}
@@ -602,8 +602,8 @@ func TestKataIOShimPatchDaemonSetContract(t *testing.T) {
 	if podSpec.ServiceAccountName != "kata-shim-patch" {
 		t.Fatalf("patch DaemonSet serviceAccountName = %q, want kata-shim-patch", podSpec.ServiceAccountName)
 	}
-	if len(podSpec.Tolerations) != 1 || podSpec.Tolerations[0].Key != "perf.azure.com/kata-shim-patch" || podSpec.Tolerations[0].Operator != "Equal" || podSpec.Tolerations[0].Value != "pending" || podSpec.Tolerations[0].Effect != "NoSchedule" {
-		t.Fatalf("patch DaemonSet tolerations = %#v, want exact pending shim-patch toleration", podSpec.Tolerations)
+	if len(podSpec.Tolerations) != 0 {
+		t.Fatalf("patch DaemonSet tolerations = %#v, want none", podSpec.Tolerations)
 	}
 	if podSpec.SecurityContext.SeccompProfile.Type != "RuntimeDefault" {
 		t.Fatalf("patch DaemonSet seccomp profile = %#v, want RuntimeDefault", podSpec.SecurityContext.SeccompProfile)
@@ -659,9 +659,10 @@ func TestKataIOShimPatchDaemonSetContract(t *testing.T) {
 		`chown "$target_uid:$target_gid" "$tmp"`,
 		`chmod "$target_mode" "$tmp"`,
 		`/api/v1/nodes/${NODE_NAME}`,
-		`application/json-patch+json`,
-		`"op":"remove"`,
-		`pending shim-patch taint already absent`,
+		`application/merge-patch+json`,
+		`{"metadata":{"labels":{"perf.azure.com/kata-shim-revision":null}}}`,
+		`{"metadata":{"labels":{"perf.azure.com/kata-shim-revision":"r1-d78b0c859c25f795"}}}`,
+		`installed_size`,
 		`installed_mode`,
 		`installed_uid`,
 		`installed_gid`,
@@ -675,9 +676,19 @@ func TestKataIOShimPatchDaemonSetContract(t *testing.T) {
 	if chownIndex < 0 || chmodIndex < 0 || chownIndex > chmodIndex {
 		t.Fatalf("patch init container must restore ownership before mode: chown=%d chmod=%d", chownIndex, chmodIndex)
 	}
-	for _, forbidden := range []string{"chmod --reference", "chown --reference"} {
+	clearIndex := strings.Index(patchScript, `{"metadata":{"labels":{"perf.azure.com/kata-shim-revision":null}}}`)
+	targetVerificationIndex := strings.Index(patchScript, `if [ ! -f "$target" ]`)
+	installedVerificationIndex := strings.Index(patchScript, `if [ "$installed_sha" != "$expected_sha" ] || [ "$installed_size" != "$expected_size" ] || [ "$installed_mode" != "$target_mode" ] || [ "$installed_uid" != "$target_uid" ] || [ "$installed_gid" != "$target_gid" ]; then`)
+	setIndex := strings.Index(patchScript, `{"metadata":{"labels":{"perf.azure.com/kata-shim-revision":"r1-d78b0c859c25f795"}}}`)
+	if clearIndex < 0 || targetVerificationIndex < 0 || clearIndex > targetVerificationIndex {
+		t.Fatalf("readiness clear must precede target verification: clear=%d target=%d", clearIndex, targetVerificationIndex)
+	}
+	if installedVerificationIndex < 0 || setIndex < 0 || installedVerificationIndex > setIndex {
+		t.Fatalf("readiness set must follow full installed shim verification: verification=%d set=%d", installedVerificationIndex, setIndex)
+	}
+	for _, forbidden := range []string{"chmod --reference", "chown --reference", "application/json-patch+json", `"op":"remove"`, "taint_removed", "taint_present", "pending shim-patch taint"} {
 		if strings.Contains(patchScript, forbidden) {
-			t.Fatalf("patch init container command contains non-portable metadata operation %q", forbidden)
+			t.Fatalf("patch init container command contains forbidden legacy or non-portable operation %q", forbidden)
 		}
 	}
 	if strings.Contains(patchScript, "sleep infinity") {
@@ -745,6 +756,59 @@ func TestKataIOShimPatchDaemonSetContract(t *testing.T) {
 	for _, forbidden := range []string{"systemctl restart", "service containerd restart", "pkill containerd", "containerd-shim-v2"} {
 		if strings.Contains(manifest, forbidden) {
 			t.Fatalf("patch DaemonSet contains forbidden restart or wrong target %q", forbidden)
+		}
+	}
+}
+
+func TestKataIOShimReadinessMigrationDocumentation(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readme := string(data)
+	var migrationText string
+	for _, paragraph := range strings.Split(readme, "\n\n") {
+		lower := strings.ToLower(paragraph)
+		if strings.Contains(lower, "patchpool") && strings.Contains(lower, "migrat") {
+			migrationText = paragraph
+			break
+		}
+	}
+	if migrationText == "" {
+		t.Fatal("README missing kata-io patchpool migration guidance")
+	}
+
+	for _, want := range []string{
+		"perf.azure.com/kata-shim-patch=pending:NoSchedule",
+	} {
+		if !strings.Contains(migrationText, want) {
+			t.Fatalf("README kata-io migration guidance missing %q", want)
+		}
+	}
+	for description, pattern := range map[string]string{
+		"existing AKS pool scope":             `(?i)existing\s+AKS\s+(?:node\s*)?patchpools?`,
+		"migration before rollout or run":     `(?is)migrat(?:e|ed|ion).*?before.*?(?:roll\s*out|run)`,
+		"reprovision or recreate alternative": `(?i)(?:reprovision|recreate)(?:/|\s+or\s+)(?:reprovision|recreate)`,
+		"kubectl-only removal is not durable": `(?is)remov(?:e|ing).*?only\s+through\s+` + "`kubectl`" + `.*?not\s+durable`,
+	} {
+		if !regexp.MustCompile(pattern).MatchString(migrationText) {
+			t.Fatalf("README kata-io migration guidance must document %s", description)
+		}
+	}
+
+	command := regexp.MustCompile("`(az aks nodepool update[^`]*)`").FindStringSubmatch(migrationText)
+	if len(command) != 2 {
+		t.Fatal("README kata-io migration guidance must include an az aks nodepool update command")
+	}
+	for _, want := range []string{
+		"--resource-group <resource-group>",
+		"--cluster-name <cluster-name>",
+		"--name patchpool",
+		`--node-taints ""`,
+	} {
+		if !strings.Contains(command[1], want) {
+			t.Fatalf("README kata-io migration command missing %q: %s", want, command[1])
 		}
 	}
 }
@@ -992,14 +1056,24 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 		t.Fatalf("preload pod template missing: %v", err)
 	}
 	preloadTemplateText := string(preloadTemplate)
-	for _, want := range []string{"image: {{.benchmarkImage}}", "command: [override, command]", "perf.azure.com/node-role: {{.nodeRole}}"} {
+	for _, want := range []string{"image: {{.benchmarkImage}}", "command: [override, command]", "perf.azure.com/node-role: workload"} {
 		if !strings.Contains(preloadTemplateText, want) {
 			t.Fatalf("preload pod template missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"run-fio.sh", "fioProfile", "/profiles/", "workload-type: fio"} {
+	for _, forbidden := range []string{"run-fio.sh", "fioProfile", "/profiles/", "workload-type: fio", "{{.nodeRole}}", "perf.azure.com/kata-shim-revision"} {
 		if strings.Contains(preloadTemplateText, forbidden) {
 			t.Fatalf("preload pod template must not contain fio workload marker %q", forbidden)
+		}
+	}
+	patchedPreloadTemplate, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "templates", "preload-patch-pod.yml"))
+	if err != nil {
+		t.Fatalf("patched preload pod template missing: %v", err)
+	}
+	patchedPreloadTemplateText := string(patchedPreloadTemplate)
+	for _, want := range []string{"image: {{.benchmarkImage}}", "command: [override, command]", "perf.azure.com/node-role: patchpool", "perf.azure.com/kata-shim-revision: r1-d78b0c859c25f795"} {
+		if !strings.Contains(patchedPreloadTemplateText, want) {
+			t.Fatalf("patched preload pod template missing %q", want)
 		}
 	}
 	for _, workloadFile := range []string{"workload-fio-fast.yml", "workload-git-fast.yml", "workload-fio.yml", "workload-git.yml"} {
@@ -1050,23 +1124,22 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 				if len(job.Objects) != 2 {
 					t.Fatalf("preload job objects = %d, want 2", len(job.Objects))
 				}
-				roles := map[string]bool{}
-				for _, object := range job.Objects {
-					if object.ObjectTemplate != "templates/preload-pod.yml" {
-						t.Fatalf("preload object template = %q, want templates/preload-pod.yml", object.ObjectTemplate)
-					}
-					role := asString(object.InputVars["nodeRole"])
-					if roles[role] {
-						t.Fatalf("preload job contains duplicate nodeRole %q", role)
-					}
-					roles[role] = true
-					if got, want := asString(object.InputVars["jobName"]), "{{.k8sRunID}}-preload-"+role; got != want {
-						t.Fatalf("preload %s jobName = %q, want %q", role, got, want)
-					}
+				wantObjects := []struct {
+					template string
+					jobName  string
+				}{
+					{template: "templates/preload-pod.yml", jobName: "{{.k8sRunID}}-preload-workload"},
+					{template: "templates/preload-patch-pod.yml", jobName: "{{.k8sRunID}}-preload-patchpool"},
 				}
-				for _, role := range []string{"workload", "patchpool"} {
-					if !roles[role] {
-						t.Fatalf("preload job missing nodeRole %q", role)
+				for i, object := range job.Objects {
+					if object.ObjectTemplate != wantObjects[i].template {
+						t.Fatalf("preload object %d template = %q, want %q", i, object.ObjectTemplate, wantObjects[i].template)
+					}
+					if got := asString(object.InputVars["jobName"]); got != wantObjects[i].jobName {
+						t.Fatalf("preload object %d jobName = %q, want %q", i, got, wantObjects[i].jobName)
+					}
+					if _, exists := object.InputVars["nodeRole"]; exists {
+						t.Fatalf("preload object %d must not pass nodeRole: %#v", i, object.InputVars)
 					}
 				}
 			}
@@ -1848,6 +1921,7 @@ func TestKataIORawBlockTemplates(t *testing.T) {
 		for _, want := range []string{
 			"runtimeClassName: {{.kataRuntimeClassName}}",
 			"perf.azure.com/node-role: patchpool",
+			"perf.azure.com/kata-shim-revision: r1-d78b0c859c25f795",
 			"volumeDevices:",
 			"devicePath: /dev/work-block",
 			"claimName: {{.jobName}}-{{.Iteration}}",
@@ -1864,7 +1938,7 @@ func TestKataIORawBlockTemplates(t *testing.T) {
 			t.Fatalf("%s must not mount the raw-block work volume as /work", file)
 		}
 		if strings.Contains(manifest, "tolerations:") || strings.Contains(manifest, "perf.azure.com/kata-shim-patch") {
-			t.Fatalf("%s must not tolerate the pending shim-patch taint", file)
+			t.Fatalf("%s must not contain legacy shim-patch taint placement", file)
 		}
 	}
 }
