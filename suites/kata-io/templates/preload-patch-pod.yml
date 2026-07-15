@@ -10,7 +10,8 @@ metadata:
 spec:
   restartPolicy: Never
   nodeSelector:
-    perf.azure.com/node-role: workload
+    perf.azure.com/node-role: patchpool
+    perf.azure.com/kata-shim-revision: r1-d78b0c859c25f795
   containers:
     - name: preload
       image: {{.benchmarkImage}}
