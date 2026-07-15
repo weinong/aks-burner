@@ -109,6 +109,8 @@ Existing AKS patchpools whose desired configuration still contains `perf.azure.c
 
 `kata-io` provisions two Kata workload pools: an unpatched baseline pool for filesystem-backed storage scenarios and a patched pool for raw-block Azure Disk scenarios. The suite does not use a dedicated-pool isolation taint. Instead, on each patchpool node the setup DaemonSet init container clears that node's suite-owned `perf.azure.com/kata-shim-revision` label, atomically installs and fully verifies the exact experimental `/usr/local/bin/containerd-shim-kata-v2` binary, and restores `perf.azure.com/kata-shim-revision=r1-d78b0c859c25f795` only after that node passes SHA, size, mode, UID, and GID verification. If readiness clearing succeeds, any later init failure leaves the label absent. If the clear API PATCH itself fails, `sh -e` aborts that DaemonSet pod and the runner setup barrier, but an old label can remain visible to external concurrent consumers. Patched preload and raw-block pods require both the static patchpool label and that exact readiness revision. Replacement or new nodes lack readiness until patched and verified. Every `run-suite` restarts the DaemonSet and completes its declared setup wait with full `kubectl rollout status` before starting runner-owned workloads, including after an in-place reimage. This guarantees runner-owned suite safety; in-place reimage safety depends on the next runner setup barrier and is not a global immediate fail-closed guarantee for external workloads. The barrier is not pool-wide revocation for independently submitted concurrent workloads: during the rolling restart, not-yet-updated nodes can retain the old same-revision label, and verified nodes regain it before the global rollout completes. The least-privilege node `get`/`patch` service account, host-isolated sleeper, idempotent patch, and no-containerd-restart behavior remain unchanged. Raw-block results use the `storage-azure-disk-block` storage dimension and `runtime-kata-patched` runtime dimension.
 
+Every `kata-io` mode disables kube-burner result reporting, Prometheus, and kube-state-metrics. Its `summary/results.csv` files contain only FIO or Git benchmark rows read from artifact `summary.json` files.
+
 The benchmark image pins the Ubuntu 24.04 base image digest. Apt package versions remain unpinned because no repository snapshot is configured; each fio and Git sample records `fio`, `git`, `mkfs.ext4`, and `mount` versions in `tool-versions.txt` beside its summary and raw artifacts.
 
 The default infrastructure uses one `Standard_D4s_v5` system node, four `Standard_D8s_v5` baseline Kata nodes, and four `Standard_D8s_v5` patched Kata nodes. Ensure the target region has sufficient DSv5-family quota before provisioning; any quota increase is an external prerequisite.
@@ -117,15 +119,16 @@ The default infrastructure uses one `Standard_D4s_v5` system node, four `Standar
 
 ## Test Results
 
-Every successful `run-suite` invocation must produce at least one valid measurement. The runner writes all normalized measurements to `summary/results.csv` and prints a preview of at most 10 rows:
+Every successful `run-suite` invocation must produce at least one valid measurement. The runner writes all normalized measurements to `summary/results.csv` and prints a preview of at most 10 rows (eight are elided from this example):
 
 ```text
 Test results: kata-io / fio-fast / 2026-07-11T00:00:00Z
-Sources: 2  Measurements: 20
-source                                      runtime  storage   workload  metric       value   unit
-artifacts/fio/example/summary.json          kata     emptydir  fio       read_iops    104113  operations/second
-raw/metrics/podLatencyQuantilesMeasurement.json                         pod_latency_p50  2897  milliseconds
-10 additional rows omitted
+Sources: 2  Measurements: 22
+source                                      runtime  storage   workload  metric          value   unit
+artifacts/fio/example/summary.json          kata     emptydir  fio       read_iops       104113  operations/second
+artifacts/fio/example/summary.json          kata     emptydir  fio       read_bandwidth  426449  bytes/second
+...
+12 additional rows omitted
 Results CSV: results/RUN_DIRECTORY/summary/results.csv
 ```
 
