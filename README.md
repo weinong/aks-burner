@@ -24,7 +24,7 @@ TEST_SUITE=kata-io make destroy
 
 `make list-suites` prints each suite once with its available modes, so use the suite name for `TEST_SUITE` and one of the listed modes for `TEST_MODE`.
 
-`TEST_SUITE=my-suite make add-suite` creates a complete dummy suite under `suites/my-suite/` using defaults. `make add-suite-guided` prompts for the suite name, description, Kubernetes version, node settings, Prometheus, and smoke/full sizes.
+`TEST_SUITE=my-suite make add-suite` creates a complete dummy suite under `suites/my-suite/` using defaults. Generated suites retain one low-cardinality Prometheus sample when Prometheus is disabled: `prometheusTargetsUp` uses the instant query `sum(up)`. `make add-suite-guided` prompts for the suite name, description, Kubernetes version, node settings, Prometheus, and smoke/full sizes.
 
 ## Suite Lifecycle
 

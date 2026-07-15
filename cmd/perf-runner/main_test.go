@@ -24,6 +24,7 @@ import (
 	"github.com/Azure/aks-burner/internal/kubestatemetrics"
 	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/reporting"
+	"github.com/Azure/aks-burner/internal/requirements"
 	runpkg "github.com/Azure/aks-burner/internal/run"
 )
 
@@ -470,19 +471,6 @@ requires:
 	}
 	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), path); err == nil {
 		t.Fatal("requirements schema accepted unknown reporting source")
-	}
-}
-
-func TestSuiteRequirementsDeclaresReporting(t *testing.T) {
-	requires := suiteRequirements(addSuiteOptions{Prometheus: true})["requires"].(map[string]any)
-	reporting := requires["reporting"].(map[string]any)
-	sources := reporting["sources"].(map[string]any)
-	if sources["kubeBurner"] != true {
-		t.Fatalf("kubeBurner source = %#v, want true", sources["kubeBurner"])
-	}
-	units := reporting["prometheusMetricUnits"].(map[string]string)
-	if units["podCPUUsage"] != "cores" || units["podMemoryWorkingSet"] != "bytes" {
-		t.Fatalf("prometheusMetricUnits = %#v", units)
 	}
 }
 
@@ -1263,6 +1251,18 @@ func TestAddSuiteFastModeWritesDummySuite(t *testing.T) {
 	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "vars", "smoke.yml"), "iterations: 20")
 	assertFileContains(t, filepath.Join(root, "suites", "demo-suite", "vars", "full.yml"), "iterations: 500")
 	assertGeneratedSuiteSchemas(t, root, "demo-suite")
+	assertGeneratedSuiteReporting(t, root, "demo-suite", true)
+}
+
+func TestAddSuiteKeepsMetricSampleWhenPrometheusDisabled(t *testing.T) {
+	root := testRepoRoot(t)
+	withWorkingDir(t, root)
+
+	if err := addSuiteWithIO([]string{"--suite", "demo-suite", "--prometheus=false"}, strings.NewReader(""), io.Discard); err != nil {
+		t.Fatalf("addSuiteWithIO() returned error: %v", err)
+	}
+
+	assertGeneratedSuiteReporting(t, root, "demo-suite", false)
 }
 
 func TestAddSuiteVPrefixedKubernetesVersionProducesNormalizedARMParameters(t *testing.T) {
@@ -1344,7 +1344,6 @@ func TestAddSuiteGuidedUsesDefaultsForBlankAnswers(t *testing.T) {
 	}
 
 	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "suite.yml"), "description: Dummy guided-suite performance suite.")
-	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "requirements.yml"), "required: true")
 	assertFileContains(t, filepath.Join(root, "suites", "guided-suite", "requirements.yml"), "count: 1")
 	if strings.Contains(out.String(), "Cluster name") {
 		t.Fatalf("guided prompts include cluster name: %q", out.String())
@@ -1353,6 +1352,7 @@ func TestAddSuiteGuidedUsesDefaultsForBlankAnswers(t *testing.T) {
 		t.Fatalf("infra.bicepparam exists: %v", err)
 	}
 	assertGeneratedSuiteSchemas(t, root, "guided-suite")
+	assertGeneratedSuiteReporting(t, root, "guided-suite", true)
 }
 
 func TestShouldDeployContainerRegistryRequiresImages(t *testing.T) {
@@ -2657,5 +2657,49 @@ func assertGeneratedSuiteSchemas(t *testing.T, root string, name string) {
 		if err := config.ValidateYAML(filepath.Join(root, "schemas", path.schema), filepath.Join(root, path.file)); err != nil {
 			t.Fatalf("ValidateYAML(%s) returned error: %v", path.file, err)
 		}
+	}
+}
+
+func assertGeneratedSuiteReporting(t *testing.T, root string, name string, prometheusEnabled bool) {
+	t.Helper()
+	suiteDir := filepath.Join(root, "suites", name)
+	var metrics []struct {
+		Query      string `yaml:"query"`
+		MetricName string `yaml:"metricName"`
+		Instant    bool   `yaml:"instant"`
+	}
+	metricsPath := filepath.Join(suiteDir, "metrics.yml")
+	if err := config.LoadYAML(metricsPath, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	if len(metrics) != 1 || metrics[0].Query != "sum(up)" || metrics[0].MetricName != "prometheusTargetsUp" || !metrics[0].Instant {
+		t.Fatalf("generated metrics = %#v, want one instant prometheusTargetsUp metric", metrics)
+	}
+
+	doc, err := requirements.Load(root, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prometheus := doc.Requires.Observability.Prometheus
+	if prometheus.Required != prometheusEnabled || prometheus.Install != prometheusEnabled {
+		t.Fatalf("Prometheus = %#v, want required and install %t", prometheus, prometheusEnabled)
+	}
+	units := doc.Requires.Reporting.PrometheusMetricUnits
+	if len(units) != 1 || units["prometheusTargetsUp"] != "count" {
+		t.Fatalf("prometheusMetricUnits = %#v, want only prometheusTargetsUp: count", units)
+	}
+	if len(prometheus.Metrics) != 1 || prometheus.Metrics[0] != "up" {
+		t.Fatalf("requiredMetrics = %#v, want [up]", prometheus.Metrics)
+	}
+	var workload map[string]any
+	if err := config.LoadYAML(filepath.Join(suiteDir, "workload.yml"), &workload); err != nil {
+		t.Fatal(err)
+	}
+	metricNames, err := reporting.PrometheusMetricNames(metricsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reporting.ValidateConfig(&doc.Requires.Reporting, doc.Requires.Artifacts.Enabled, doc.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
+		t.Fatalf("generated reporting configuration is invalid: %v", err)
 	}
 }
