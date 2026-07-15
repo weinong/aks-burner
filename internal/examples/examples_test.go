@@ -1206,6 +1206,177 @@ func TestKataIOFioWorkloadCoversActiveScenarios(t *testing.T) {
 	})
 }
 
+func TestKataIOFioFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
+	type expectation struct {
+		runtime           string
+		storageType       string
+		profile           string
+		benchmarkTemplate string
+		pvcTemplate       string
+		storageClass      string
+		accessMode        string
+	}
+	expected := map[string]expectation{
+		"runtime-standard-storage-azure-disk-fio-seqread-concurrency-1": {
+			"runtime-standard", "storage-azure-disk", "seqread", "templates/fio-pvc-standard-job.yml", "templates/work-pvc.yml", "managed-csi", "ReadWriteOnce",
+		},
+		"runtime-kata-storage-azure-disk-fio-seqread-concurrency-1": {
+			"runtime-kata", "storage-azure-disk", "seqread", "templates/fio-pvc-kata-job.yml", "templates/work-pvc.yml", "managed-csi", "ReadWriteOnce",
+		},
+		"runtime-kata-patched-storage-azure-disk-block-fio-seqread-concurrency-1": {
+			"runtime-kata-patched", "storage-azure-disk-block", "seqread", "templates/fio-block-kata-job.yml", "templates/work-block-pvc.yml", "managed-csi", "",
+		},
+		"runtime-standard-storage-azure-disk-fio-fsync-heavy-concurrency-1": {
+			"runtime-standard", "storage-azure-disk", "fsync-heavy", "templates/fio-pvc-standard-job.yml", "templates/work-pvc.yml", "managed-csi", "ReadWriteOnce",
+		},
+		"runtime-kata-storage-azure-disk-fio-fsync-heavy-concurrency-1": {
+			"runtime-kata", "storage-azure-disk", "fsync-heavy", "templates/fio-pvc-kata-job.yml", "templates/work-pvc.yml", "managed-csi", "ReadWriteOnce",
+		},
+		"runtime-kata-patched-storage-azure-disk-block-fio-fsync-heavy-concurrency-1": {
+			"runtime-kata-patched", "storage-azure-disk-block", "fsync-heavy", "templates/fio-block-kata-job.yml", "templates/work-block-pvc.yml", "managed-csi", "",
+		},
+		"runtime-standard-storage-azure-files-fio-randread-4k-concurrency-1": {
+			"runtime-standard", "storage-azure-files", "randread-4k", "templates/fio-pvc-standard-job.yml", "templates/work-pvc.yml", "azurefile-csi", "ReadWriteMany",
+		},
+		"runtime-kata-storage-azure-files-fio-randread-4k-concurrency-1": {
+			"runtime-kata", "storage-azure-files", "randread-4k", "templates/fio-pvc-kata-job.yml", "templates/work-pvc.yml", "azurefile-csi", "ReadWriteMany",
+		},
+	}
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "workload-fio-fast.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workload struct {
+		Jobs []struct {
+			Name           string `yaml:"name"`
+			JobIterations  int    `yaml:"jobIterations"`
+			QPS            int    `yaml:"qps"`
+			Burst          int    `yaml:"burst"`
+			Cleanup        bool   `yaml:"cleanup"`
+			WaitFinished   bool   `yaml:"waitWhenFinished"`
+			MaxWaitTimeout string `yaml:"maxWaitTimeout"`
+			Objects        []struct {
+				ObjectTemplate string         `yaml:"objectTemplate"`
+				Replicas       int            `yaml:"replicas"`
+				InputVars      map[string]any `yaml:"inputVars"`
+			} `yaml:"objects"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workload); err != nil {
+		t.Fatal(err)
+	}
+
+	seenScenarios := map[string]bool{}
+	seenResourceNames := map[string]string{}
+	dnsLabel := regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	for _, job := range workload.Jobs {
+		benchmarkIndex, pvcIndex := -1, -1
+		for i, object := range job.Objects {
+			if _, ok := object.InputVars["scenario"].(string); ok {
+				if benchmarkIndex != -1 {
+					t.Fatalf("job %s contains multiple benchmark objects", job.Name)
+				}
+				benchmarkIndex = i
+			}
+			if object.ObjectTemplate == "templates/work-pvc.yml" || object.ObjectTemplate == "templates/work-block-pvc.yml" {
+				if pvcIndex != -1 {
+					t.Fatalf("job %s contains multiple work PVC objects", job.Name)
+				}
+				pvcIndex = i
+			}
+		}
+		if benchmarkIndex == -1 {
+			continue
+		}
+
+		benchmark := job.Objects[benchmarkIndex]
+		scenario := benchmark.InputVars["scenario"].(string)
+		want, ok := expected[scenario]
+		if !ok {
+			t.Fatalf("workload-fio-fast.yml contains unexpected benchmark scenario %q", scenario)
+		}
+		if seenScenarios[scenario] {
+			t.Fatalf("workload-fio-fast.yml contains duplicate benchmark scenario %q", scenario)
+		}
+		seenScenarios[scenario] = true
+
+		if job.JobIterations != 1 || job.QPS != 1 || job.Burst != 1 {
+			t.Fatalf("job %s for %s has jobIterations/qps/burst = %d/%d/%d, want 1/1/1", job.Name, scenario, job.JobIterations, job.QPS, job.Burst)
+		}
+		if !job.Cleanup || !job.WaitFinished {
+			t.Fatalf("job %s for %s cleanup/waitWhenFinished = %t/%t, want true/true", job.Name, scenario, job.Cleanup, job.WaitFinished)
+		}
+		if job.MaxWaitTimeout != "6m" {
+			t.Fatalf("job %s for %s maxWaitTimeout = %q, want 6m", job.Name, scenario, job.MaxWaitTimeout)
+		}
+		if len(job.Objects) != 2 || pvcIndex == -1 {
+			t.Fatalf("job %s for %s objects = %#v, want one work PVC and one benchmark", job.Name, scenario, job.Objects)
+		}
+
+		pvc := job.Objects[pvcIndex]
+		if benchmark.ObjectTemplate != want.benchmarkTemplate || pvc.ObjectTemplate != want.pvcTemplate {
+			t.Fatalf("scenario %s benchmark/PVC templates = %q/%q, want %q/%q", scenario, benchmark.ObjectTemplate, pvc.ObjectTemplate, want.benchmarkTemplate, want.pvcTemplate)
+		}
+		if benchmark.Replicas != 1 || pvc.Replicas != 1 {
+			t.Fatalf("scenario %s benchmark/PVC replicas = %d/%d, want 1/1", scenario, benchmark.Replicas, pvc.Replicas)
+		}
+		if benchmark.InputVars["runtime"] != want.runtime || benchmark.InputVars["storageType"] != want.storageType || benchmark.InputVars["workloadType"] != "fio" {
+			t.Fatalf("scenario %s benchmark identity = runtime %#v, storageType %#v, workloadType %#v", scenario, benchmark.InputVars["runtime"], benchmark.InputVars["storageType"], benchmark.InputVars["workloadType"])
+		}
+		if benchmark.InputVars["concurrency"] != "1" {
+			t.Fatalf("scenario %s concurrency = %#v, want %q", scenario, benchmark.InputVars["concurrency"], "1")
+		}
+		if benchmark.InputVars["fioProfileName"] != want.profile || benchmark.InputVars["fioProfile"] != "/profiles/"+want.profile+".fio" {
+			t.Fatalf("scenario %s fio profile name/path = %#v/%#v, want %q/%q", scenario, benchmark.InputVars["fioProfileName"], benchmark.InputVars["fioProfile"], want.profile, "/profiles/"+want.profile+".fio")
+		}
+		if pvc.InputVars["storageType"] != want.storageType || pvc.InputVars["workStorageClass"] != want.storageClass {
+			t.Fatalf("scenario %s PVC storageType/class = %#v/%#v, want %q/%q", scenario, pvc.InputVars["storageType"], pvc.InputVars["workStorageClass"], want.storageType, want.storageClass)
+		}
+		if want.accessMode == "" {
+			if _, exists := pvc.InputVars["workAccessMode"]; exists {
+				t.Fatalf("scenario %s raw-block PVC must not override its template access mode", scenario)
+			}
+		} else if pvc.InputVars["workAccessMode"] != want.accessMode {
+			t.Fatalf("scenario %s PVC access mode = %#v, want %q", scenario, pvc.InputVars["workAccessMode"], want.accessMode)
+		}
+
+		jobName, _ := benchmark.InputVars["jobName"].(string)
+		if jobName == "" || pvc.InputVars["jobName"] != jobName {
+			t.Fatalf("scenario %s benchmark/PVC jobName = %q/%#v, want matching non-empty names", scenario, jobName, pvc.InputVars["jobName"])
+		}
+		if !strings.HasPrefix(jobName, "{{.k8sRunID}}-") {
+			t.Fatalf("scenario %s jobName = %q, want {{.k8sRunID}} prefix", scenario, jobName)
+		}
+
+		const renderedRunID = "kio-fio-fast-20260715t164635962239955"
+		renderedJobName := strings.Replace(jobName, "{{.k8sRunID}}", renderedRunID, 1)
+		pvcSuffix := "-work-0"
+		if pvc.ObjectTemplate == "templates/work-block-pvc.yml" {
+			pvcSuffix = "-0"
+		}
+		for _, resource := range []struct {
+			kind string
+			name string
+		}{
+			{"Job", renderedJobName + "-0"},
+			{"PersistentVolumeClaim", renderedJobName + pvcSuffix},
+		} {
+			if len(resource.name) > 63 || !dnsLabel.MatchString(resource.name) {
+				t.Fatalf("scenario %s generates invalid %s name %q", scenario, resource.kind, resource.name)
+			}
+			key := resource.kind + "/" + resource.name
+			if previous, duplicate := seenResourceNames[key]; duplicate {
+				t.Fatalf("scenarios %s and %s generate duplicate %s name %q", previous, scenario, resource.kind, resource.name)
+			}
+			seenResourceNames[key] = scenario
+		}
+	}
+	if len(seenScenarios) != len(expected) {
+		t.Fatalf("workload-fio-fast.yml has %d benchmark scenarios, want exactly %d", len(seenScenarios), len(expected))
+	}
+}
+
 func TestKataIOGitWorkloadCoversActiveScenarios(t *testing.T) {
 	assertKataIOActiveWorkloadScenarios(t, "workload-git.yml", 28, map[string]int{
 		"storage-emptydir":         8,
