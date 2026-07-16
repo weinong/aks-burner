@@ -956,7 +956,7 @@ func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
 			if err := yaml.Unmarshal(data, &workload); err != nil {
 				t.Fatal(err)
 			}
-			foundCleanup := map[string]bool{"Job": false, "Pod": false, "PersistentVolumeClaim": false}
+			var cleanupOrder []string
 			for _, job := range workload.Jobs {
 				if job.Namespace == "kata-io" && (job.NamespacedIters == nil || *job.NamespacedIters) {
 					t.Fatalf("job %s must set namespacedIterations: false", job.Name)
@@ -969,17 +969,16 @@ func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
 				}
 				for _, object := range job.Objects {
 					if object.LabelSelector["app"] == "kata-io" && object.LabelSelector["benchmark"] == "io" {
-						foundCleanup[object.Kind] = true
+						cleanupOrder = append(cleanupOrder, object.Kind)
 					}
 					if object.Kind == "PersistentVolumeClaim" && object.LabelSelector["pvc-role"] != "work" {
 						t.Fatalf("work PVC cleanup selector = %#v, want pvc-role=work", object.LabelSelector)
 					}
 				}
 			}
-			for kind, found := range foundCleanup {
-				if !found {
-					t.Fatalf("missing cleanup delete job for %s", kind)
-				}
+			wantCleanupOrder := []string{"Job", "Pod", "PersistentVolumeClaim"}
+			if !reflect.DeepEqual(cleanupOrder, wantCleanupOrder) {
+				t.Fatalf("cleanup order = %v, want %v so pods release PVCs before PVC deletion", cleanupOrder, wantCleanupOrder)
 			}
 		})
 	}

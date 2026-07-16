@@ -12,6 +12,19 @@ jobs:
     labelSelector:
       app: kata-io
       benchmark: io
+- name: kio-clean-pods
+  jobType: delete
+  namespace: kata-io
+  namespacedIterations: false
+  skipIndexing: true
+  qps: 20
+  burst: 20
+  objects:
+  - kind: Pod
+    apiVersion: v1
+    labelSelector:
+      app: kata-io
+      benchmark: io
 - name: kio-clean-work-pvcs
   jobType: delete
   namespace: kata-io
@@ -26,19 +39,6 @@ jobs:
       app: kata-io
       benchmark: io
       pvc-role: work
-- name: kio-clean-pods
-  jobType: delete
-  namespace: kata-io
-  namespacedIterations: false
-  skipIndexing: true
-  qps: 20
-  burst: 20
-  objects:
-  - kind: Pod
-    apiVersion: v1
-    labelSelector:
-      app: kata-io
-      benchmark: io
 - name: kio-smoke-1
   jobType: create
   namespace: kata-io

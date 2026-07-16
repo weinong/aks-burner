@@ -13,6 +13,20 @@ jobs:
     labelSelector:
       app: kata-io
       benchmark: io
+- name: kio-clean-pods
+  jobType: delete
+  namespace: kata-io
+  namespacedIterations: false
+  skipIndexing: true
+  preLoadImages: false
+  qps: 20
+  burst: 20
+  objects:
+  - kind: Pod
+    apiVersion: v1
+    labelSelector:
+      app: kata-io
+      benchmark: io
 - name: kio-clean-work-pvcs
   jobType: delete
   namespace: kata-io
@@ -28,20 +42,6 @@ jobs:
       app: kata-io
       benchmark: io
       pvc-role: work
-- name: kio-clean-pods
-  jobType: delete
-  namespace: kata-io
-  namespacedIterations: false
-  skipIndexing: true
-  preLoadImages: false
-  qps: 20
-  burst: 20
-  objects:
-  - kind: Pod
-    apiVersion: v1
-    labelSelector:
-      app: kata-io
-      benchmark: io
 - name: kio-preload-images
   jobType: create
   namespace: kata-io
