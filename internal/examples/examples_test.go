@@ -991,12 +991,23 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 		t.Fatalf("preload pod template missing: %v", err)
 	}
 	preloadTemplateText := string(preloadTemplate)
-	for _, want := range []string{"image: {{.benchmarkImage}}", "command: [override, command]", "perf.azure.com/node-role: {{.nodeRole}}"} {
+	for _, want := range []string{
+		"apiVersion: batch/v1",
+		"kind: Job",
+		"backoffLimit: 0",
+		"restartPolicy: Never",
+		"image: {{.benchmarkImage}}",
+		"command: [override, command]",
+		"perf.azure.com/node-role: {{.nodeRole}}",
+	} {
 		if !strings.Contains(preloadTemplateText, want) {
 			t.Fatalf("preload pod template missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"run-fio.sh", "fioProfile", "/profiles/", "workload-type: fio"} {
+	if strings.Count(preloadTemplateText, "app: kata-io") != 2 || strings.Count(preloadTemplateText, "benchmark: io") != 2 {
+		t.Fatal("preload Job and pod template must both carry cleanup labels")
+	}
+	for _, forbidden := range []string{"apiVersion: v1\nkind: Pod", "run-fio.sh", "fioProfile", "/profiles/", "workload-type: fio"} {
 		if strings.Contains(preloadTemplateText, forbidden) {
 			t.Fatalf("preload pod template must not contain fio workload marker %q", forbidden)
 		}
@@ -1011,7 +1022,9 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 				Jobs []struct {
 					Name          string `yaml:"name"`
 					JobType       string `yaml:"jobType"`
+					MaxWaitTime   string `yaml:"maxWaitTimeout"`
 					PreLoadImages *bool  `yaml:"preLoadImages"`
+					WaitFinished  bool   `yaml:"waitWhenFinished"`
 					Objects       []struct {
 						ObjectTemplate string         `yaml:"objectTemplate"`
 						InputVars      map[string]any `yaml:"inputVars"`
@@ -1045,6 +1058,12 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 				preloadJobs++
 				if job.JobType != "create" {
 					t.Fatalf("preload job type = %q, want create", job.JobType)
+				}
+				if !job.WaitFinished {
+					t.Fatal("preload job must wait for Kubernetes Job completion")
+				}
+				if job.MaxWaitTime != "10m" {
+					t.Fatalf("preload job maxWaitTimeout = %q, want 10m", job.MaxWaitTime)
 				}
 				if len(job.Objects) != 2 {
 					t.Fatalf("preload job objects = %d, want 2", len(job.Objects))

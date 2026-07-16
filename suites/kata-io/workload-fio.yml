@@ -51,6 +51,7 @@ jobs:
   burst: 1
   cleanup: true
   waitWhenFinished: true
+  maxWaitTimeout: 10m
   preLoadImages: true
   skipIndexing: true
   objects:
