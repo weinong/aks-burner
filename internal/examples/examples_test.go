@@ -1027,12 +1027,12 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 			seenBenchmark := false
 			for _, job := range workload.Jobs {
 				if job.Name != "kio-preload-images" {
+					if job.PreLoadImages == nil || *job.PreLoadImages {
+						t.Fatalf("job %s must set preLoadImages: false", job.Name)
+					}
 					for _, object := range job.Objects {
 						if _, benchmark := object.InputVars["scenario"]; benchmark {
 							seenBenchmark = true
-							if job.PreLoadImages == nil || *job.PreLoadImages {
-								t.Fatalf("benchmark job %s must set preLoadImages: false", job.Name)
-							}
 						}
 					}
 					continue
@@ -1076,7 +1076,7 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 		})
 	}
 
-	for _, mode := range []string{"fio-fast", "fio"} {
+	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
 		var vars struct {
 			PreLoadImages bool `yaml:"preLoadImages"`
 		}

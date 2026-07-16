@@ -4,6 +4,7 @@ jobs:
   namespace: kata-io
   namespacedIterations: false
   skipIndexing: true
+  preLoadImages: false
   qps: 20
   burst: 20
   objects:
@@ -17,6 +18,7 @@ jobs:
   namespace: kata-io
   namespacedIterations: false
   skipIndexing: true
+  preLoadImages: false
   qps: 20
   burst: 20
   objects:
@@ -31,6 +33,7 @@ jobs:
   namespace: kata-io
   namespacedIterations: false
   skipIndexing: true
+  preLoadImages: false
   qps: 20
   burst: 20
   objects:
