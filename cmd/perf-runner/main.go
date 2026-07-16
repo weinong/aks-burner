@@ -548,6 +548,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err != nil {
 		return err
 	}
+	req.Requires.Reporting.ReportPodReadyMetrics = mode.ReportPodReadyMetrics
 	if err := reporting.ValidateConfig(&req.Requires.Reporting, req.Requires.Artifacts.Enabled, req.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
 		return err
 	}
@@ -746,8 +747,19 @@ func executeRunCopyAndReport(
 		copyErr = copyArtifacts(ctx, target, artifactCfg, artifactDestination, artifactSubpath)
 	}
 	if workloadErr != nil {
+		var reportErr error
+		if reportingCfg.ReportPodReadyMetrics {
+			runInfo.Partial = true
+			_, reportErr = report(runDir, reportingCfg, runInfo, out)
+		}
 		if copyErr != nil {
+			if reportErr != nil {
+				return fmt.Errorf("kube-burner failed: %w; artifact copy also failed: %v; reporting also failed: %v", workloadErr, copyErr, reportErr)
+			}
 			return fmt.Errorf("kube-burner failed: %w; artifact copy also failed: %v", workloadErr, copyErr)
+		}
+		if reportErr != nil {
+			return fmt.Errorf("kube-burner failed: %w; reporting also failed: %v", workloadErr, reportErr)
 		}
 		return workloadErr
 	}

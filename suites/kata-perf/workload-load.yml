@@ -1,0 +1,24 @@
+global:
+  measurements:
+    - name: podLatency
+jobs:
+  - name: startup-load-kata
+    jobType: create
+    gc: true
+    podWait: false
+    namespace: kata-perf-load-kata
+    namespacedIterations: true
+    objects:
+      - objectTemplate: templates/pod.yml
+        replicas: 1
+        inputVars: {}
+  - name: startup-load-default-runtime
+    jobType: create
+    gc: true
+    podWait: false
+    namespace: kata-perf-load-default
+    namespacedIterations: true
+    objects:
+      - objectTemplate: templates/pod-oci.yml
+        replicas: 1
+        inputVars: {}

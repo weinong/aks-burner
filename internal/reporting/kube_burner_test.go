@@ -214,6 +214,32 @@ func TestReadKubeBurnerMetricsRejectsJobWithNoActiveSandboxCounters(t *testing.T
 	}
 }
 
+func TestReadKubeBurnerMetricsAllowsInactiveSandboxCountersForOfferedLoad(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "jobSummary.json", `[
+  {"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"startup-load-kata","jobIterations":20,"qps":5,"burst":1}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "sandbox.json", `[
+  {"metricName":"runPodSandboxCount-start","uuid":"run-1","value":10,"jobName":"startup-load-kata","labels":{"runtime_handler":"kata"}},
+  {"metricName":"runPodSandboxCount","uuid":"run-1","value":10,"jobName":"startup-load-kata","labels":{"runtime_handler":"kata"}},
+  {"metricName":"runPodSandboxSum-start","uuid":"run-1","value":20,"jobName":"startup-load-kata","labels":{"runtime_handler":"kata"}},
+  {"metricName":"runPodSandboxSum","uuid":"run-1","value":20,"jobName":"startup-load-kata","labels":{"runtime_handler":"kata"}}
+]`)
+
+	rows, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		got[row.Metric] = row.Value.Text
+	}
+	want := map[string]string{"pod_ready_throughput": "0", "pod_ready_missing_count": "20"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("rows = %#v, want readiness-only rows %#v", got, want)
+	}
+}
+
 func TestReadKubeBurnerMetricsRejectsInvalidSandboxCounterSets(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -304,6 +330,186 @@ func TestReadKubeBurnerMetricsDerivesPostSandboxContainerLaunchSummary(t *testin
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("derived metrics = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadKubeBurnerMetricsDerivesOfferedLoadReadiness(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "jobSummary.json", `[
+  {"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"startup-load-kata","jobIterations":5,"qps":2,"burst":1}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "podLatencyQuantilesMeasurement.json", `[
+  {"metricName":"podLatencyQuantilesMeasurement","uuid":"run-1","jobName":"startup-load-kata","quantileName":"Ready","P50":1000,"P95":2000,"P99":2000,"max":2000,"avg":1250}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxCount.json", `[
+  {"metricName":"runPodSandboxCount","uuid":"run-1","value":4,"jobName":"startup-load-kata","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "runPodSandboxSum.json", `[
+  {"metricName":"runPodSandboxSum","uuid":"run-1","value":2,"jobName":"startup-load-kata","labels":{"runtime_handler":"kata"}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"startup-load-kata","namespace":"kata-perf-load-0","podName":"kata-perf-0-1","timestamp":"2026-07-15T00:00:00Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700},
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"startup-load-kata","namespace":"kata-perf-load-0","podName":"kata-perf-1-1","timestamp":"2026-07-15T00:00:01Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700},
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"startup-load-kata","namespace":"kata-perf-load-0","podName":"kata-perf-2-1","timestamp":"2026-07-15T00:00:02Z","podReadyLatency":2000,"readyToStartContainersLatency":500,"containersStartedLatency":700},
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"startup-load-kata","namespace":"kata-perf-load-0","podName":"kata-perf-3-1","timestamp":"2026-07-15T00:00:03Z","podReadyLatency":1000,"readyToStartContainersLatency":0,"containersStartedLatency":200}
+]`)
+
+	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 5 {
+		t.Fatalf("contributing files = %d, want 5", files)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		if row.Dimensions["jobName"] == "startup-load-kata" || row.Dimensions["kubeBurner.jobName"] == "startup-load-kata" {
+			if row.Dimensions["offeredQPS"] != "2" || row.Dimensions["burst"] != "1" {
+				t.Fatalf("load row missing offered-load dimensions: %#v", row)
+			}
+		}
+		if row.Source != "derived/pod-ready" {
+			continue
+		}
+		if !reflect.DeepEqual(row.Dimensions, map[string]string{"jobName": "startup-load-kata", "offeredQPS": "2", "burst": "1"}) {
+			t.Fatalf("readiness dimensions = %#v", row.Dimensions)
+		}
+		got[row.Metric+"/"+row.Unit] = row.Value.Text
+	}
+	want := map[string]string{
+		"pod_ready_throughput/pods/second": "1",
+		"pod_ready_missing_count/pods":     "1",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("readiness metrics = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadKubeBurnerMetricsReportsNoReadyPods(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "jobSummary.json", `[
+  {"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"startup-load-kata","jobIterations":20,"qps":5,"burst":1}}
+]`)
+
+	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || len(rows) != 2 {
+		t.Fatalf("files/rows = %d/%#v, want 1/2", files, rows)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		got[row.Metric] = row.Value.Text
+	}
+	want := map[string]string{"pod_ready_throughput": "0", "pod_ready_missing_count": "20"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("readiness metrics = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsOfferedLoadMetricWithoutJobName(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "jobSummary.json", `[
+  {"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"startup-load-kata","jobIterations":20,"qps":5,"burst":1}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "metric.json", `[
+  {"metricName":"declared","uuid":"run-1","value":1,"timestamp":"2026-07-15T00:00:00Z"}
+]`)
+
+	_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, []string{"declared"}, map[string]string{"declared": "count"}, true)
+	if err == nil || !strings.Contains(err.Error(), "has no jobName") {
+		t.Fatalf("error = %v, want missing jobName failure", err)
+	}
+}
+
+func TestReadKubeBurnerMetricsLeavesSerializedRowsUnchanged(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "jobSummary.json", `[
+  {"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"startup-smoke","jobIterations":1,"qps":5,"burst":5}}
+]`)
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"startup-smoke","namespace":"kata-perf-0","podName":"kata-perf-0-1","timestamp":"2026-07-15T00:00:00Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700}
+]`)
+
+	rows, files, err := ReadKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || len(rows) != 6 {
+		t.Fatalf("files/rows = %d/%#v, want 1/6", files, rows)
+	}
+	for _, row := range rows {
+		if row.Source == "derived/pod-ready" || row.Dimensions["offeredQPS"] != "" || row.Dimensions["burst"] != "" {
+			t.Fatalf("serialized row was enriched with load dimensions: %#v", row)
+		}
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsInvalidOfferedLoadReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		summaries string
+		pods      string
+		want      string
+	}{
+		{
+			name:      "missing summaries",
+			summaries: `[]`,
+			want:      "requires jobSummary",
+		},
+		{
+			name:      "duplicate summary",
+			summaries: `[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"job","jobIterations":1,"qps":1,"burst":1}},{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"job","jobIterations":1,"qps":1,"burst":1}}]`,
+			want:      "duplicate jobSummary",
+		},
+		{
+			name:      "mixed run UUIDs",
+			summaries: `[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"job-1","jobIterations":1,"qps":1,"burst":1}},{"metricName":"jobSummary","uuid":"run-2","jobConfig":{"name":"job-2","jobIterations":1,"qps":1,"burst":1}}]`,
+			want:      "multiple kube-burner UUIDs",
+		},
+		{
+			name:      "mixed metric UUID",
+			summaries: `[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"job","jobIterations":1,"qps":1,"burst":1}}]`,
+			pods:      `[{"metricName":"podLatencyQuantilesMeasurement","uuid":"run-2","jobName":"job","quantileName":"Ready","P50":1,"P95":1,"P99":1,"max":1,"avg":1}]`,
+			want:      "multiple kube-burner UUIDs",
+		},
+		{
+			name:      "latency without summary",
+			summaries: `[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"other","jobIterations":1,"qps":1,"burst":1}}]`,
+			pods:      `[{"metricName":"podLatencyQuantilesMeasurement","uuid":"run-1","jobName":"job","quantileName":"Ready","P50":1,"P95":1,"P99":1,"max":1,"avg":1}]`,
+			want:      "has no matching jobSummary",
+		},
+		{
+			name:      "pod without summary",
+			summaries: `[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"other","jobIterations":1,"qps":1,"burst":1}}]`,
+			pods:      `[{"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"job","namespace":"ns","podName":"pod","timestamp":"2026-07-15T00:00:00Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700}]`,
+			want:      "has no matching jobSummary",
+		},
+		{
+			name:      "too many ready pods",
+			summaries: `[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"job","jobIterations":1,"qps":1,"burst":1}}]`,
+			pods:      `[{"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"job","namespace":"ns","podName":"pod-1","timestamp":"2026-07-15T00:00:00Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700},{"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"job","namespace":"ns","podName":"pod-2","timestamp":"2026-07-15T00:00:01Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700}]`,
+			want:      "exceeds expected pod count",
+		},
+		{
+			name:      "duplicate pod",
+			summaries: `[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"job","jobIterations":2,"qps":1,"burst":1}}]`,
+			pods:      `[{"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"job","namespace":"ns","podName":"pod","timestamp":"2026-07-15T00:00:00Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700},{"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"job","namespace":"ns","podName":"pod","timestamp":"2026-07-15T00:00:01Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700}]`,
+			want:      "duplicate podLatencyMeasurement",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			writeKubeBurnerMetric(t, runDir, "jobSummary.json", tc.summaries)
+			if tc.pods != "" {
+				writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", tc.pods)
+			}
+			_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

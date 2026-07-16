@@ -17,6 +17,10 @@ import (
 )
 
 func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []string, metricUnits map[string]string) ([]Row, int, error) {
+	return readKubeBurnerMetrics(metricsDir, runDir, prometheusMetricNames, metricUnits, false)
+}
+
+func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []string, metricUnits map[string]string, reportPodReadyMetrics bool) ([]Row, int, error) {
 	if _, err := os.Stat(metricsDir); errors.Is(err, fs.ErrNotExist) {
 		return nil, 0, nil
 	} else if err != nil {
@@ -48,6 +52,9 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 	launchLatencies := map[string][]float64{}
 	launchJobs := map[string]bool{}
 	sandboxCounters := map[string]map[string]float64{}
+	podReadyJobs := map[string]podReadyJob{}
+	podReadySamples := map[string]map[string]podReadySample{}
+	podReadyUUID := ""
 	for _, path := range paths {
 		source, err := filepath.Rel(runDir, path)
 		if err != nil {
@@ -61,16 +68,48 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 		rowsBeforeFile := len(rows)
 		launchSamplesBeforeFile := launchSampleCount(launchLatencies)
 		fileHasSandboxCounters := false
+		fileHasPodReadyData := false
 		for index, document := range documents {
 			metricName, err := requiredString(document, "metricName")
 			if err != nil {
 				return nil, 0, fmt.Errorf("%s: documents[%d].%w", source, index, err)
+			}
+			_, declaredPrometheusMetric := declaredPrometheusUnits[metricName]
+			if reportPodReadyMetrics && (metricName == "jobSummary" || metricName == "podLatencyQuantilesMeasurement" || metricName == "podLatencyMeasurement" || isSandboxCounterMetric(metricName) || declaredPrometheusMetric) {
+				uuid, uuidErr := requiredString(document, "uuid")
+				if uuidErr != nil {
+					return nil, 0, fmt.Errorf("%s: documents[%d]: %w", source, index, uuidErr)
+				}
+				if uuid == "" {
+					return nil, 0, fmt.Errorf("%s: documents[%d]: uuid must not be empty", source, index)
+				}
+				if podReadyUUID != "" && uuid != podReadyUUID {
+					return nil, 0, fmt.Errorf("%s: documents[%d]: multiple kube-burner UUIDs found in one run directory", source, index)
+				}
+				podReadyUUID = uuid
 			}
 
 			switch metricName {
 			case "podLatencyQuantilesMeasurement":
 				rows, err = appendPodLatencyQuantileRows(rows, source, document)
 			case "podLatencyMeasurement":
+				if reportPodReadyMetrics {
+					sample, sampleErr := podReadySampleDocument(document)
+					if sampleErr != nil {
+						err = sampleErr
+						break
+					}
+					if podReadySamples[sample.JobName] == nil {
+						podReadySamples[sample.JobName] = map[string]podReadySample{}
+					}
+					identity := sample.Namespace + "\x00" + sample.PodName
+					if _, duplicate := podReadySamples[sample.JobName][identity]; duplicate {
+						err = fmt.Errorf("duplicate podLatencyMeasurement for pod %s/%s", sample.Namespace, sample.PodName)
+						break
+					}
+					podReadySamples[sample.JobName][identity] = sample
+					fileHasPodReadyData = true
+				}
 				jobName, jobErr := requiredString(document, "jobName")
 				if jobErr != nil {
 					err = jobErr
@@ -103,9 +142,22 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 				}
 				launchLatencies[jobName] = append(launchLatencies[jobName], latency)
 			case "jobSummary":
-				continue
+				if !reportPodReadyMetrics {
+					continue
+				}
+				job, summaryErr := podReadyJobDocument(document)
+				if summaryErr != nil {
+					err = summaryErr
+					break
+				}
+				if _, duplicate := podReadyJobs[job.Name]; duplicate {
+					err = fmt.Errorf("duplicate jobSummary for job %s", job.Name)
+					break
+				}
+				podReadyJobs[job.Name] = job
+				fileHasPodReadyData = true
 			default:
-				if metricName == "runPodSandboxCount" || metricName == "runPodSandboxCount-start" || metricName == "runPodSandboxSum" || metricName == "runPodSandboxSum-start" {
+				if isSandboxCounterMetric(metricName) {
 					jobName, value, handler, sandboxErr := sandboxCounterDocument(document)
 					if sandboxErr != nil {
 						err = sandboxErr
@@ -133,7 +185,7 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 				return nil, 0, fmt.Errorf("%s: documents[%d]: %w", source, index, err)
 			}
 		}
-		if len(rows) > rowsBeforeFile || launchSampleCount(launchLatencies) > launchSamplesBeforeFile || fileHasSandboxCounters {
+		if len(rows) > rowsBeforeFile || launchSampleCount(launchLatencies) > launchSamplesBeforeFile || fileHasSandboxCounters || fileHasPodReadyData {
 			contributingFiles++
 		}
 	}
@@ -145,14 +197,174 @@ func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 		}
 		rows = appendPostSandboxLaunchRows(rows, "derived/post-sandbox-container-launch", jobName, values)
 	}
-	rows, err = appendRunPodSandboxRows(rows, sandboxCounters)
+	rows, err = appendRunPodSandboxRows(rows, sandboxCounters, reportPodReadyMetrics)
 	if err != nil {
 		return nil, 0, err
+	}
+	if reportPodReadyMetrics {
+		rows, err = appendPodReadyRows(rows, podReadyJobs, podReadySamples)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err := enrichPodReadyDimensions(rows, podReadyJobs); err != nil {
+			return nil, 0, err
+		}
 	}
 	if err := ValidateRows(rows); err != nil {
 		return nil, 0, err
 	}
 	return rows, contributingFiles, nil
+}
+
+type podReadyJob struct {
+	Name       string
+	Iterations int
+	QPS        string
+	Burst      int
+}
+
+type podReadySample struct {
+	JobName   string
+	Namespace string
+	PodName   string
+	Created   time.Time
+	Ready     time.Time
+}
+
+func enrichPodReadyDimensions(rows []Row, jobs map[string]podReadyJob) error {
+	for index := range rows {
+		jobName := rows[index].Dimensions["jobName"]
+		if jobName == "" {
+			jobName = rows[index].Dimensions["kubeBurner.jobName"]
+		}
+		if jobName == "" {
+			return fmt.Errorf("offered-load metric %s has no jobName", rows[index].Metric)
+		}
+		job, exists := jobs[jobName]
+		if !exists {
+			return fmt.Errorf("job %s has no matching jobSummary for metrics", jobName)
+		}
+		rows[index].Dimensions["offeredQPS"] = job.QPS
+		rows[index].Dimensions["burst"] = strconv.Itoa(job.Burst)
+	}
+	return nil
+}
+
+func podReadyJobDocument(document map[string]json.RawMessage) (podReadyJob, error) {
+	jobConfig, err := requiredObject(document, "jobConfig")
+	if err != nil {
+		return podReadyJob{}, err
+	}
+	name, err := requiredString(jobConfig, "name")
+	if err != nil {
+		return podReadyJob{}, fmt.Errorf("jobConfig.%w", err)
+	}
+	if name == "" {
+		return podReadyJob{}, fmt.Errorf("jobConfig.name must not be empty")
+	}
+	iterations, err := requiredPositiveInteger(jobConfig, "jobIterations")
+	if err != nil {
+		return podReadyJob{}, fmt.Errorf("jobConfig.%w", err)
+	}
+	qps, err := requiredNumber(jobConfig, "qps")
+	if err != nil {
+		return podReadyJob{}, fmt.Errorf("jobConfig.%w", err)
+	}
+	qpsValue, _ := strconv.ParseFloat(qps.Text, 64)
+	if qpsValue <= 0 {
+		return podReadyJob{}, fmt.Errorf("jobConfig.qps must be greater than zero")
+	}
+	burst, err := requiredPositiveInteger(jobConfig, "burst")
+	if err != nil {
+		return podReadyJob{}, fmt.Errorf("jobConfig.%w", err)
+	}
+	return podReadyJob{Name: name, Iterations: iterations, QPS: qps.Text, Burst: burst}, nil
+}
+
+func podReadySampleDocument(document map[string]json.RawMessage) (podReadySample, error) {
+	jobName, err := requiredString(document, "jobName")
+	if err != nil {
+		return podReadySample{}, err
+	}
+	namespace, err := requiredString(document, "namespace")
+	if err != nil {
+		return podReadySample{}, err
+	}
+	podName, err := requiredString(document, "podName")
+	if err != nil {
+		return podReadySample{}, err
+	}
+	if jobName == "" || namespace == "" || podName == "" {
+		return podReadySample{}, fmt.Errorf("jobName, namespace, and podName must not be empty")
+	}
+	timestamp, err := requiredString(document, "timestamp")
+	if err != nil {
+		return podReadySample{}, err
+	}
+	created, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil {
+		return podReadySample{}, fmt.Errorf("timestamp must be RFC3339: %w", err)
+	}
+	readyLatency, err := requiredNonNegativeInteger(document, "podReadyLatency")
+	if err != nil {
+		return podReadySample{}, err
+	}
+	return podReadySample{
+		JobName:   jobName,
+		Namespace: namespace,
+		PodName:   podName,
+		Created:   created,
+		Ready:     created.Add(time.Duration(readyLatency) * time.Millisecond),
+	}, nil
+}
+
+func appendPodReadyRows(rows []Row, jobs map[string]podReadyJob, samples map[string]map[string]podReadySample) ([]Row, error) {
+	if len(jobs) == 0 {
+		return nil, fmt.Errorf("pod Ready reporting requires jobSummary documents")
+	}
+	for jobName, jobSamples := range samples {
+		if _, exists := jobs[jobName]; !exists {
+			for _, sample := range jobSamples {
+				return nil, fmt.Errorf("pod %s/%s for job %s has no matching jobSummary", sample.Namespace, sample.PodName, sample.JobName)
+			}
+		}
+	}
+	jobNames := make([]string, 0, len(jobs))
+	for jobName := range jobs {
+		jobNames = append(jobNames, jobName)
+	}
+	sort.Strings(jobNames)
+	for _, jobName := range jobNames {
+		job := jobs[jobName]
+		jobSamples := samples[jobName]
+		readyCount := len(jobSamples)
+		if readyCount > job.Iterations {
+			return nil, fmt.Errorf("ready pod count %d exceeds expected pod count %d for job %s", readyCount, job.Iterations, job.Name)
+		}
+		throughput := 0.0
+		if readyCount > 0 {
+			var firstCreated, lastReady time.Time
+			for _, sample := range jobSamples {
+				if firstCreated.IsZero() || sample.Created.Before(firstCreated) {
+					firstCreated = sample.Created
+				}
+				if lastReady.IsZero() || sample.Ready.After(lastReady) {
+					lastReady = sample.Ready
+				}
+			}
+			elapsed := lastReady.Sub(firstCreated).Seconds()
+			if elapsed <= 0 {
+				return nil, fmt.Errorf("pod Ready window must be positive for job %s", job.Name)
+			}
+			throughput = float64(readyCount) / elapsed
+		}
+		dimensions := map[string]string{"jobName": job.Name, "offeredQPS": job.QPS, "burst": strconv.Itoa(job.Burst)}
+		rows = append(rows,
+			Row{Source: "derived/pod-ready", Dimensions: dimensions, Metric: "pod_ready_throughput", Value: Number{Text: strconv.FormatFloat(throughput, 'g', -1, 64)}, Unit: "pods/second"},
+			Row{Source: "derived/pod-ready", Dimensions: dimensions, Metric: "pod_ready_missing_count", Value: Number{Text: strconv.Itoa(job.Iterations - readyCount)}, Unit: "pods"},
+		)
+	}
+	return rows, nil
 }
 
 func sandboxCounterDocument(document map[string]json.RawMessage) (string, float64, string, error) {
@@ -178,7 +390,11 @@ func sandboxCounterDocument(document map[string]json.RawMessage) (string, float6
 	return jobName, parsed, handler, nil
 }
 
-func appendRunPodSandboxRows(rows []Row, counters map[string]map[string]float64) ([]Row, error) {
+func isSandboxCounterMetric(metricName string) bool {
+	return metricName == "runPodSandboxCount" || metricName == "runPodSandboxCount-start" || metricName == "runPodSandboxSum" || metricName == "runPodSandboxSum-start"
+}
+
+func appendRunPodSandboxRows(rows []Row, counters map[string]map[string]float64, allowInactiveJobs bool) ([]Row, error) {
 	activeJobs := map[string]bool{}
 	seenJobs := map[string]bool{}
 	for key, values := range counters {
@@ -217,7 +433,7 @@ func appendRunPodSandboxRows(rows []Row, counters map[string]map[string]float64)
 		)
 	}
 	for jobName := range seenJobs {
-		if !activeJobs[jobName] {
+		if !activeJobs[jobName] && !allowInactiveJobs {
 			return nil, fmt.Errorf("RunPodSandbox count delta must be positive for job %s", jobName)
 		}
 	}
@@ -405,4 +621,42 @@ func requiredNumber(document map[string]json.RawMessage, field string) (Number, 
 		return Number{}, fmt.Errorf("%s: %w", field, err)
 	}
 	return parsed, nil
+}
+
+func requiredObject(document map[string]json.RawMessage, field string) (map[string]json.RawMessage, error) {
+	encoded, ok := document[field]
+	if !ok {
+		return nil, fmt.Errorf("%s field is required", field)
+	}
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return nil, fmt.Errorf("%s must be an object: %w", field, err)
+	}
+	if value == nil {
+		return nil, fmt.Errorf("%s must be an object", field)
+	}
+	return value, nil
+}
+
+func requiredPositiveInteger(document map[string]json.RawMessage, field string) (int, error) {
+	value, err := requiredNonNegativeInteger(document, field)
+	if err != nil {
+		return 0, err
+	}
+	if value == 0 {
+		return 0, fmt.Errorf("%s must be greater than zero", field)
+	}
+	return value, nil
+}
+
+func requiredNonNegativeInteger(document map[string]json.RawMessage, field string) (int, error) {
+	value, err := requiredNumber(document, field)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.ParseInt(value.Text, 10, 64)
+	if err != nil || parsed < 0 || int64(int(parsed)) != parsed {
+		return 0, fmt.Errorf("%s must be a non-negative integer", field)
+	}
+	return int(parsed), nil
 }

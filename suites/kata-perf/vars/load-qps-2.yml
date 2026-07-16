@@ -1,0 +1,15 @@
+iterations: 20
+iterationsPerNamespace: 20
+qps: 2
+burst: 1
+cleanup: true
+waitWhenFinished: true
+preLoadImages: true
+jobPause: 1m
+metricsClosing: afterMeasurements
+workloadFile: workload-load.yml
+reportPodReadyMetrics: true
+templateVars:
+  app: kata-perf
+imageVars:
+  image: pause

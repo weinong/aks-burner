@@ -32,6 +32,9 @@ func TestKataPerfContractsValidate(t *testing.T) {
 		{"schemas/requirements.schema.json", "suites/kata-perf/requirements.yml"},
 		{"schemas/mode.schema.json", "suites/kata-perf/vars/smoke.yml"},
 		{"schemas/mode.schema.json", "suites/kata-perf/vars/full.yml"},
+		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-1.yml"},
+		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-2.yml"},
+		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-5.yml"},
 	}
 	for _, tc := range cases {
 		if err := config.ValidateYAML(filepath.Join(root, tc.schema), filepath.Join(root, tc.file)); err != nil {
@@ -60,7 +63,7 @@ func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
 	if requirements.Requires.Images != nil {
 		t.Fatal("kata-perf requirements must omit images")
 	}
-	for _, mode := range []string{"smoke", "full"} {
+	for _, mode := range []string{"smoke", "full", "load-qps-1", "load-qps-2", "load-qps-5"} {
 		var vars struct {
 			ImageVars map[string]string `yaml:"imageVars"`
 		}
@@ -69,6 +72,84 @@ func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
 		}
 		if got := vars.ImageVars["image"]; got != "pause" {
 			t.Fatalf("kata-perf %s image key = %q, want pause", mode, got)
+		}
+	}
+}
+
+func TestKataPerfExposesOfferedLoadModes(t *testing.T) {
+	matches, err := filepath.Glob(filepath.Join("..", "..", "suites", "kata-perf", "vars", "*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modes := make([]string, 0, len(matches))
+	for _, match := range matches {
+		modes = append(modes, strings.TrimSuffix(filepath.Base(match), ".yml"))
+	}
+	if got, want := modes, []string{"full", "load-qps-1", "load-qps-2", "load-qps-5", "smoke"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("kata-perf modes = %v, want %v", got, want)
+	}
+}
+
+func TestKataPerfModesRenderOfferedLoadJobs(t *testing.T) {
+	root := filepath.Join("..", "..")
+	images, err := config.LoadImages(filepath.Join(root, "config/images.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workload map[string]any
+	if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/workload-load.yml"), &workload); err != nil {
+		t.Fatal(err)
+	}
+
+	for modeName, expectedQPS := range map[string]int{"load-qps-1": 1, "load-qps-2": 2, "load-qps-5": 5} {
+		var mode run.Mode
+		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", modeName+".yml"), &mode); err != nil {
+			t.Fatal(err)
+		}
+		if !mode.ReportPodReadyMetrics {
+			t.Fatalf("kata-perf %s must report offered-load readiness metrics", modeName)
+		}
+		if got, want := mode.SelectedWorkloadFile(), "workload-load.yml"; got != want {
+			t.Fatalf("kata-perf %s workload = %q, want %q", modeName, got, want)
+		}
+		rendered, err := run.RenderWorkload(workload, mode, images, "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobs := rendered["jobs"].([]any)
+		if len(jobs) != 2 {
+			t.Fatalf("kata-perf %s rendered %d jobs, want 2", modeName, len(jobs))
+		}
+		expectedNames := []string{"startup-load-kata", "startup-load-default-runtime"}
+		expectedNamespaces := []string{"kata-perf-load-kata", "kata-perf-load-default"}
+		for index, item := range jobs {
+			job := item.(map[string]any)
+			name := job["name"]
+			if name != expectedNames[index] {
+				t.Fatalf("kata-perf %s job %d name = %#v, want %#v", modeName, index, name, expectedNames[index])
+			}
+			if got := job["namespace"]; got != expectedNamespaces[index] {
+				t.Fatalf("kata-perf %s job %v namespace = %#v, want %#v", modeName, name, got, expectedNamespaces[index])
+			}
+			for key, want := range map[string]any{
+				"gc":                     true,
+				"podWait":                false,
+				"waitWhenFinished":       true,
+				"jobIterations":          20,
+				"iterationsPerNamespace": 20,
+				"qps":                    expectedQPS,
+				"burst":                  1,
+				"jobPause":               "1m",
+				"metricsClosing":         "afterMeasurements",
+			} {
+				if got := job[key]; got != want {
+					t.Fatalf("kata-perf %s job %v %s = %#v, want %#v", modeName, name, key, got, want)
+				}
+			}
+			objects := job["objects"].([]any)
+			if len(objects) != 1 || objects[0].(map[string]any)["replicas"] != 1 {
+				t.Fatalf("kata-perf %s job %v objects = %#v, want one pod per iteration", modeName, name, objects)
+			}
 		}
 	}
 }
