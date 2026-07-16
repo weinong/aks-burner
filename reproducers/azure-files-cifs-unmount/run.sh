@@ -91,43 +91,51 @@ printf 'Kernel:       %s\n' "$("${KUBECTL[@]}" get node "$node_name" -o jsonpath
 printf 'RuntimeClass: <unset>; containerd default runtime expected\n'
 printf 'Evidence:     %s\n' "$OUTPUT_DIR"
 
-"${KUBECTL[@]}" apply -f "$SCRIPT_DIR/workload.yaml"
+for ((attempt = 1; attempt <= 10; attempt++)); do
+  printf 'Starting attempt %d of 10.\n' "$attempt"
+  "${KUBECTL[@]}" apply -f "$SCRIPT_DIR/workload.yaml"
 
-deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
-while true; do
-  ready="$(ready_status)"
-  current_bugs="$(kernel_bug_total)"
-  if [[ "$ready" != "True" ]] || (( current_bugs > baseline_bugs )); then
-    capture trigger
-    printf 'trigger observed: Ready=%s, KernelBug events=%d -> %d\n' \
-      "$ready" "$baseline_bugs" "$current_bugs" >&2
-    exit 2
+  deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+  while true; do
+    ready="$(ready_status)"
+    current_bugs="$(kernel_bug_total)"
+    if [[ "$ready" != "True" ]] || (( current_bugs > baseline_bugs )); then
+      capture "attempt-${attempt}-trigger"
+      printf 'trigger observed on attempt %d: Ready=%s, KernelBug events=%d -> %d\n' \
+        "$attempt" "$ready" "$baseline_bugs" "$current_bugs" >&2
+      exit 2
+    fi
+
+    complete="$("${KUBECTL[@]}" -n "$NAMESPACE" get jobs -l app=cifs-unmount-repro \
+      -o go-template='{{range .items}}{{range .status.conditions}}{{if and (eq .type "Complete") (eq .status "True")}}x{{"\n"}}{{end}}{{end}}{{end}}' \
+      | wc -l | tr -d '[:space:]')"
+    failed="$("${KUBECTL[@]}" -n "$NAMESPACE" get jobs -l app=cifs-unmount-repro \
+      -o go-template='{{range .items}}{{range .status.conditions}}{{if and (eq .type "Failed") (eq .status "True")}}x{{"\n"}}{{end}}{{end}}{{end}}' \
+      | wc -l | tr -d '[:space:]')"
+    (( failed == 0 )) || { capture "attempt-${attempt}-job-failure"; printf 'error: an FIO Job failed\n' >&2; exit 1; }
+    (( complete == 2 )) && break
+    (( $(date +%s) < deadline )) || { capture "attempt-${attempt}-timeout"; printf 'error: timed out waiting for FIO Jobs\n' >&2; exit 1; }
+    sleep 5
+  done
+
+  printf 'Both FIO containers exited successfully; watching CIFS teardown for %s seconds.\n' "$WATCH_SECONDS"
+  for ((elapsed = 0; elapsed < WATCH_SECONDS; elapsed += 5)); do
+    ready="$(ready_status)"
+    current_bugs="$(kernel_bug_total)"
+    if [[ "$ready" != "True" ]] || (( current_bugs > baseline_bugs )); then
+      capture "attempt-${attempt}-trigger"
+      printf 'trigger observed after FIO exit on attempt %d: Ready=%s, KernelBug events=%d -> %d\n' \
+        "$attempt" "$ready" "$baseline_bugs" "$current_bugs" >&2
+      exit 2
+    fi
+    sleep 5
+  done
+
+  capture "attempt-${attempt}-healthy"
+  if (( attempt < 10 )); then
+    "${KUBECTL[@]}" delete namespace "$NAMESPACE"
+    "${KUBECTL[@]}" wait --for=delete "namespace/${NAMESPACE}" --timeout="${TIMEOUT_SECONDS}s"
   fi
-
-  complete="$("${KUBECTL[@]}" -n "$NAMESPACE" get jobs -l app=cifs-unmount-repro \
-    -o go-template='{{range .items}}{{range .status.conditions}}{{if and (eq .type "Complete") (eq .status "True")}}x{{"\n"}}{{end}}{{end}}{{end}}' \
-    | wc -l | tr -d '[:space:]')"
-  failed="$("${KUBECTL[@]}" -n "$NAMESPACE" get jobs -l app=cifs-unmount-repro \
-    -o go-template='{{range .items}}{{range .status.conditions}}{{if and (eq .type "Failed") (eq .status "True")}}x{{"\n"}}{{end}}{{end}}{{end}}' \
-    | wc -l | tr -d '[:space:]')"
-  (( failed == 0 )) || { capture job-failure; printf 'error: an FIO Job failed\n' >&2; exit 1; }
-  (( complete == 2 )) && break
-  (( $(date +%s) < deadline )) || { capture timeout; printf 'error: timed out waiting for FIO Jobs\n' >&2; exit 1; }
-  sleep 5
 done
 
-printf 'Both FIO containers exited successfully; watching CIFS teardown for %s seconds.\n' "$WATCH_SECONDS"
-for ((elapsed = 0; elapsed < WATCH_SECONDS; elapsed += 5)); do
-  ready="$(ready_status)"
-  current_bugs="$(kernel_bug_total)"
-  if [[ "$ready" != "True" ]] || (( current_bugs > baseline_bugs )); then
-    capture trigger
-    printf 'trigger observed after FIO exit: Ready=%s, KernelBug events=%d -> %d\n' \
-      "$ready" "$baseline_bugs" "$current_bugs" >&2
-    exit 2
-  fi
-  sleep 5
-done
-
-capture healthy
-printf 'No trigger observed. Preserve %s for comparison or delete it before another run.\n' "$NAMESPACE"
+printf 'No trigger observed after 10 attempts. Preserve %s for comparison or delete it before another run.\n' "$NAMESPACE"
