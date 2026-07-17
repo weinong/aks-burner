@@ -4,9 +4,9 @@
 Kata Pod Sandboxing, and an experimental patched Kata raw-block path. Azure
 Files benchmark scenarios are disabled because they can hang Azure Linux nodes
 during CIFS unmount. The shared Azure Files results PVC remains enabled only to
-collect benchmark artifacts. This document covers the fio workloads, the full
-`fio` result from 2026-07-17, and the archived `fio-fast` result from
-2026-07-16.
+collect benchmark artifacts. This document covers the fio and Git workloads,
+the full `fio` and Git results from 2026-07-17, and the archived `fio-fast`
+result from 2026-07-16.
 
 ## Fio Modes
 
@@ -224,3 +224,84 @@ This is a smoke result, not a performance baseline:
 - Active-phase metrics omit pod startup, file preparation, raw-block setup, and
   raw-block cleanup. Compare the timing metrics separately and inspect raw
   artifacts before treating a difference as a regression or improvement.
+
+## Git Workload
+
+Run the quick blobless-clone comparison with:
+
+```bash
+TEST_SUITE=kata-io TEST_MODE=git-fast make run-suite
+```
+
+The full `git` mode clones `https://github.com/kubernetes/kubernetes` across
+the default runtime and Kata on `emptyDir` and Azure Disk filesystem, plus
+patched Kata on Azure Disk raw block. It tests ordinary full clones and
+blobless clones using `git clone --filter=blob:none`, at requested Kubernetes
+concurrency levels 1 and 10.
+
+`run-git-clone.sh` creates a sample-specific work directory and retains Git
+stdout and stderr, `/usr/bin/time` output, Git Trace2 event and performance
+logs, process-I/O and filesystem snapshots, and tool versions. Its normalized
+metrics are:
+
+| Metric | Meaning |
+| --- | --- |
+| `clone_duration` | Wall time covering pre-clone process-I/O and filesystem snapshots and the `git clone` command. It excludes pod startup, PVC provisioning, and raw-block setup. |
+| `repository_size` | Size of the resulting checkout in bytes, including `.git`, as reported by `du -sb`. |
+| `file_count` | Number of regular files in the resulting checkout, including files under `.git`. |
+| `block_setup_duration` | Time to create `/work`, format, mount, and sync the raw-block device before cloning. It is zero for non-block jobs and excluded from `clone_duration`. |
+| `exit_code` | Git's process exit status; zero means the clone completed successfully. |
+
+## Full Git Result: 2026-07-17T21:10:34Z
+
+Source:
+`results/2026-07-17T21-10-34.801409595Z_kata-io_git/summary/results.csv`
+
+The run completed all 20 requested scenario/concurrency groups. It produced all
+110 expected Git samples, one per configuration and clone mode at concurrency
+1 and ten at concurrency 10; all 110 Git processes exited successfully.
+
+The table reports the median and observed minimum-maximum clone duration across
+the ten concurrency-10 pods. The configurations are tested end-to-end
+capability paths and are not necessarily like-for-like: patched Kata uses an
+Azure Disk raw-block PVC on a separate, identically configured node pool, while
+the other configurations use `emptyDir` or an Azure Disk filesystem PVC on the
+baseline pool. Each range shows pod-to-pod behavior within one shared-load job,
+not variation across independent benchmark runs.
+
+| Runtime and storage | Blobless clone median (range) | Full clone median (range) |
+| --- | ---: | ---: |
+| Default runtime, `emptyDir` | 28.42 s (24.98-30.28) | 137.12 s (117.76-151.23) |
+| Default runtime, Azure Disk filesystem | 28.54 s (24.16-32.32) | 140.84 s (114.47-156.10) |
+| Kata, `emptyDir` | 88.54 s (78.99-96.65) | 269.61 s (245.96-280.76) |
+| Kata, Azure Disk filesystem | 87.64 s (77.93-93.47) | 264.03 s (245.88-279.97) |
+| Patched Kata, Azure Disk raw block | 30.46 s (29.39-31.11) | 121.44 s (115.28-129.35) |
+
+### Findings
+
+- On matching storage paths, Kata's concurrency-10 median was 3.07-3.12 times
+  the default runtime's median for blobless clones and 1.87-1.97 times the
+  default runtime's median for full clones.
+- `emptyDir` and Azure Disk filesystem clone medians were close within each
+  runtime and clone mode. The largest difference between those two storage
+  paths was 5.58 seconds, for Kata full clones.
+- Patched Kata raw block recorded the lowest full-clone median at 121.44
+  seconds. Its 30.46-second blobless median was close to the 28.42-28.54-second
+  default-runtime medians. These results cannot isolate the patch or runtime
+  because the raw-block storage path also differs.
+- Raw-block preparation had a 26.92-second median and 21.44-29.28-second range
+  for blobless clones, and a 33.88-second median and 26.78-38.16-second range
+  for full clones. Adding each sample's setup and clone durations produced
+  medians of 57.62 and 157.52 seconds, respectively; these sums still exclude
+  PVC provisioning and pod startup.
+- Across concurrency-10 samples, blobless checkouts had a 579.19 decimal MB
+  median size versus 1.637 decimal GB for full checkouts, a 64.6% reduction.
+  Blobless samples contained 30,880 regular files and full samples contained
+  30,875; both counts include `.git`.
+- Concurrency-1 groups have one sample each and are omitted from the table. The
+  concurrency-10 pods share cluster, storage, and upstream network load and are
+  not independent reruns. Node placement, caching, GitHub service conditions,
+  separate pool state, and transient network or storage behavior can affect the
+  results. The suite clones the repository's unpinned default branch, so its
+  source revision can also change between groups or runs. Repeat the suite
+  before treating these results as a durable baseline.
