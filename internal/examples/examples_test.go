@@ -1108,6 +1108,34 @@ func TestKataIOShimPatchDaemonSetContract(t *testing.T) {
 	}
 }
 
+func TestKataIOResultsPVCUsesAzureFilesOnlyForArtifacts(t *testing.T) {
+	root := filepath.Join("..", "..", "suites", "kata-io")
+	data, err := os.ReadFile(filepath.Join(root, "setup", "results-pvc.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pvc struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+		Spec struct {
+			AccessModes      []string `yaml:"accessModes"`
+			StorageClassName string   `yaml:"storageClassName"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(data, &pvc); err != nil {
+		t.Fatal(err)
+	}
+	if pvc.Kind != "PersistentVolumeClaim" || pvc.Metadata.Name != "kata-io-results" || pvc.Metadata.Namespace != "kata-io" {
+		t.Fatalf("results PVC identity = %#v", pvc)
+	}
+	if !reflect.DeepEqual(pvc.Spec.AccessModes, []string{"ReadWriteMany"}) || pvc.Spec.StorageClassName != "azurefile-csi" {
+		t.Fatalf("results PVC storage = %#v, want azurefile-csi ReadWriteMany", pvc.Spec)
+	}
+}
+
 func TestKataIOShimReadinessMigrationDocumentation(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	if err != nil {
@@ -1323,6 +1351,14 @@ func TestKataIOMergeReadyContracts(t *testing.T) {
 		}
 		if doc.TemplateVars["resultsStorageClass"] != nil || doc.TemplateVars["resultsVolumeSize"] != nil {
 			t.Fatalf("%s must not define results PVC vars because setup/results-pvc.yml is static", mode)
+		}
+		if doc.TemplateVars["azureFilesStorageClass"] != nil {
+			t.Fatalf("%s must not define Azure Files benchmark vars", mode)
+		}
+		for _, forbidden := range []string{"azureFilesStorageClass", "azurefile-csi", "storage-azure-files"} {
+			if strings.Contains(string(data), forbidden) {
+				t.Fatalf("%s contains disabled Azure Files benchmark reference %q", mode, forbidden)
+			}
 		}
 		if asString(doc.TemplateVars["k8sRunID"]) == "" || !strings.Contains(asString(doc.TemplateVars["k8sRunID"]), "{{.runTimestampDNS}}") {
 			t.Fatalf("%s k8sRunID must contain {{.runTimestampDNS}}", mode)
@@ -1559,10 +1595,9 @@ func kataIOWorkloadFiles(t *testing.T) []string {
 }
 
 func TestKataIOFioWorkloadCoversActiveScenarios(t *testing.T) {
-	assertKataIOActiveWorkloadScenarios(t, "workload-fio.yml", 70, map[string]int{
+	assertKataIOActiveWorkloadScenarios(t, "workload-fio.yml", 50, map[string]int{
 		"storage-emptydir":         20,
 		"storage-azure-disk":       20,
-		"storage-azure-files":      20,
 		"storage-azure-disk-block": 10,
 	}, map[string]bool{
 		"runtime-kata-patched-storage-azure-disk-block-fio-randread-4k-concurrency-1":   true,
@@ -1576,6 +1611,20 @@ func TestKataIOFioWorkloadCoversActiveScenarios(t *testing.T) {
 		"runtime-kata-patched-storage-azure-disk-block-fio-seqwrite-concurrency-10":     true,
 		"runtime-kata-patched-storage-azure-disk-block-fio-fsync-heavy-concurrency-10":  true,
 	})
+}
+
+func TestKataIOWorkloadsDisableAzureFiles(t *testing.T) {
+	for _, workloadFile := range kataIOWorkloadFiles(t) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", workloadFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"storage-azure-files", "azurefile-csi"} {
+			if strings.Contains(string(data), forbidden) {
+				t.Errorf("%s contains disabled Azure Files reference %q", workloadFile, forbidden)
+			}
+		}
+	}
 }
 
 func TestKataIOFioFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
@@ -1606,12 +1655,6 @@ func TestKataIOFioFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
 		},
 		"runtime-kata-patched-storage-azure-disk-block-fio-fsync-heavy-concurrency-1": {
 			"runtime-kata-patched", "storage-azure-disk-block", "fsync-heavy", "templates/fio-block-kata-job.yml", "templates/work-block-pvc.yml", "managed-csi", "",
-		},
-		"runtime-standard-storage-azure-files-fio-randread-4k-concurrency-1": {
-			"runtime-standard", "storage-azure-files", "randread-4k", "templates/fio-pvc-standard-job.yml", "templates/work-pvc.yml", "azurefile-csi", "ReadWriteMany",
-		},
-		"runtime-kata-storage-azure-files-fio-randread-4k-concurrency-1": {
-			"runtime-kata", "storage-azure-files", "randread-4k", "templates/fio-pvc-kata-job.yml", "templates/work-pvc.yml", "azurefile-csi", "ReadWriteMany",
 		},
 	}
 
@@ -1750,10 +1793,9 @@ func TestKataIOFioFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
 }
 
 func TestKataIOGitWorkloadCoversActiveScenarios(t *testing.T) {
-	assertKataIOActiveWorkloadScenarios(t, "workload-git.yml", 28, map[string]int{
+	assertKataIOActiveWorkloadScenarios(t, "workload-git.yml", 20, map[string]int{
 		"storage-emptydir":         8,
 		"storage-azure-disk":       8,
-		"storage-azure-files":      8,
 		"storage-azure-disk-block": 4,
 	}, map[string]bool{
 		"runtime-kata-patched-storage-azure-disk-block-git-full-concurrency-1":      true,
@@ -1802,7 +1844,7 @@ func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, want
 	}
 	expectedFilesystem := map[string]bool{}
 	for _, runtime := range []string{"standard", "kata"} {
-		for _, storage := range []string{"emptydir", "azure-disk", "azure-files"} {
+		for _, storage := range []string{"emptydir", "azure-disk"} {
 			for _, concurrency := range []string{"1", "10"} {
 				for _, profile := range profiles {
 					expectedFilesystem["runtime-"+runtime+"-storage-"+storage+"-"+workloadType+"-"+profile+"-concurrency-"+concurrency] = true
@@ -1907,17 +1949,11 @@ func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, want
 			if workPVCInputVars == nil {
 				t.Fatalf("PVC scenario %s missing work-pvc object", scenario)
 			}
-			wantClass := "managed-csi"
-			wantAccessMode := "ReadWriteOnce"
-			if storage == "storage-azure-files" {
-				wantClass = "azurefile-csi"
-				wantAccessMode = "ReadWriteMany"
+			if got := asString(workPVCInputVars["workStorageClass"]); got != "managed-csi" {
+				t.Fatalf("scenario %s workStorageClass = %q, want managed-csi", scenario, got)
 			}
-			if got := asString(workPVCInputVars["workStorageClass"]); got != wantClass {
-				t.Fatalf("scenario %s workStorageClass = %q, want %q", scenario, got, wantClass)
-			}
-			if got := asString(workPVCInputVars["workAccessMode"]); got != wantAccessMode {
-				t.Fatalf("scenario %s workAccessMode = %q, want %q", scenario, got, wantAccessMode)
+			if got := asString(workPVCInputVars["workAccessMode"]); got != "ReadWriteOnce" {
+				t.Fatalf("scenario %s workAccessMode = %q, want ReadWriteOnce", scenario, got)
 			}
 		}
 		runtimeName := strings.TrimPrefix(runtime, "runtime-")

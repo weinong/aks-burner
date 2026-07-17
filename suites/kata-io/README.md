@@ -1,9 +1,11 @@
 # Kata I/O Suite
 
 `kata-io` compares fio and Git workloads across the default container runtime,
-Kata Pod Sandboxing, and an experimental patched Kata raw-block path. This
-document covers the fio workloads and the archived `fio-fast` result from
-2026-07-16.
+Kata Pod Sandboxing, and an experimental patched Kata raw-block path. Azure
+Files benchmark scenarios are disabled because they can hang Azure Linux nodes
+during CIFS unmount. The shared Azure Files results PVC remains enabled only to
+collect benchmark artifacts. This document covers the fio workloads and the
+archived `fio-fast` result from 2026-07-16.
 
 ## Fio Modes
 
@@ -13,14 +15,15 @@ Run the quick smoke comparison with:
 TEST_SUITE=kata-io TEST_MODE=fio-fast make run-suite
 ```
 
-The current `workload-fio-fast.yml` runs two `randread-4k` samples at
-concurrency 1: default runtime and Kata, both using `emptyDir`. The archived
-result discussed below contains a different eight-sample matrix, so it should
-not be treated as output from the current file.
+The current `workload-fio-fast.yml` runs six concurrency-1 samples: default and
+Kata runtimes on Azure Disk for `seqread` and `fsync-heavy`, plus patched Kata
+on Azure Disk raw block for those profiles. The archived result discussed below
+contains a different eight-sample matrix, so it should not be treated as output
+from the current file.
 
-The full `fio` mode covers five profiles on `emptyDir`, Azure Disk, and Azure
-Files for the default and Kata runtimes, plus Azure Disk raw block for patched
-Kata. It requests Kubernetes concurrency levels 1 and 10. See
+The full `fio` mode covers five profiles on `emptyDir` and Azure Disk for the
+default and Kata runtimes, plus Azure Disk raw block for patched Kata. It
+requests Kubernetes concurrency levels 1 and 10. See
 `workload-fio.yml` for the authoritative matrix.
 
 Here, `concurrency` is the number of Kubernetes Job iterations requested by the
@@ -51,7 +54,6 @@ The matrix uses these distinct paths:
 
 - `storage-emptydir` uses pod-local `emptyDir` storage.
 - `storage-azure-disk` uses a `managed-csi` filesystem PVC.
-- `storage-azure-files` uses an `azurefile-csi` `ReadWriteMany` filesystem PVC.
 - `storage-azure-disk-block` gives patched Kata a raw `managed-csi` PVC. The
   wrapper formats it as ext4, mounts it at `/work`, and syncs it before fio.
 
@@ -84,7 +86,8 @@ profile. Those zeros are not storage-performance measurements.
 Source:
 `results/2026-07-16T16-10-10.731181891Z_kata-io_fio-fast/summary/results.csv`
 
-The archived run has one concurrency-1 sample for each of eight scenarios: the
+The archived run predates the Azure Files disablement and has one concurrency-1
+sample for each of eight scenarios: the
 default and Kata runtimes on Azure Disk filesystem for `seqread` and
 `fsync-heavy`, patched Kata on Azure Disk raw block for those profiles, and the
 default and Kata runtimes on Azure Files for `randread-4k`. All eight fio

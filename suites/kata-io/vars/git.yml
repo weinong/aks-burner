@@ -13,7 +13,6 @@ templateVars:
   repoURL: https://github.com/kubernetes/kubernetes
   kataRuntimeClassName: kata-vm-isolation
   azureDiskStorageClass: managed-csi
-  azureFilesStorageClass: azurefile-csi
   workVolumeSize: 128Gi
 imageVars:
   benchmarkImage: benchmark
