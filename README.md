@@ -107,6 +107,8 @@ When Prometheus is `required` and `install: true`, `run-suite` installs Promethe
 
 `kata-io` provisions two Kata workload pools: an unpatched baseline pool for filesystem-backed storage scenarios and a patched pool for raw-block Azure Disk scenarios. Patched nodes start with a `perf.azure.com/kata-shim-patch=pending:NoSchedule` taint, so raw-block jobs cannot schedule until the setup DaemonSet verifies and atomically installs the exact experimental `/usr/local/bin/containerd-shim-kata-v2` binary. The DaemonSet preserves and verifies the shim's numeric mode, UID, and GID, removes only its own exact readiness taint through a least-privilege node `get`/`patch` service account, then sleeps without host access. Every `run-suite` restarts the DaemonSet to rerun init verification on every patched node. The patch remains idempotent and does not restart containerd. Raw-block results use the `storage-azure-disk-block` storage dimension and `runtime-kata-patched` runtime dimension.
 
+Every `kata-io` mode disables kube-burner result reporting, Prometheus, and kube-state-metrics. Its `summary/results.csv` files contain only FIO or Git benchmark rows read from artifact `summary.json` files.
+
 The benchmark image pins the Ubuntu 24.04 base image digest. Apt package versions remain unpinned because no repository snapshot is configured; each fio and Git sample records `fio`, `git`, `mkfs.ext4`, and `mount` versions in `tool-versions.txt` beside its summary and raw artifacts.
 
 The default infrastructure uses one `Standard_D4s_v5` system node, four `Standard_D8s_v5` baseline Kata nodes, and four `Standard_D8s_v5` patched Kata nodes. Ensure the target region has sufficient DSv5-family quota before provisioning; any quota increase is an external prerequisite.
@@ -115,15 +117,16 @@ The default infrastructure uses one `Standard_D4s_v5` system node, four `Standar
 
 ## Test Results
 
-Every successful `run-suite` invocation must produce at least one valid measurement. The runner writes all normalized measurements to `summary/results.csv` and prints a preview of at most 10 rows:
+Every successful `run-suite` invocation must produce at least one valid measurement. The runner writes all normalized measurements to `summary/results.csv` and prints a preview of at most 10 rows (eight are elided from this example):
 
 ```text
 Test results: kata-io / fio-fast / 2026-07-11T00:00:00Z
-Sources: 2  Measurements: 20
-source                                      runtime  storage   workload  metric       value   unit
-artifacts/fio/example/summary.json          kata     emptydir  fio       read_iops    104113  operations/second
-raw/metrics/podLatencyQuantilesMeasurement.json                         pod_latency_p50  2897  milliseconds
-10 additional rows omitted
+Sources: 2  Measurements: 22
+source                                      runtime  storage   workload  metric          value   unit
+artifacts/fio/example/summary.json          kata     emptydir  fio       read_iops       104113  operations/second
+artifacts/fio/example/summary.json          kata     emptydir  fio       read_bandwidth  426449  bytes/second
+...
+12 additional rows omitted
 Results CSV: results/RUN_DIRECTORY/summary/results.csv
 ```
 

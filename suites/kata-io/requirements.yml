@@ -59,54 +59,17 @@ requires:
   reporting:
     sources:
       standardSummary: true
-      kubeBurner: true
-    prometheusMetricUnits:
-      podCPUUsage: cores
-      podMemoryWorkingSet: bytes
-      containerFsReadBytes: bytes
-      containerFsWriteBytes: bytes
-      containerFsIoTime: seconds
-      containerNetworkReceiveBytes: bytes
-      containerNetworkTransmitBytes: bytes
-      kubePodCreated: unix_seconds
-      kubePodScheduledTime: unix_seconds
-      kubePodInitializedTime: unix_seconds
-      kubePodContainerStarted: unix_seconds
-      kubePodReadyTime: unix_seconds
-      kubePodRuntimeClass: info
-      runPodSandboxP95: seconds
-      runPodSandboxP99: seconds
-      podStartTotalP95: seconds
+      kubeBurner: false
+    prometheusMetricUnits: {}
   observability:
     prometheus:
-      required: true
-      install: true
+      required: false
+      install: false
       namespace: perf-monitoring
       imageKey: prometheus
       serviceName: prometheus
       servicePort: 9090
       localPort: 9090
-      requiredMetrics:
-        - container_cpu_usage_seconds_total
-        - container_memory_working_set_bytes
-        - container_fs_reads_bytes_total
-        - container_fs_writes_bytes_total
-        - container_network_receive_bytes_total
-        - container_network_transmit_bytes_total
-    kubeStateMetrics:
-      required: true
-      install: true
-      namespace: perf-monitoring
-      imageKey: kube-state-metrics
-      serviceName: kube-state-metrics
-      servicePort: 8080
-      requiredMetrics:
-        - kube_pod_created
-        - kube_pod_status_scheduled_time
-        - kube_pod_status_initialized_time
-        - kube_pod_container_state_started
-        - kube_pod_status_ready_time
-        - kube_pod_runtimeclass_name_info
   artifacts:
     enabled: true
     namespace: kata-io

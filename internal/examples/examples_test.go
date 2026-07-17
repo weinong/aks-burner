@@ -1441,32 +1441,30 @@ func TestKataIOModesPreserveResultsForArtifactCopy(t *testing.T) {
 	}
 }
 
-func TestKataIOMetricsDoNotUseUnsupportedNodeExporterDiskMetrics(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "metrics.yml"))
+func TestKataIOReportsArtifactSummariesOnly(t *testing.T) {
+	root := filepath.Join("..", "..")
+	doc, err := requirements.Load(root, "kata-io")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var metrics []struct {
-		Query      string `yaml:"query"`
-		MetricName string `yaml:"metricName"`
+	if !doc.Requires.Reporting.Sources.StandardSummary || doc.Requires.Reporting.Sources.KubeBurner {
+		t.Fatalf("kata-io reporting sources = %#v, want artifact summaries only", doc.Requires.Reporting.Sources)
 	}
-	if err := yaml.Unmarshal(data, &metrics); err != nil {
-		t.Fatal(err)
+	if len(doc.Requires.Reporting.PrometheusMetricUnits) != 0 {
+		t.Fatalf("kata-io Prometheus metric units = %#v, want none", doc.Requires.Reporting.PrometheusMetricUnits)
 	}
-	for _, metric := range metrics {
-		if strings.Contains(metric.Query, "node_disk_") {
-			t.Fatalf("metrics.yml contains unsupported node-exporter disk query for %s: %s", metric.MetricName, metric.Query)
-		}
+	if cfg := doc.Requires.Observability.Prometheus; cfg.Required || cfg.Install {
+		t.Fatalf("kata-io Prometheus = %#v, want disabled", cfg)
 	}
-}
-
-func TestKataIOMetricsUseValidElapsedDurationTemplate(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "metrics.yml"))
+	if cfg := doc.Requires.Observability.KubeStateMetrics; cfg.Required || cfg.Install {
+		t.Fatalf("kata-io kube-state-metrics = %#v, want disabled", cfg)
+	}
+	metricNames, err := reporting.PrometheusMetricNames(filepath.Join(root, "suites", "kata-io", "metrics.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "{{ .elapsed }}s") {
-		t.Fatalf("metrics.yml must not append an extra s to .elapsed; kube-burner already renders a duration with units")
+	if len(metricNames) != 0 {
+		t.Fatalf("kata-io Prometheus metrics = %v, want none", metricNames)
 	}
 }
 
