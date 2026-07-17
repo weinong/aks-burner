@@ -541,7 +541,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err != nil {
 		return err
 	}
-	if err := config.LoadYAML(workloadFile, &workload); err != nil {
+	if err := config.LoadTemplateYAML(workloadFile, mode.TemplateVars, &workload); err != nil {
 		return err
 	}
 	metricNames, err := reporting.PrometheusMetricNames(filepath.Join(suiteDir, "metrics.yml"))

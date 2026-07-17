@@ -1,3 +1,4 @@
+{{- $runtimes := list (dict "name" "standard" "short" "std") (dict "name" "kata" "short" "kata") -}}
 jobs:
 - name: kio-clean-jobs
   jobType: delete
@@ -63,7 +64,8 @@ jobs:
     replicas: 1
     inputVars:
       jobName: '{{.k8sRunID}}-preload-patchpool'
-- name: kio-smoke-3
+{{ range $runtime := $runtimes }}
+- name: kio-fast-git-{{ $runtime.name }}
   jobType: create
   namespace: kata-io
   namespacedIterations: false
@@ -74,34 +76,14 @@ jobs:
   waitWhenFinished: true
   preLoadImages: false
   objects:
-  - objectTemplate: templates/git-emptydir-standard-job.yml
+  - objectTemplate: templates/git-emptydir-{{ $runtime.name }}-job.yml
     replicas: 1
     inputVars:
-      jobName: '{{.k8sRunID}}-std-ed-git-bl'
-      scenario: runtime-standard-storage-emptydir-git-blobless-concurrency-1
-      runtime: runtime-standard
+      jobName: '{{ $.k8sRunID }}-{{ $runtime.short }}-ed-git-bl'
+      scenario: runtime-{{ $runtime.name }}-storage-emptydir-git-blobless-concurrency-1
+      runtime: runtime-{{ $runtime.name }}
       storageType: storage-emptydir
       workloadType: git
       cloneMode: blobless
       concurrency: '1'
-- name: kio-smoke-4
-  jobType: create
-  namespace: kata-io
-  namespacedIterations: false
-  jobIterations: 1
-  qps: 1
-  burst: 1
-  cleanup: true
-  waitWhenFinished: true
-  preLoadImages: false
-  objects:
-  - objectTemplate: templates/git-emptydir-kata-job.yml
-    replicas: 1
-    inputVars:
-      jobName: '{{.k8sRunID}}-kata-ed-git-bl'
-      scenario: runtime-kata-storage-emptydir-git-blobless-concurrency-1
-      runtime: runtime-kata
-      storageType: storage-emptydir
-      workloadType: git
-      cloneMode: blobless
-      concurrency: '1'
+{{ end -}}

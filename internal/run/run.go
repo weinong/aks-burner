@@ -141,7 +141,7 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 			for key, value := range templateVars {
 				inputVars[key] = value
 			}
-			renderInputVarPlaceholders(inputVars, templateVars)
+			renderInputVarPlaceholders(inputVars, templateVars, runTimestamp)
 			for key, imageKey := range mode.ImageVars {
 				image, ok := images[imageKey]
 				if !ok || image == "" {
@@ -154,7 +154,7 @@ func RenderWorkload(workload map[string]any, mode Mode, images map[string]string
 	return rendered, nil
 }
 
-func renderInputVarPlaceholders(inputVars map[string]any, templateVars map[string]any) {
+func renderInputVarPlaceholders(inputVars map[string]any, templateVars map[string]any, timestamp time.Time) {
 	for key, value := range inputVars {
 		text, ok := value.(string)
 		if !ok {
@@ -167,7 +167,7 @@ func renderInputVarPlaceholders(inputVars map[string]any, templateVars map[strin
 			}
 			text = strings.ReplaceAll(text, "{{."+templateKey+"}}", templateText)
 		}
-		inputVars[key] = text
+		inputVars[key] = replaceTimestampPlaceholders(text, timestamp)
 	}
 }
 
@@ -179,11 +179,16 @@ func renderTemplateVars(vars map[string]any, timestamp time.Time) map[string]any
 			rendered[key] = value
 			continue
 		}
-		text = strings.ReplaceAll(text, "{{.runTimestamp}}", timestamp.UTC().Format("20060102T150405.000000000Z"))
-		text = strings.ReplaceAll(text, "{{.runTimestampDNS}}", timestamp.UTC().Format("20060102t150405")+fmt.Sprintf("%09d", timestamp.UTC().Nanosecond()))
+		text = replaceTimestampPlaceholders(text, timestamp)
 		rendered[key] = text
 	}
 	return rendered
+}
+
+func replaceTimestampPlaceholders(text string, timestamp time.Time) string {
+	timestamp = timestamp.UTC()
+	text = strings.ReplaceAll(text, "{{.runTimestamp}}", timestamp.Format("20060102T150405.000000000Z"))
+	return strings.ReplaceAll(text, "{{.runTimestampDNS}}", timestamp.Format("20060102t150405")+fmt.Sprintf("%09d", timestamp.Nanosecond()))
 }
 
 func CreateRunDir(suiteName string, mode string, timestamp time.Time) (string, error) {

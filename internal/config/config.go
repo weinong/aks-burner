@@ -1,10 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"text/template"
 
+	"github.com/Masterminds/sprig/v3"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +18,25 @@ func LoadYAML(path string, out any) error {
 		return err
 	}
 	return yaml.Unmarshal(data, out)
+}
+
+func LoadTemplateYAML(path string, data any, out any) error {
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	parsed, err := template.New(filepath.Base(path)).Option("missingkey=error").Funcs(sprig.TxtFuncMap()).Parse(string(source))
+	if err != nil {
+		return fmt.Errorf("parse template %s: %w", path, err)
+	}
+	var rendered bytes.Buffer
+	if err := parsed.Execute(&rendered, data); err != nil {
+		return fmt.Errorf("render template %s: %w", path, err)
+	}
+	if err := yaml.Unmarshal(rendered.Bytes(), out); err != nil {
+		return fmt.Errorf("decode rendered template %s: %w", path, err)
+	}
+	return nil
 }
 
 func WriteYAML(path string, value any) error {

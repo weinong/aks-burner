@@ -1383,10 +1383,6 @@ func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
 	}
 	for _, workloadFile := range workloads {
 		t.Run(workloadFile, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", workloadFile))
-			if err != nil {
-				t.Fatal(err)
-			}
 			var workload struct {
 				Jobs []struct {
 					Name            string `yaml:"name"`
@@ -1401,9 +1397,7 @@ func TestKataIOWorkloadsCleanPreviousPodsAndWorkPVCs(t *testing.T) {
 					} `yaml:"objects"`
 				} `yaml:"jobs"`
 			}
-			if err := yaml.Unmarshal(data, &workload); err != nil {
-				t.Fatal(err)
-			}
+			loadKataIOWorkload(t, workloadFile, &workload)
 			var cleanupOrder []string
 			for _, job := range workload.Jobs {
 				if job.Namespace == "kata-io" && (job.NamespacedIters == nil || *job.NamespacedIters) {
@@ -1489,10 +1483,6 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 	}
 	for _, workloadFile := range []string{"workload-fio-fast.yml", "workload-git-fast.yml", "workload-fio.yml", "workload-git.yml"} {
 		t.Run(workloadFile, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", workloadFile))
-			if err != nil {
-				t.Fatal(err)
-			}
 			var workload struct {
 				Jobs []struct {
 					Name          string `yaml:"name"`
@@ -1506,9 +1496,7 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 					} `yaml:"objects"`
 				} `yaml:"jobs"`
 			}
-			if err := yaml.Unmarshal(data, &workload); err != nil {
-				t.Fatal(err)
-			}
+			loadKataIOWorkload(t, workloadFile, &workload)
 
 			preloadJobs := 0
 			seenBenchmark := false
@@ -1594,6 +1582,14 @@ func kataIOWorkloadFiles(t *testing.T) []string {
 	return files
 }
 
+func loadKataIOWorkload(t *testing.T, workloadFile string, out any) {
+	t.Helper()
+	path := filepath.Join("..", "..", "suites", "kata-io", workloadFile)
+	if err := config.LoadTemplateYAML(path, map[string]any{"k8sRunID": "{{.k8sRunID}}"}, out); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestKataIOFioWorkloadCoversActiveScenarios(t *testing.T) {
 	assertKataIOActiveWorkloadScenarios(t, "workload-fio.yml", 50, map[string]int{
 		"storage-emptydir":         20,
@@ -1658,10 +1654,6 @@ func TestKataIOFioFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
 		},
 	}
 
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "workload-fio-fast.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var workload struct {
 		Jobs []struct {
 			Name           string `yaml:"name"`
@@ -1678,9 +1670,7 @@ func TestKataIOFioFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
 			} `yaml:"objects"`
 		} `yaml:"jobs"`
 	}
-	if err := yaml.Unmarshal(data, &workload); err != nil {
-		t.Fatal(err)
-	}
+	loadKataIOWorkload(t, "workload-fio-fast.yml", &workload)
 
 	seenScenarios := map[string]bool{}
 	seenResourceNames := map[string]string{}
@@ -1792,6 +1782,59 @@ func TestKataIOFioFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
 	}
 }
 
+func TestKataIOGitFastWorkloadCoversPerformanceSmokeScenarios(t *testing.T) {
+	var workload struct {
+		Jobs []struct {
+			Name          string `yaml:"name"`
+			JobIterations int    `yaml:"jobIterations"`
+			QPS           int    `yaml:"qps"`
+			Burst         int    `yaml:"burst"`
+			Cleanup       bool   `yaml:"cleanup"`
+			WaitFinished  bool   `yaml:"waitWhenFinished"`
+			PreLoadImages *bool  `yaml:"preLoadImages"`
+			Objects       []struct {
+				ObjectTemplate string         `yaml:"objectTemplate"`
+				InputVars      map[string]any `yaml:"inputVars"`
+			} `yaml:"objects"`
+		} `yaml:"jobs"`
+	}
+	loadKataIOWorkload(t, "workload-git-fast.yml", &workload)
+
+	expected := map[string]string{
+		"runtime-standard-storage-emptydir-git-blobless-concurrency-1": "templates/git-emptydir-standard-job.yml",
+		"runtime-kata-storage-emptydir-git-blobless-concurrency-1":     "templates/git-emptydir-kata-job.yml",
+	}
+	found := map[string]bool{}
+	for _, job := range workload.Jobs {
+		for _, object := range job.Objects {
+			scenario, benchmark := object.InputVars["scenario"].(string)
+			if !benchmark {
+				continue
+			}
+			wantTemplate, ok := expected[scenario]
+			if !ok {
+				t.Fatalf("unexpected Git-fast scenario %q", scenario)
+			}
+			if found[scenario] {
+				t.Fatalf("duplicate Git-fast scenario %q", scenario)
+			}
+			found[scenario] = true
+			if object.ObjectTemplate != wantTemplate {
+				t.Fatalf("scenario %s template = %q, want %q", scenario, object.ObjectTemplate, wantTemplate)
+			}
+			if job.JobIterations != 1 || job.QPS != 1 || job.Burst != 1 || !job.Cleanup || !job.WaitFinished || job.PreLoadImages == nil || *job.PreLoadImages {
+				t.Fatalf("scenario %s job settings = %#v", scenario, job)
+			}
+			if len(job.Objects) != 1 {
+				t.Fatalf("scenario %s objects = %d, want 1", scenario, len(job.Objects))
+			}
+		}
+	}
+	if len(found) != len(expected) {
+		t.Fatalf("Git-fast scenarios = %#v, want %#v", found, expected)
+	}
+}
+
 func TestKataIOGitWorkloadCoversActiveScenarios(t *testing.T) {
 	assertKataIOActiveWorkloadScenarios(t, "workload-git.yml", 20, map[string]int{
 		"storage-emptydir":         8,
@@ -1814,10 +1857,6 @@ func TestKataIOObsoleteFullWorkloadRemoved(t *testing.T) {
 
 func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, wantTotal int, wantStorageCounts map[string]int, expectedBlock map[string]bool) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", workloadFile))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var workload struct {
 		Jobs []struct {
 			Name          string `yaml:"name"`
@@ -1833,9 +1872,7 @@ func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, want
 			} `yaml:"objects"`
 		} `yaml:"jobs"`
 	}
-	if err := yaml.Unmarshal(data, &workload); err != nil {
-		t.Fatal(err)
-	}
+	loadKataIOWorkload(t, workloadFile, &workload)
 
 	workloadType := strings.TrimSuffix(strings.TrimPrefix(workloadFile, "workload-"), ".yml")
 	profiles := []string{"full", "blobless"}
@@ -1857,23 +1894,28 @@ func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, want
 	storageCounts := map[string]int{}
 	blockJobNames := map[string]string{}
 	foundBlock := map[string]bool{}
+	resourceNames := map[string]string{}
 	seenBlock := false
 	for _, job := range workload.Jobs {
 		var mainObjectTemplate string
 		var mainInputVars map[string]any
+		mainObjectIndex := -1
 		var workPVCInputVars map[string]any
 		var workPVCObjectTemplate string
 		var workPVCReplicas int
-		for _, object := range job.Objects {
+		workPVCObjectIndex := -1
+		for objectIndex, object := range job.Objects {
 			if object.ObjectTemplate == "templates/work-pvc.yml" || object.ObjectTemplate == "templates/work-block-pvc.yml" {
 				workPVCInputVars = object.InputVars
 				workPVCObjectTemplate = object.ObjectTemplate
 				workPVCReplicas = object.Replicas
+				workPVCObjectIndex = objectIndex
 				continue
 			}
 			if scenario, ok := object.InputVars["scenario"].(string); ok {
 				mainObjectTemplate = object.ObjectTemplate
 				mainInputVars = object.InputVars
+				mainObjectIndex = objectIndex
 				if found[scenario] {
 					t.Fatalf("%s contains duplicate scenario %q", workloadFile, scenario)
 				}
@@ -1894,6 +1936,26 @@ func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, want
 		}
 		if job.JobIterations != wantIterations || job.QPS != wantIterations || job.Burst != wantIterations {
 			t.Fatalf("job %s for %s has jobIterations/qps/burst = %d/%d/%d, want %d/%d/%d", job.Name, scenario, job.JobIterations, job.QPS, job.Burst, wantIterations, wantIterations, wantIterations)
+		}
+		if !job.Cleanup || !job.WaitFinished {
+			t.Fatalf("job %s cleanup/waitWhenFinished = %t/%t, want true/true", job.Name, job.Cleanup, job.WaitFinished)
+		}
+		jobName := strings.Replace(asString(mainInputVars["jobName"]), "{{.k8sRunID}}", "kio-test-20260709t010203000000004", 1)
+		resources := map[string]string{"Job": jobName + "-0"}
+		if workPVCObjectTemplate == "templates/work-pvc.yml" {
+			resources["PersistentVolumeClaim"] = jobName + "-work-0"
+		} else if workPVCObjectTemplate == "templates/work-block-pvc.yml" {
+			resources["PersistentVolumeClaim"] = jobName + "-0"
+		}
+		for kind, resourceName := range resources {
+			if len(resourceName) > 63 || !regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`).MatchString(resourceName) {
+				t.Fatalf("scenario %s generates invalid %s name %q", scenario, kind, resourceName)
+			}
+			key := kind + "/" + resourceName
+			if previous, duplicate := resourceNames[key]; duplicate {
+				t.Fatalf("scenarios %s and %s generate duplicate %s name %q", previous, scenario, kind, resourceName)
+			}
+			resourceNames[key] = scenario
 		}
 
 		if storage == "storage-azure-disk-block" {
@@ -1948,6 +2010,9 @@ func assertKataIOActiveWorkloadScenarios(t *testing.T, workloadFile string, want
 		} else {
 			if workPVCInputVars == nil {
 				t.Fatalf("PVC scenario %s missing work-pvc object", scenario)
+			}
+			if workPVCObjectIndex >= mainObjectIndex {
+				t.Fatalf("PVC scenario %s must create its PVC before the benchmark job", scenario)
 			}
 			if got := asString(workPVCInputVars["workStorageClass"]); got != "managed-csi" {
 				t.Fatalf("scenario %s workStorageClass = %q, want managed-csi", scenario, got)

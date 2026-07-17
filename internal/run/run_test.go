@@ -329,6 +329,33 @@ func TestRenderWorkloadReplacesInputVarTemplateVars(t *testing.T) {
 	}
 }
 
+func TestRenderWorkloadReplacesTimestampPlaceholderFromRawTemplate(t *testing.T) {
+	workload := map[string]any{
+		"jobs": []any{
+			map[string]any{
+				"objects": []any{
+					map[string]any{"objectTemplate": "templates/job.yml", "replicas": 1, "inputVars": map[string]any{"jobName": "kio-fio-{{.runTimestampDNS}}-job"}},
+				},
+			},
+		},
+	}
+	mode := Mode{
+		RunTimestamp: time.Date(2026, 7, 9, 1, 2, 3, 4, time.UTC),
+		TemplateVars: map[string]any{"k8sRunID": "kio-fio-{{.runTimestampDNS}}"},
+	}
+
+	rendered, err := RenderWorkload(workload, mode, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	objects := rendered["jobs"].([]any)[0].(map[string]any)["objects"].([]any)
+	inputVars := objects[0].(map[string]any)["inputVars"].(map[string]any)
+	if got, want := inputVars["jobName"], "kio-fio-20260709t010203000000004-job"; got != want {
+		t.Fatalf("jobName = %q, want %q", got, want)
+	}
+}
+
 func TestRunDirNameIncludesNanoseconds(t *testing.T) {
 	base := time.Date(2026, 7, 8, 1, 2, 3, 4, time.UTC)
 	first := runDirName("kata-perf", "smoke", base)

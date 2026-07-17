@@ -189,6 +189,30 @@ requires:
 
 When a suite declares image builds, `run-suite` must target the cluster recorded in the managed `aks-burner` deployment outputs. The AKS Bicep template grants that cluster's kubelet identity `AcrPull` on the suite ACR; a different cluster does not receive that role. The user running `provision` for such a suite must have permission to create role assignments, such as Owner or User Access Administrator on the deployment scope.
 
+## Workload Templates
+
+Before decoding a workload as YAML, `run-suite` renders it as a Go template with
+the mode's `templateVars` and the Sprig function library. This supports compact
+workload matrices with functions such as `list`, `dict`, and `until` and control
+flow such as `range` and `if`. The resulting YAML then follows the normal
+mode-default, timestamp, and image-variable rendering path before kube-burner
+runs it.
+
+For example:
+
+```yaml
+{{- $profiles := list "seqread" "fsync-heavy" }}
+jobs:
+{{- range $profile := $profiles }}
+- name: fio-{{ $profile }}
+  objects:
+  - objectTemplate: templates/fio-job.yml
+    inputVars:
+      profile: {{ $profile }}
+      runID: '{{ $.runID }}'
+{{- end }}
+```
+
 ## Suite Setup Resources
 
 Suites can install persistent Kubernetes setup resources before kube-burner starts. Use this for suite-specific cluster preparation such as custom `RuntimeClass` objects or node-preparation `DaemonSet` resources.

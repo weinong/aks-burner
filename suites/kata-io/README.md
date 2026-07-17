@@ -23,8 +23,9 @@ from the current file.
 
 The full `fio` mode covers five profiles on `emptyDir` and Azure Disk for the
 default and Kata runtimes, plus Azure Disk raw block for patched Kata. It
-requests Kubernetes concurrency levels 1 and 10. See
-`workload-fio.yml` for the authoritative matrix.
+requests Kubernetes concurrency levels 1 and 10. `workload-fio.yml` defines the
+authoritative matrix with Go-template loops that `run-suite` expands before
+passing the rendered YAML to kube-burner.
 
 Here, `concurrency` is the number of Kubernetes Job iterations requested by the
 workload. It is separate from fio's `numjobs`, the number of fio workers in one
