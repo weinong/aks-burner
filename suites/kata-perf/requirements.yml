@@ -32,6 +32,11 @@ requires:
       labels:
         perf.azure.com/node-role: workload
         kubernetes.azure.com/os-sku: AzureLinux
+  storageClasses:
+    - name: managed-csi
+      provisioner: disk.csi.azure.com
+    - name: azurefile-csi
+      provisioner: file.csi.azure.com
   reporting:
     sources:
       standardSummary: false

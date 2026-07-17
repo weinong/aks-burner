@@ -37,6 +37,8 @@ func TestKataPerfContractsValidate(t *testing.T) {
 		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-1.yml"},
 		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-2.yml"},
 		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-5.yml"},
+		{"schemas/mode.schema.json", "suites/kata-perf/vars/storage-smoke.yml"},
+		{"schemas/mode.schema.json", "suites/kata-perf/vars/storage-full.yml"},
 	}
 	for _, tc := range cases {
 		if err := config.ValidateYAML(filepath.Join(root, tc.schema), filepath.Join(root, tc.file)); err != nil {
@@ -65,7 +67,7 @@ func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
 	if requirements.Requires.Images != nil {
 		t.Fatal("kata-perf requirements must omit images")
 	}
-	for _, mode := range []string{"smoke", "full", "load-qps-1", "load-qps-2", "load-qps-5"} {
+	for _, mode := range []string{"smoke", "full", "load-qps-1", "load-qps-2", "load-qps-5", "storage-smoke", "storage-full"} {
 		var vars struct {
 			ImageVars map[string]string `yaml:"imageVars"`
 		}
@@ -87,9 +89,272 @@ func TestKataPerfExposesOfferedLoadModes(t *testing.T) {
 	for _, match := range matches {
 		modes = append(modes, strings.TrimSuffix(filepath.Base(match), ".yml"))
 	}
-	if got, want := modes, []string{"full", "load-qps-1", "load-qps-2", "load-qps-5", "smoke"}; !reflect.DeepEqual(got, want) {
+	if got, want := modes, []string{"full", "load-qps-1", "load-qps-2", "load-qps-5", "smoke", "storage-full", "storage-smoke"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("kata-perf modes = %v, want %v", got, want)
 	}
+}
+
+func TestKataPerfStorageModesRenderSerializedMatrix(t *testing.T) {
+	root := filepath.Join("..", "..")
+	images, err := config.LoadImages(filepath.Join(root, "config/images.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workload map[string]any
+	if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/workload-storage.yml"), &workload); err != nil {
+		t.Fatal(err)
+	}
+
+	wantNames := []string{
+		"storage-startup-kata-none",
+		"storage-startup-standard-none",
+		"storage-startup-kata-azure-disk",
+		"storage-startup-standard-azure-disk",
+		"storage-startup-kata-azure-files",
+		"storage-startup-standard-azure-files",
+	}
+	wantNamespaces := []string{
+		"kata-perf-storage-kata-none",
+		"kata-perf-storage-default-none",
+		"kata-perf-storage-kata-disk",
+		"kata-perf-storage-default-disk",
+		"kata-perf-storage-kata-files",
+		"kata-perf-storage-default-files",
+	}
+	wantStorageClasses := []string{"", "", "managed-csi", "managed-csi", "azurefile-csi", "azurefile-csi"}
+	wantAccessModes := []string{"", "", "ReadWriteOnce", "ReadWriteOnce", "ReadWriteMany", "ReadWriteMany"}
+	for modeName, iterations := range map[string]int{"storage-smoke": 5, "storage-full": 20} {
+		var mode run.Mode
+		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", modeName+".yml"), &mode); err != nil {
+			t.Fatal(err)
+		}
+		if !mode.ReportStorageStartupMetrics || mode.SelectedWorkloadFile() != "workload-storage.yml" {
+			t.Fatalf("%s storage reporting/workload = %v/%q", modeName, mode.ReportStorageStartupMetrics, mode.SelectedWorkloadFile())
+		}
+		if !mode.Cleanup {
+			t.Fatalf("%s global cleanup must be true", modeName)
+		}
+		rendered, err := run.RenderWorkload(workload, mode, images, "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobs := rendered["jobs"].([]any)
+		if len(jobs) != 6 {
+			t.Fatalf("%s jobs = %d, want 6", modeName, len(jobs))
+		}
+		for index, item := range jobs {
+			job := item.(map[string]any)
+			if job["name"] != wantNames[index] || job["namespace"] != wantNamespaces[index] {
+				t.Fatalf("%s job %d identity = %q/%q", modeName, index, job["name"], job["namespace"])
+			}
+			for key, want := range map[string]any{"jobType": "create", "podWait": true, "namespacedIterations": true, "jobIterations": iterations, "iterationsPerNamespace": 1} {
+				if got := job[key]; got != want {
+					t.Fatalf("%s job %s %s = %#v, want %#v", modeName, wantNames[index], key, got, want)
+				}
+			}
+			objects := job["objects"].([]any)
+			pvcJob := index >= 2
+			if pvcJob {
+				if job["gc"] != true || !measurementNamed(job["measurements"], "pvcLatency") || len(objects) != 2 {
+					t.Fatalf("%s PVC job %s lifecycle = %#v", modeName, wantNames[index], job)
+				}
+				if _, ok := job["hooks"]; !ok {
+					t.Fatalf("%s PVC job %s missing cleanup hooks", modeName, wantNames[index])
+				}
+				inputVars := objects[0].(map[string]any)["inputVars"].(map[string]any)
+				if inputVars["storageClass"] != wantStorageClasses[index] || inputVars["accessMode"] != wantAccessModes[index] {
+					t.Fatalf("%s PVC job %s storage vars = %#v", modeName, wantNames[index], inputVars)
+				}
+				hooks := job["hooks"].([]any)
+				wantWhens := []string{"beforeGC", "afterGC", "beforeCleanup", "afterCleanup"}
+				if len(hooks) != len(wantWhens) {
+					t.Fatalf("%s PVC job %s hooks = %#v", modeName, wantNames[index], hooks)
+				}
+				for hookIndex, wantWhen := range wantWhens {
+					if hooks[hookIndex].(map[string]any)["when"] != wantWhen {
+						t.Fatalf("%s PVC job %s hook %d = %#v, want %s", modeName, wantNames[index], hookIndex, hooks[hookIndex], wantWhen)
+					}
+				}
+			} else {
+				if job["gc"] != true || job["measurements"] != nil || len(objects) != 1 {
+					t.Fatalf("%s baseline job %s has PVC-only configuration: %#v", modeName, wantNames[index], job)
+				}
+			}
+			for _, object := range objects {
+				if object.(map[string]any)["replicas"] != 1 {
+					t.Fatalf("%s job %s object replicas = %#v", modeName, wantNames[index], object)
+				}
+			}
+		}
+	}
+}
+
+func TestKataPerfStoragePodsAreDirectAndDisableServiceAccountMounts(t *testing.T) {
+	root := filepath.Join("..", "..", "suites", "kata-perf", "templates")
+	for _, name := range []string{"storage-pod-kata-none.yml", "storage-pod-default-none.yml", "storage-pod-kata-pvc.yml", "storage-pod-default-pvc.yml"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range []string{"apiVersion: v1", "kind: Pod", "automountServiceAccountToken: false", "image: {{.image}}"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s missing %q", name, want)
+			}
+		}
+		for _, forbidden := range []string{"kind: Deployment", "kind: Job", "serviceAccountName:", "serviceAccountToken:"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s contains %q", name, forbidden)
+			}
+		}
+	}
+}
+
+func TestKataPerfStoragePVCTemplateUsesScenarioAccessMode(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-perf", "templates", "storage-pvc.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "- {{.accessMode}}") {
+		t.Fatalf("storage PVC template does not render access mode: %s", data)
+	}
+}
+
+func TestKataPerfStorageCleanupHooksAreBoundedAndContextAware(t *testing.T) {
+	root := filepath.Join("..", "..", "suites", "kata-perf", "hooks")
+	for _, name := range []string{"capture-storage-pvs.sh", "wait-storage-cleanup.sh"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range []string{"AKS_BURNER_KUBE_CONTEXT", "--request-timeout", "AKS_BURNER_STORAGE_CLEANUP_TIMEOUT", "900"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s missing %q", name, want)
+			}
+		}
+	}
+	waitData, err := os.ReadFile(filepath.Join(root, "wait-storage-cleanup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"volumeattachments", "persistentvolumes", "timed out", "RBAC"} {
+		if !strings.Contains(string(waitData), want) {
+			t.Fatalf("wait-storage-cleanup.sh missing diagnostic %q", want)
+		}
+	}
+}
+
+func TestKataPerfStorageCleanupHooksSucceedAndPropagateContext(t *testing.T) {
+	sourceRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	renderedDir := filepath.Join(workDir, "rendered")
+	rawDir := filepath.Join(workDir, "raw")
+	binDir := filepath.Join(workDir, "bin")
+	for _, dir := range []string{renderedDir, rawDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(workDir, "kubectl.log")
+	kubectl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + strconv.Quote(marker) + "\ncase \"$*\" in\n  *persistentvolumeclaims*) printf 'pv-test\\n' ;;\n  *'get persistentvolumes pv-test'*) printf 'Error from server (NotFound)' >&2; exit 1 ;;\n  *volumeattachments*) exit 0 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "kubectl"), []byte(kubectl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "AKS_BURNER_KUBE_CONTEXT=preview", "AKS_BURNER_STORAGE_CLEANUP_TIMEOUT=5")
+	for _, hook := range []string{"capture-storage-pvs.sh", "wait-storage-cleanup.sh"} {
+		cmd := exec.Command("/bin/sh", filepath.Join(sourceRoot, "suites", "kata-perf", "hooks", hook), "storage-startup-kata-azure-disk")
+		cmd.Dir = renderedDir
+		cmd.Env = env
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s failed: %v\n%s", hook, err, output)
+		}
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if !strings.Contains(line, "--context preview") || !strings.Contains(line, "--request-timeout=10s") {
+			t.Fatalf("kubectl call did not propagate context/timeout: %q", line)
+		}
+	}
+}
+
+func TestKataPerfStorageCleanupHookTimesOutWithStuckResources(t *testing.T) {
+	sourceRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	renderedDir := filepath.Join(workDir, "rendered")
+	rawDir := filepath.Join(workDir, "raw")
+	binDir := filepath.Join(workDir, "bin")
+	for _, dir := range []string{renderedDir, rawDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rawDir, "storage-cleanup-storage-startup-kata-azure-disk.pvs"), []byte("pv-stuck\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kubectl := "#!/bin/sh\ncase \"$*\" in\n  *'get persistentvolumes pv-stuck'*) exit 0 ;;\n  *volumeattachments*) printf 'attachment-stuck' ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "kubectl"), []byte(kubectl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(sourceRoot, "suites", "kata-perf", "hooks", "wait-storage-cleanup.sh")
+	cmd := exec.Command("/bin/sh", hook, "storage-startup-kata-azure-disk")
+	cmd.Dir = renderedDir
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "AKS_BURNER_STORAGE_CLEANUP_TIMEOUT=0")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "timed out") || !strings.Contains(string(output), "pv-stuck") || !strings.Contains(string(output), "attachment-stuck") {
+		t.Fatalf("wait hook error/output = %v/%s", err, output)
+	}
+}
+
+func TestKataPerfStorageCleanupHookBoundsAPIRetries(t *testing.T) {
+	sourceRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	renderedDir := filepath.Join(workDir, "rendered")
+	rawDir := filepath.Join(workDir, "raw")
+	binDir := filepath.Join(workDir, "bin")
+	for _, dir := range []string{renderedDir, rawDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rawDir, "storage-cleanup-storage-startup-kata-azure-disk.pvs"), []byte("pv-rbac\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kubectl := "#!/bin/sh\nprintf 'Error from server (Forbidden): RBAC denied' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "kubectl"), []byte(kubectl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(sourceRoot, "suites", "kata-perf", "hooks", "wait-storage-cleanup.sh")
+	cmd := exec.Command("/bin/sh", hook, "storage-startup-kata-azure-disk")
+	cmd.Dir = renderedDir
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "AKS_BURNER_STORAGE_CLEANUP_TIMEOUT=30", "AKS_BURNER_STORAGE_API_RETRIES=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "failed 1 times") || !strings.Contains(string(output), "RBAC") {
+		t.Fatalf("wait hook error/output = %v/%s", err, output)
+	}
+}
+
+func measurementNamed(value any, name string) bool {
+	measurements, _ := value.([]any)
+	for _, item := range measurements {
+		measurement, _ := item.(map[string]any)
+		if measurement["name"] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestKataPerfModesRenderOfferedLoadJobs(t *testing.T) {

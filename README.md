@@ -10,6 +10,7 @@ TEST_SUITE=my-suite make add-suite
 make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
+TEST_SUITE=kata-perf TEST_MODE=storage-smoke make run-suite
 TEST_SUITE=kata-perf TEST_MODE=smoke KUBE_CONTEXT=<existing-context> make run-suite
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
@@ -34,6 +35,7 @@ TEST_SUITE=my-suite make add-suite
 make add-suite-guided
 TEST_SUITE=kata-perf make provision
 TEST_SUITE=kata-perf TEST_MODE=smoke make run-suite
+TEST_SUITE=kata-perf TEST_MODE=storage-smoke make run-suite
 TEST_SUITE=kata-perf make destroy
 TEST_SUITE=kata-io make provision
 TEST_SUITE=kata-io TEST_MODE=fio-fast make run-suite
@@ -101,7 +103,14 @@ Without `KUBE_CONTEXT`, `run-suite` derives the cluster name from `TEST_SUITE`, 
 
 With `KUBE_CONTEXT` set, `run-suite` skips credential refresh and targets that context for every `kubectl` and kube-burner operation. Suites without image builds do not need `RESOURCE_GROUP` and do not query Azure identity. Suites with image builds derive the per-user resource group when it is omitted so `run-suite` can validate the deployment cluster's `AcrPull` relationship and retrieve registry outputs. Explicit-context metadata records `kubeContext` and omits `clusterName`, even if `CLUSTER_NAME` is supplied for image-build deployment validation. A separate kubeconfig option is not supported.
 
-Both modes load and validate `requirements.yml`, including node-pool and selector relationships. For a legacy run, validate the refreshed current context with `kubectl version -o json` and `kubectl get nodes -l <labels> -o name`. For an explicit target, validate the same cluster with `kubectl --context <existing-context> version -o json` and `kubectl --context <existing-context> get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
+All modes load and validate `requirements.yml`, including node-pool and selector relationships. For a legacy run, validate the refreshed current context with `kubectl version -o json` and `kubectl get nodes -l <labels> -o name`. For an explicit target, validate the same cluster with `kubectl --context <existing-context> version -o json` and `kubectl --context <existing-context> get nodes -l <labels> -o name`. `kata-perf` requires Kubernetes `>= 1.36` and at least one node with labels `perf.azure.com/node-role=workload,kubernetes.azure.com/os-sku=AzureLinux`.
+
+`kata-perf` storage modes (`storage-smoke` and `storage-full`) preflight the AKS
+`managed-csi` and `azurefile-csi` StorageClasses, record their binding modes and
+parameters in run metadata, and hold `kube-system/aks-burner-storage-startup-lock`
+while kube-burner executes. A stale lock after an interrupted process requires
+manual deletion only after confirming no storage run is active. PVC cleanup is
+bounded to 15 minutes and waits for both PV and VolumeAttachment removal.
 
 When Prometheus is `required` and `install: true`, `run-suite` installs Prometheus before running the workload.
 

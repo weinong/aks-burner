@@ -3,8 +3,9 @@
 `kata-perf` compares Kata and default-runtime pod startup on AKS. Serialized
 modes isolate baseline startup latency, while offered-load modes show how
 latency and achieved Ready throughput change as pod creation QPS rises. The
-suite separates end-to-end sandbox readiness, the CRI `RunPodSandbox` call,
-and post-sandbox container launch.
+storage modes additionally compare direct pause pods with no volume, Azure Disk,
+and Azure Files. The suite separates end-to-end sandbox readiness, the CRI
+`RunPodSandbox` call, and post-sandbox container launch.
 
 ## What It Tests
 
@@ -28,6 +29,8 @@ and post-sandbox container launch.
 | `load-qps-1` | 20 | 20 | 1 | 1 | 1 minute |
 | `load-qps-2` | 20 | 20 | 2 | 1 | 1 minute |
 | `load-qps-5` | 20 | 20 | 5 | 1 | 1 minute |
+| `storage-smoke` | 5 | 1 | 5 | 5 | 1 minute |
+| `storage-full` | 20 | 1 | 5 | 5 | 1 minute |
 
 The serialized jobs use `podWait: true` and `waitWhenFinished: false`. In kube-burner
 2.7.3 this combination waits after every iteration. One namespace per
@@ -39,6 +42,49 @@ The offered-load jobs use `podWait: false`, `waitWhenFinished: true`, and one
 shared namespace per runtime. `burst: 1` avoids an initial token-bucket spike,
 so QPS is the intended pod submission rate. A final readiness barrier keeps the
 measurement open until submitted pods are Ready. Kata remains first.
+
+The storage modes run six fixed jobs in this order: Kata/default with no PVC,
+Kata/default with `managed-csi`, then Kata/default with `azurefile-csi`. Each
+iteration has its own namespace and creates one direct pause pod; PVC jobs also
+create exactly one claim and enable per-job `pvcLatency` and garbage collection.
+The dedicated pod templates set `automountServiceAccountToken: false`.
+
+Before execution, the runner verifies that `managed-csi` uses
+`disk.csi.azure.com`, `azurefile-csi` uses `file.csi.azure.com`, and both classes
+use `reclaimPolicy: Delete`. Their binding modes and parameters are written to
+`metadata/run.yml`. A ConfigMap in `kube-system` atomically prevents concurrent
+storage runs. The runner normally deletes it on exit; after a crashed run,
+verify no storage run is active and delete the stale lock with
+`kubectl -n kube-system delete configmap aks-burner-storage-startup-lock` using
+the same kube context.
+
+PVC-job hooks capture bound PV names before garbage collection and wait up to 15
+minutes for each PV and associated VolumeAttachment to disappear. Timeout and
+RBAC failures report the stuck resources and manual investigation guidance.
+
+### Storage Startup Measurements
+
+PVC-backed jobs enable kube-burner `pvcLatency`. The report emits PVC binding
+p50, p95, maximum, average, expected, valid, and missing sample counts by job and
+StorageClass. kube-burner measures from its PVC watcher observation until the
+claim reaches Bound; this is not an API-server request-duration metric.
+
+For every storage-mode pod, reporting derives:
+
+`readyToStartContainersLatency - schedulingLatency`
+
+and emits it as `scheduled_to_ready_to_start_containers_latency`. In Kubernetes
+1.36 this interval ends after required volumes are mounted and the pod sandbox
+and networking are ready, so it is deliberately not named CSI or storage-only
+latency. The no-PVC job for the same runtime is the comparison baseline. Do not
+subtract independently computed percentiles as if they were paired samples;
+compare the distributions across repeated runs instead.
+
+The underlying timestamps can make a fast interval non-positive. Reporting
+keeps these as `ambiguous_count` rather than including them in percentiles, and
+also emits expected, valid, and missing counts. Storage modes require all six
+job summaries from one kube-burner UUID and validate pod/PVC iteration,
+replica, namespace, name, and StorageClass identities before writing results.
 
 Prometheus closes each job's metric window after the one-minute event-drain
 pause. This guarantees multiple 15-second Prometheus scrapes even when five

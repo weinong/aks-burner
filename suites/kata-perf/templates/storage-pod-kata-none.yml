@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-kata-none-{{.Iteration}}-{{.Replica}}
+  labels:
+    app: kata-perf-storage
+spec:
+  automountServiceAccountToken: false
+  runtimeClassName: kata-vm-isolation
+  nodeSelector:
+    perf.azure.com/node-role: workload
+    kubernetes.azure.com/os-sku: AzureLinux
+  restartPolicy: Never
+  containers:
+    - name: pause
+      image: {{.image}}
+      imagePullPolicy: IfNotPresent

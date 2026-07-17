@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,6 +292,16 @@ func TestRenderWorkloadUsesDNSRunTimestampPlaceholder(t *testing.T) {
 	}
 }
 
+func TestModeCarriesStorageStartupReportingFlag(t *testing.T) {
+	var mode Mode
+	if err := yaml.Unmarshal([]byte("reportStorageStartupMetrics: true\n"), &mode); err != nil {
+		t.Fatal(err)
+	}
+	if !mode.ReportStorageStartupMetrics {
+		t.Fatal("reportStorageStartupMetrics was not decoded")
+	}
+}
+
 func TestRenderWorkloadReplacesInputVarTemplateVars(t *testing.T) {
 	workload := map[string]any{
 		"jobs": []any{
@@ -342,6 +353,12 @@ func TestCopyRenderAssetsCopiesTemplatesAndMetrics(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(suiteDir, "metrics.yml"), []byte("[]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(suiteDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "hooks", "cleanup.sh"), []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := CopyRenderAssets(suiteDir, runDir); err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +366,9 @@ func TestCopyRenderAssetsCopiesTemplatesAndMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(runDir, "rendered", "metrics.yml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "rendered", "hooks", "cleanup.sh")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -387,6 +407,251 @@ func TestExecuteKubeBurnerPrefersRepoLocalBinary(t *testing.T) {
 	}
 	if strings.Contains(logText, "path-binary") {
 		t.Fatalf("log used PATH kube-burner instead of repo-local binary: %s", logText)
+	}
+}
+
+func TestExecuteKubeBurnerExportsKubeContextForHooks(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFakeRepoRoot(t, repoDir)
+	pathDir := t.TempDir()
+	path := filepath.Join(pathDir, "kube-burner")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'context=%s\\n' \"$AKS_BURNER_KUBE_CONTEXT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", pathDir)
+	workloadPath := filepath.Join(repoDir, "results", "run", "rendered", "workload.yml")
+	logPath := filepath.Join(repoDir, "results", "run", "logs", "kube-burner.log")
+	if err := os.MkdirAll(filepath.Dir(workloadPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workloadPath, []byte("jobs: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteKubeBurner(workloadPath, logPath, kubetarget.Target{Context: "preview"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "context=preview") {
+		t.Fatalf("kube-burner environment = %s", data)
+	}
+}
+
+func TestValidateStorageClassesReturnsMetadata(t *testing.T) {
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		if ctx.Value("request") != "storage" {
+			t.Fatal("context was not propagated")
+		}
+		return []byte(`{"items":[{"metadata":{"name":"managed-csi"},"provisioner":"disk.csi.azure.com","reclaimPolicy":"Delete","volumeBindingMode":"WaitForFirstConsumer","parameters":{"skuName":"Premium_LRS"}},{"metadata":{"name":"azurefile-csi"},"provisioner":"file.csi.azure.com","reclaimPolicy":"Delete","volumeBindingMode":"Immediate","parameters":{"skuName":"Standard_LRS"}}]}`), nil
+	}
+	ctx := context.WithValue(context.Background(), "request", "storage")
+	got, err := ValidateStorageClasses(ctx, []StorageClassRequirement{{Name: "managed-csi", Provisioner: "disk.csi.azure.com"}, {Name: "azurefile-csi", Provisioner: "file.csi.azure.com"}}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].VolumeBindingMode != "WaitForFirstConsumer" || got[0].Parameters["skuName"] != "Premium_LRS" {
+		t.Fatalf("storage metadata = %#v", got)
+	}
+}
+
+func TestValidateStorageClassesRejectsUnsafeClass(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+		want string
+	}{
+		{name: "wrong provisioner", json: `{"items":[{"metadata":{"name":"managed-csi"},"provisioner":"kubernetes.io/azure-disk","reclaimPolicy":"Delete"}]}`, want: "disk.csi.azure.com"},
+		{name: "retained volumes", json: `{"items":[{"metadata":{"name":"managed-csi"},"provisioner":"disk.csi.azure.com","reclaimPolicy":"Retain"}]}`, want: "Delete"},
+		{name: "missing class", json: `{"items":[]}`, want: "managed-csi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ValidateStorageClasses(context.Background(), []StorageClassRequirement{{Name: "managed-csi", Provisioner: "disk.csi.azure.com"}}, func(context.Context, ...string) ([]byte, error) {
+				return []byte(tc.json), nil
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateStorageClasses() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateStorageClassesRejectsMissingRequirementsBeforeAPI(t *testing.T) {
+	called := false
+	_, err := ValidateStorageClasses(context.Background(), nil, func(context.Context, ...string) ([]byte, error) {
+		called = true
+		return nil, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "declared StorageClasses") || called {
+		t.Fatalf("ValidateStorageClasses() error/called = %v/%v", err, called)
+	}
+}
+
+func TestAcquireStorageRunLockCreatesAndReleasesAtomically(t *testing.T) {
+	var calls [][]string
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		if ctx.Err() != nil {
+			t.Fatalf("runner received canceled context: %v", ctx.Err())
+		}
+		calls = append(calls, append([]string(nil), args...))
+		if args[0] == "create" {
+			return []byte(`{"metadata":{"uid":"lock-uid"},"data":{"holder":"storage-smoke-20260717"}}`), nil
+		}
+		return nil, nil
+	}
+	release, err := AcquireStorageRunLock(context.Background(), "storage-smoke-20260717", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !strings.Contains(strings.Join(calls[0], " "), "create configmap aks-burner-storage-startup-lock") || !strings.Contains(strings.Join(calls[0], " "), "--labels=aks-burner.azure.com/storage-lock=") || !strings.Contains(strings.Join(calls[1], " "), "delete configmap -l aks-burner.azure.com/storage-lock=") || strings.Contains(strings.Join(calls[1], " "), "aks-burner-storage-startup-lock") {
+		t.Fatalf("lock calls = %#v", calls)
+	}
+}
+
+func TestStorageRunLockReleaseDoesNotDeleteReplacementOwner(t *testing.T) {
+	var createArgs, releaseArgs []string
+	release, err := AcquireStorageRunLock(context.Background(), "original", func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "create" {
+			createArgs = append([]string(nil), args...)
+			return []byte(`{"metadata":{"uid":"original-uid"},"data":{"holder":"original"}}`), nil
+		}
+		releaseArgs = append([]string(nil), args...)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	create := strings.Join(createArgs, " ")
+	releaseCommand := strings.Join(releaseArgs, " ")
+	createToken := strings.TrimPrefix(create[strings.Index(create, "--labels="):], "--labels=aks-burner.azure.com/storage-lock=")
+	if index := strings.IndexByte(createToken, ' '); index >= 0 {
+		createToken = createToken[:index]
+	}
+	if !strings.Contains(releaseCommand, "-l aks-burner.azure.com/storage-lock="+createToken) || strings.Contains(releaseCommand, "aks-burner-storage-startup-lock") {
+		t.Fatalf("create/release = %q/%q, want holder-scoped selector deletion", create, releaseCommand)
+	}
+}
+
+func TestAcquireStorageRunLockReportsContentionAndManualRecovery(t *testing.T) {
+	_, err := AcquireStorageRunLock(context.Background(), "new-run", func(context.Context, ...string) ([]byte, error) {
+		return nil, fmt.Errorf("AlreadyExists")
+	})
+	if err == nil || !strings.Contains(err.Error(), "another storage run") || !strings.Contains(err.Error(), "delete configmap") || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("AcquireStorageRunLock() error = %v", err)
+	}
+}
+
+func TestAcquireStorageRunLockPropagatesContext(t *testing.T) {
+	type key string
+	ctx := context.WithValue(context.Background(), key("request"), "storage-lock")
+	release, err := AcquireStorageRunLock(ctx, "holder", func(got context.Context, args ...string) ([]byte, error) {
+		if args[0] == "create" && got.Value(key("request")) != "storage-lock" {
+			t.Fatal("acquire context was not propagated")
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcquireStorageRunLockHonorsExplicitKubeContext(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "kubectl.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$MARKER\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("MARKER", marker)
+	target := kubetarget.Target{Context: "preview"}
+	release, err := AcquireStorageRunLock(context.Background(), "holder", target.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if !strings.HasPrefix(line, "--context preview ") {
+			t.Fatalf("kubectl call omitted explicit context: %q", line)
+		}
+	}
+}
+
+func TestWithStorageRunLockScopesLifecycleToStorageModes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		want    string
+	}{
+		{name: "storage", enabled: true, want: "create,execute,delete"},
+		{name: "ordinary", enabled: false, want: "execute"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var order []string
+			runner := func(_ context.Context, args ...string) ([]byte, error) {
+				order = append(order, args[0])
+				return nil, nil
+			}
+			if err := WithStorageRunLock(context.Background(), tc.enabled, "holder", runner, func() error {
+				order = append(order, "execute")
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(order, ","); got != tc.want {
+				t.Fatalf("order = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWithStorageRunLockReleasesAfterWorkloadFailure(t *testing.T) {
+	workloadErr := fmt.Errorf("workload failed")
+	deleted := false
+	err := WithStorageRunLock(context.Background(), true, "holder", func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "delete" {
+			deleted = true
+		}
+		return nil, nil
+	}, func() error { return workloadErr })
+	if err != workloadErr || !deleted {
+		t.Fatalf("WithStorageRunLock() error/deleted = %v/%v", err, deleted)
+	}
+}
+
+func TestWriteMetadataIncludesStorageClasses(t *testing.T) {
+	runDir := t.TempDir()
+	metadata := Metadata{StorageClasses: []StorageClassMetadata{{Name: "managed-csi", Provisioner: "disk.csi.azure.com", ReclaimPolicy: "Delete", VolumeBindingMode: "WaitForFirstConsumer", Parameters: map[string]string{"skuName": "Premium_LRS"}}}}
+	if err := WriteMetadata(runDir, metadata); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "metadata", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"storageClasses:", "managed-csi", "disk.csi.azure.com", "WaitForFirstConsumer", "Premium_LRS"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("metadata missing %q: %s", want, data)
+		}
 	}
 }
 

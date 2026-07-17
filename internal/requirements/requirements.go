@@ -21,6 +21,7 @@ type Document struct {
 		Infrastructure infra.Requirements            `yaml:"infrastructure"`
 		Kubernetes     run.KubernetesRequirements    `yaml:"kubernetes"`
 		NodeSelectors  []run.NodeSelectorRequirement `yaml:"nodeSelectors"`
+		StorageClasses []run.StorageClassRequirement `yaml:"storageClasses"`
 		Images         *acr.Requirements             `yaml:"images"`
 		Artifacts      artifacts.Config              `yaml:"artifacts"`
 		Observability  ObservabilityRequirements     `yaml:"observability"`

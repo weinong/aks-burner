@@ -8,6 +8,7 @@ package reporting
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -226,7 +227,7 @@ func TestReadKubeBurnerMetricsAllowsInactiveSandboxCountersForOfferedLoad(t *tes
   {"metricName":"runPodSandboxSum","uuid":"run-1","value":20,"jobName":"startup-load-kata","labels":{"runtime_handler":"kata"}}
 ]`)
 
-	rows, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+	rows, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +355,7 @@ func TestReadKubeBurnerMetricsDerivesOfferedLoadReadiness(t *testing.T) {
   {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"startup-load-kata","namespace":"kata-perf-load-0","podName":"kata-perf-3-1","timestamp":"2026-07-15T00:00:03Z","podReadyLatency":1000,"readyToStartContainersLatency":0,"containersStartedLatency":200}
 ]`)
 
-	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +392,7 @@ func TestReadKubeBurnerMetricsReportsNoReadyPods(t *testing.T) {
   {"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"startup-load-kata","jobIterations":20,"qps":5,"burst":1}}
 ]`)
 
-	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +418,7 @@ func TestReadKubeBurnerMetricsRejectsOfferedLoadMetricWithoutJobName(t *testing.
   {"metricName":"declared","uuid":"run-1","value":1,"timestamp":"2026-07-15T00:00:00Z"}
 ]`)
 
-	_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, []string{"declared"}, map[string]string{"declared": "count"}, true)
+	_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, []string{"declared"}, map[string]string{"declared": "count"}, true, false)
 	if err == nil || !strings.Contains(err.Error(), "has no jobName") {
 		t.Fatalf("error = %v, want missing jobName failure", err)
 	}
@@ -505,12 +506,182 @@ func TestReadKubeBurnerMetricsRejectsInvalidOfferedLoadReadiness(t *testing.T) {
 			if tc.pods != "" {
 				writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", tc.pods)
 			}
-			_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true)
+			_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, true, false)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
 		})
 	}
+}
+
+func TestReadKubeBurnerMetricsDerivesStorageStartupMetrics(t *testing.T) {
+	runDir := t.TempDir()
+	writeStorageJobSummaries(t, runDir, 2)
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-none","namespace":"kata-perf-storage-kata-none-0","podName":"storage-kata-none-0-1","jobIteration":0,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":1100,"containersStartedLatency":1200},
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-none","namespace":"kata-perf-storage-kata-none-1","podName":"storage-kata-none-1-1","jobIteration":1,"replica":1,"schedulingLatency":200,"readyToStartContainersLatency":200,"containersStartedLatency":300},
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-0","podName":"storage-kata-pvc-0-1","jobIteration":0,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":2100,"containersStartedLatency":2200},
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-1","podName":"storage-kata-pvc-1-1","jobIteration":1,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":3100,"containersStartedLatency":3200}
+]`)
+	writeKubeBurnerMetric(t, runDir, "pvcLatencyMeasurement.json", `[
+  {"metricName":"pvcLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-0","pvcName":"storage-0-1","jobIteration":0,"replica":1,"storageClass":"managed-csi","bindingLatency":400},
+  {"metricName":"pvcLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-1","pvcName":"storage-1-1","jobIteration":1,"replica":1,"storageClass":"managed-csi","bindingLatency":600}
+]`)
+
+	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 3 {
+		t.Fatalf("contributing files = %d, want 3", files)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		jobName := row.Dimensions["jobName"]
+		if jobName != "storage-startup-kata-none" && jobName != "storage-startup-kata-azure-disk" {
+			continue
+		}
+		got[jobName+"/"+row.Metric] = row.Value.Text
+	}
+	for key, want := range map[string]string{
+		"storage-startup-kata-none/scheduled_to_ready_to_start_containers_latency_p50":             "1000",
+		"storage-startup-kata-none/scheduled_to_ready_to_start_containers_latency_expected_count":  "2",
+		"storage-startup-kata-none/scheduled_to_ready_to_start_containers_latency_valid_count":     "1",
+		"storage-startup-kata-none/scheduled_to_ready_to_start_containers_latency_ambiguous_count": "1",
+		"storage-startup-kata-azure-disk/scheduled_to_ready_to_start_containers_latency_p95":       "2500",
+		"storage-startup-kata-azure-disk/pvc_binding_latency_p50":                                  "400",
+		"storage-startup-kata-azure-disk/pvc_binding_latency_p95":                                  "500",
+		"storage-startup-kata-azure-disk/pvc_binding_latency_expected_count":                       "2",
+		"storage-startup-kata-azure-disk/pvc_binding_latency_valid_count":                          "2",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s = %q, want %q; rows = %#v", key, got[key], want, rows)
+		}
+	}
+}
+
+func TestReadKubeBurnerMetricsReportsMissingStorageSamples(t *testing.T) {
+	runDir := t.TempDir()
+	writeStorageJobSummaries(t, runDir, 2)
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-standard-azure-files","namespace":"kata-perf-storage-default-files-0","podName":"storage-default-pvc-0-1","jobIteration":0,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":1100,"containersStartedLatency":1200}
+]`)
+	writeKubeBurnerMetric(t, runDir, "pvcLatencyMeasurement.json", `[
+  {"metricName":"pvcLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-standard-azure-files","namespace":"kata-perf-storage-default-files-0","pvcName":"storage-0-1","jobIteration":0,"replica":1,"storageClass":"azurefile-csi","bindingLatency":500}
+]`)
+	rows, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		if row.Dimensions["jobName"] == "storage-startup-standard-azure-files" {
+			got[row.Metric] = row.Value.Text
+		}
+	}
+	if got["scheduled_to_ready_to_start_containers_latency_missing_count"] != "1" || got["pvc_binding_latency_missing_count"] != "1" {
+		t.Fatalf("missing counts = %#v, want one missing pod and PVC", got)
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsInvalidStorageStartupDocuments(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+		doc  string
+		want string
+	}{
+		{name: "wrong storage class", file: "pvc.json", doc: `{"metricName":"pvcLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-0","pvcName":"storage-0-1","jobIteration":0,"replica":1,"storageClass":"azurefile-csi","bindingLatency":1}`, want: "storageClass"},
+		{name: "PVC for baseline", file: "pvc.json", doc: `{"metricName":"pvcLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-none","namespace":"kata-perf-storage-kata-none-0","pvcName":"storage-0-1","jobIteration":0,"replica":1,"storageClass":"managed-csi","bindingLatency":1}`, want: "does not use PVCs"},
+		{name: "mixed UUID", file: "pod.json", doc: `{"metricName":"podLatencyMeasurement","uuid":"run-2","jobName":"storage-startup-kata-none","namespace":"kata-perf-storage-kata-none-0","podName":"storage-kata-none-0-1","jobIteration":0,"replica":1,"schedulingLatency":1,"readyToStartContainersLatency":2,"containersStartedLatency":3}`, want: "multiple kube-burner UUIDs"},
+		{name: "out of range iteration", file: "pod.json", doc: `{"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-none","namespace":"kata-perf-storage-kata-none-2","podName":"storage-kata-none-2-1","jobIteration":2,"replica":1,"schedulingLatency":1,"readyToStartContainersLatency":2,"containersStartedLatency":3}`, want: "jobIteration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			writeStorageJobSummaries(t, runDir, 2)
+			writeKubeBurnerMetric(t, runDir, tc.file, "["+tc.doc+"]")
+			_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsIncompleteStorageJobSummaries(t *testing.T) {
+	runDir := t.TempDir()
+	writeKubeBurnerMetric(t, runDir, "jobSummary.json", `[
+  {"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"storage-startup-kata-none","jobIterations":2,"qps":5,"burst":5}}
+]`)
+	_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+	if err == nil || !strings.Contains(err.Error(), "all six jobSummary") {
+		t.Fatalf("error = %v, want all six jobSummary error", err)
+	}
+}
+
+func TestReadKubeBurnerMetricsIgnoresPreloadedUnrelatedPVCs(t *testing.T) {
+	runDir := t.TempDir()
+	writeStorageJobSummaries(t, runDir, 1)
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-0","podName":"storage-kata-pvc-0-1","jobIteration":0,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":1100,"containersStartedLatency":1200}
+]`)
+	writeKubeBurnerMetric(t, runDir, "pvcLatencyMeasurement.json", `[
+  {"metricName":"pvcLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"unrelated","pvcName":"existing-pvc","jobIteration":0,"replica":0,"storageClass":"other","bindingLatency":0},
+  {"metricName":"pvcLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-0","pvcName":"storage-0-1","jobIteration":0,"replica":1,"storageClass":"managed-csi","bindingLatency":500}
+]`)
+	rows, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Dimensions["jobName"] == "storage-startup-kata-azure-disk" && row.Metric == "pvc_binding_latency_valid_count" && row.Value.Text == "1" {
+			return
+		}
+	}
+	t.Fatalf("rows = %#v, want one valid benchmark PVC sample", rows)
+}
+
+func TestReadKubeBurnerMetricsRejectsMismatchedStorageIterationCounts(t *testing.T) {
+	runDir := t.TempDir()
+	writeStorageJobSummaries(t, runDir, 2)
+	path := filepath.Join(runDir, "raw", "metrics", "jobSummary.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(data), `"jobIterations":2`, `"jobIterations":3`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+	if err == nil || !strings.Contains(err.Error(), "same jobIterations") {
+		t.Fatalf("error = %v, want matching jobIterations error", err)
+	}
+}
+
+func TestReadKubeBurnerMetricsRejectsMixedUUIDPVCQuantiles(t *testing.T) {
+	runDir := t.TempDir()
+	writeStorageJobSummaries(t, runDir, 1)
+	writeKubeBurnerMetric(t, runDir, "pvcLatencyQuantilesMeasurement.json", `[
+  {"metricName":"pvcLatencyQuantilesMeasurement","uuid":"run-2","jobName":"storage-startup-kata-azure-disk","quantileName":"Bound","P50":1,"P95":1,"P99":1,"max":1,"avg":1}
+]`)
+	_, _, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+	if err == nil || !strings.Contains(err.Error(), "multiple kube-burner UUIDs") {
+		t.Fatalf("error = %v, want mixed UUID rejection", err)
+	}
+}
+
+func writeStorageJobSummaries(t *testing.T, runDir string, iterations int) {
+	t.Helper()
+	names := []string{
+		"storage-startup-kata-none", "storage-startup-standard-none",
+		"storage-startup-kata-azure-disk", "storage-startup-standard-azure-disk",
+		"storage-startup-kata-azure-files", "storage-startup-standard-azure-files",
+	}
+	documents := make([]string, 0, len(names))
+	for _, name := range names {
+		documents = append(documents, fmt.Sprintf(`{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":%q,"jobIterations":%d,"qps":5,"burst":5}}`, name, iterations))
+	}
+	writeKubeBurnerMetric(t, runDir, "jobSummary.json", "["+strings.Join(documents, ",")+"]")
 }
 
 func TestReadKubeBurnerMetricsRejectsInvalidPostSandboxSamples(t *testing.T) {
@@ -575,6 +746,29 @@ func TestReadKubeBurnerMetricsReadsPinnedPodLatencyFixture(t *testing.T) {
 	}
 	if files != 1 || len(rows) != 6 {
 		t.Fatalf("files/rows = %d/%#v", files, rows)
+	}
+}
+
+func TestReadKubeBurnerMetricsReadsPinnedPVCLatencyFixture(t *testing.T) {
+	runDir := copyKubeBurnerFixtures(t, "pvcLatencyMeasurement.json")
+	writeStorageJobSummaries(t, runDir, 1)
+	writeKubeBurnerMetric(t, runDir, "storage-pod.json", `[
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-azure-disk","namespace":"kata-perf-storage-kata-disk-0","podName":"storage-kata-pvc-0-1","jobIteration":0,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":1100,"containersStartedLatency":1200}
+]`)
+	fixturePath := filepath.Join(runDir, "raw", "metrics", "pvcLatencyMeasurement.json")
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixturePath, []byte(strings.ReplaceAll(string(fixture), "fixture-uuid", "run-1")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows, files, err := readKubeBurnerMetrics(filepath.Join(runDir, "raw", "metrics"), runDir, nil, nil, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != 3 || len(rows) == 0 {
+		t.Fatalf("files/rows = %d/%d", files, len(rows))
 	}
 }
 

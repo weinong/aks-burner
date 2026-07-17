@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,20 +21,21 @@ import (
 )
 
 type Mode struct {
-	Iterations             int               `yaml:"iterations"`
-	IterationsPerNamespace int               `yaml:"iterationsPerNamespace"`
-	QPS                    int               `yaml:"qps"`
-	Burst                  int               `yaml:"burst"`
-	Cleanup                bool              `yaml:"cleanup"`
-	WaitWhenFinished       bool              `yaml:"waitWhenFinished"`
-	PreLoadImages          bool              `yaml:"preLoadImages"`
-	JobPause               string            `yaml:"jobPause,omitempty"`
-	MetricsClosing         string            `yaml:"metricsClosing,omitempty"`
-	WorkloadFile           string            `yaml:"workloadFile,omitempty"`
-	ReportPodReadyMetrics  bool              `yaml:"reportPodReadyMetrics,omitempty"`
-	RunTimestamp           time.Time         `yaml:"-"`
-	TemplateVars           map[string]any    `yaml:"templateVars"`
-	ImageVars              map[string]string `yaml:"imageVars"`
+	Iterations                  int               `yaml:"iterations"`
+	IterationsPerNamespace      int               `yaml:"iterationsPerNamespace"`
+	QPS                         int               `yaml:"qps"`
+	Burst                       int               `yaml:"burst"`
+	Cleanup                     bool              `yaml:"cleanup"`
+	WaitWhenFinished            bool              `yaml:"waitWhenFinished"`
+	PreLoadImages               bool              `yaml:"preLoadImages"`
+	JobPause                    string            `yaml:"jobPause,omitempty"`
+	MetricsClosing              string            `yaml:"metricsClosing,omitempty"`
+	WorkloadFile                string            `yaml:"workloadFile,omitempty"`
+	ReportPodReadyMetrics       bool              `yaml:"reportPodReadyMetrics,omitempty"`
+	ReportStorageStartupMetrics bool              `yaml:"reportStorageStartupMetrics,omitempty"`
+	RunTimestamp                time.Time         `yaml:"-"`
+	TemplateVars                map[string]any    `yaml:"templateVars"`
+	ImageVars                   map[string]string `yaml:"imageVars"`
 }
 
 func (m Mode) SelectedWorkloadFile() string {
@@ -46,6 +48,19 @@ func (m Mode) SelectedWorkloadFile() string {
 type Requirements struct {
 	Kubernetes    KubernetesRequirements    `yaml:"kubernetes"`
 	NodeSelectors []NodeSelectorRequirement `yaml:"nodeSelectors"`
+}
+
+type StorageClassRequirement struct {
+	Name        string `yaml:"name"`
+	Provisioner string `yaml:"provisioner"`
+}
+
+type StorageClassMetadata struct {
+	Name              string            `yaml:"name"`
+	Provisioner       string            `yaml:"provisioner"`
+	ReclaimPolicy     string            `yaml:"reclaimPolicy"`
+	VolumeBindingMode string            `yaml:"volumeBindingMode,omitempty"`
+	Parameters        map[string]string `yaml:"parameters,omitempty"`
 }
 
 type KubernetesRequirements struct {
@@ -63,15 +78,16 @@ type NodeSelectorRequirement struct {
 type KubectlRunner func(ctx context.Context, args ...string) ([]byte, error)
 
 type Metadata struct {
-	Suite         string            `yaml:"suite"`
-	Mode          string            `yaml:"mode"`
-	Timestamp     string            `yaml:"timestamp"`
-	ResourceGroup string            `yaml:"resourceGroup"`
-	ClusterName   string            `yaml:"clusterName,omitempty"`
-	KubeContext   string            `yaml:"kubeContext,omitempty"`
-	Images        map[string]string `yaml:"images"`
-	BuiltImages   []acr.BuiltImage  `yaml:"builtImages,omitempty"`
-	Setup         suite.Setup       `yaml:"setup,omitempty"`
+	Suite          string                 `yaml:"suite"`
+	Mode           string                 `yaml:"mode"`
+	Timestamp      string                 `yaml:"timestamp"`
+	ResourceGroup  string                 `yaml:"resourceGroup"`
+	ClusterName    string                 `yaml:"clusterName,omitempty"`
+	KubeContext    string                 `yaml:"kubeContext,omitempty"`
+	Images         map[string]string      `yaml:"images"`
+	BuiltImages    []acr.BuiltImage       `yaml:"builtImages,omitempty"`
+	Setup          suite.Setup            `yaml:"setup,omitempty"`
+	StorageClasses []StorageClassMetadata `yaml:"storageClasses,omitempty"`
 }
 
 func RenderWorkload(workload map[string]any, mode Mode, images map[string]string, prometheusEndpoint string, kubeBurnerReporting bool) (map[string]any, error) {
@@ -207,7 +223,100 @@ func ExecuteKubeBurner(workloadPath string, logPath string, target kubetarget.Ta
 	cmd.Dir = filepath.Dir(workloadPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	cmd.Env = append(os.Environ(), "AKS_BURNER_KUBE_CONTEXT="+target.Context)
 	return cmd.Run()
+}
+
+func ValidateStorageClasses(ctx context.Context, requirements []StorageClassRequirement, runner KubectlRunner) ([]StorageClassMetadata, error) {
+	if len(requirements) == 0 {
+		return nil, fmt.Errorf("storage preflight requires declared StorageClasses")
+	}
+	data, err := runner(ctx, "get", "storageclasses", "-o", "json")
+	if err != nil {
+		return nil, fmt.Errorf("fetch StorageClasses for storage preflight (verify cluster-scoped get RBAC): %w", err)
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Provisioner       string            `json:"provisioner"`
+			ReclaimPolicy     string            `json:"reclaimPolicy"`
+			VolumeBindingMode string            `json:"volumeBindingMode"`
+			Parameters        map[string]string `json:"parameters"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, fmt.Errorf("decode StorageClasses for storage preflight: %w", err)
+	}
+	classes := make(map[string]StorageClassMetadata, len(list.Items))
+	for _, item := range list.Items {
+		classes[item.Metadata.Name] = StorageClassMetadata{
+			Name:              item.Metadata.Name,
+			Provisioner:       item.Provisioner,
+			ReclaimPolicy:     item.ReclaimPolicy,
+			VolumeBindingMode: item.VolumeBindingMode,
+			Parameters:        item.Parameters,
+		}
+	}
+	result := make([]StorageClassMetadata, 0, len(requirements))
+	for _, requirement := range requirements {
+		class, ok := classes[requirement.Name]
+		if !ok {
+			return nil, fmt.Errorf("storage preflight requires StorageClass %q, but it was not found", requirement.Name)
+		}
+		if class.Provisioner != requirement.Provisioner {
+			return nil, fmt.Errorf("StorageClass %q provisioner = %q, want %q", requirement.Name, class.Provisioner, requirement.Provisioner)
+		}
+		if class.ReclaimPolicy != "Delete" {
+			return nil, fmt.Errorf("StorageClass %q reclaimPolicy = %q, want Delete so benchmark volumes are removed", requirement.Name, class.ReclaimPolicy)
+		}
+		result = append(result, class)
+	}
+	return result, nil
+}
+
+const storageRunLockName = "aks-burner-storage-startup-lock"
+const storageRunLockLabel = "aks-burner.azure.com/storage-lock"
+
+func AcquireStorageRunLock(ctx context.Context, holder string, runner KubectlRunner) (func(context.Context) error, error) {
+	tokenBytes := make([]byte, 16)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("generate storage run lock token: %w", err)
+	}
+	token := fmt.Sprintf("%x", tokenBytes)
+	_, err := runner(ctx, "create", "configmap", storageRunLockName, "-n", "kube-system", "--from-literal=holder="+holder, "--labels="+storageRunLockLabel+"="+token)
+	if err != nil {
+		return nil, fmt.Errorf("another storage run may hold ConfigMap kube-system/%s: %w; if no run is active, this may be a stale lock and requires manual deletion with `kubectl -n kube-system delete configmap %s` using the same kube context", storageRunLockName, err, storageRunLockName)
+	}
+	return func(releaseCtx context.Context) error {
+		if _, err := runner(releaseCtx, "delete", "configmap", "-l", storageRunLockLabel+"="+token, "-n", "kube-system", "--ignore-not-found=true"); err != nil {
+			return fmt.Errorf("delete storage run lock kube-system/%s: %w", storageRunLockName, err)
+		}
+		return nil
+	}, nil
+}
+
+func WithStorageRunLock(ctx context.Context, enabled bool, holder string, runner KubectlRunner, execute func() error) (err error) {
+	if !enabled {
+		return execute()
+	}
+	release, err := AcquireStorageRunLock(ctx, holder, runner)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if releaseErr := release(releaseCtx); releaseErr != nil {
+			if err == nil {
+				err = releaseErr
+			} else {
+				err = fmt.Errorf("%w; storage lock release also failed: %v; manual deletion may be required", err, releaseErr)
+			}
+		}
+	}()
+	return execute()
 }
 
 func ValidateRequirements(ctx context.Context, req Requirements, runner KubectlRunner) error {
@@ -273,6 +382,14 @@ func WriteMetadata(runDir string, metadata Metadata) error {
 
 func CopyRenderAssets(suiteDir string, runDir string) error {
 	if err := copyDir(filepath.Join(suiteDir, "templates"), filepath.Join(runDir, "rendered", "templates")); err != nil {
+		return err
+	}
+	hooksDir := filepath.Join(suiteDir, "hooks")
+	if _, err := os.Stat(hooksDir); err == nil {
+		if err := copyDir(hooksDir, filepath.Join(runDir, "rendered", "hooks")); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	return copyFile(filepath.Join(suiteDir, "metrics.yml"), filepath.Join(runDir, "rendered", "metrics.yml"))

@@ -1,0 +1,128 @@
+global:
+  measurements:
+    - name: podLatency
+jobs:
+  - name: storage-startup-kata-none
+    jobType: create
+    gc: true
+    podWait: true
+    namespace: kata-perf-storage-kata-none
+    namespacedIterations: true
+    objects:
+      - objectTemplate: templates/storage-pod-kata-none.yml
+        replicas: 1
+        inputVars: {}
+  - name: storage-startup-standard-none
+    jobType: create
+    gc: true
+    podWait: true
+    namespace: kata-perf-storage-default-none
+    namespacedIterations: true
+    objects:
+      - objectTemplate: templates/storage-pod-default-none.yml
+        replicas: 1
+        inputVars: {}
+  - name: storage-startup-kata-azure-disk
+    jobType: create
+    gc: true
+    podWait: true
+    namespace: kata-perf-storage-kata-disk
+    namespacedIterations: true
+    measurements:
+      - name: pvcLatency
+    hooks:
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-kata-azure-disk]
+        when: beforeGC
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-kata-azure-disk]
+        when: afterGC
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-kata-azure-disk]
+        when: beforeCleanup
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-kata-azure-disk]
+        when: afterCleanup
+    objects:
+      - objectTemplate: templates/storage-pvc.yml
+        replicas: 1
+        inputVars:
+          storageClass: managed-csi
+          accessMode: ReadWriteOnce
+      - objectTemplate: templates/storage-pod-kata-pvc.yml
+        replicas: 1
+        inputVars: {}
+  - name: storage-startup-standard-azure-disk
+    jobType: create
+    gc: true
+    podWait: true
+    namespace: kata-perf-storage-default-disk
+    namespacedIterations: true
+    measurements:
+      - name: pvcLatency
+    hooks:
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-standard-azure-disk]
+        when: beforeGC
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-standard-azure-disk]
+        when: afterGC
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-standard-azure-disk]
+        when: beforeCleanup
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-standard-azure-disk]
+        when: afterCleanup
+    objects:
+      - objectTemplate: templates/storage-pvc.yml
+        replicas: 1
+        inputVars:
+          storageClass: managed-csi
+          accessMode: ReadWriteOnce
+      - objectTemplate: templates/storage-pod-default-pvc.yml
+        replicas: 1
+        inputVars: {}
+  - name: storage-startup-kata-azure-files
+    jobType: create
+    gc: true
+    podWait: true
+    namespace: kata-perf-storage-kata-files
+    namespacedIterations: true
+    measurements:
+      - name: pvcLatency
+    hooks:
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-kata-azure-files]
+        when: beforeGC
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-kata-azure-files]
+        when: afterGC
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-kata-azure-files]
+        when: beforeCleanup
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-kata-azure-files]
+        when: afterCleanup
+    objects:
+      - objectTemplate: templates/storage-pvc.yml
+        replicas: 1
+        inputVars:
+          storageClass: azurefile-csi
+          accessMode: ReadWriteMany
+      - objectTemplate: templates/storage-pod-kata-pvc.yml
+        replicas: 1
+        inputVars: {}
+  - name: storage-startup-standard-azure-files
+    jobType: create
+    gc: true
+    podWait: true
+    namespace: kata-perf-storage-default-files
+    namespacedIterations: true
+    measurements:
+      - name: pvcLatency
+    hooks:
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-standard-azure-files]
+        when: beforeGC
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-standard-azure-files]
+        when: afterGC
+      - cmd: [/bin/sh, hooks/capture-storage-pvs.sh, storage-startup-standard-azure-files]
+        when: beforeCleanup
+      - cmd: [/bin/sh, hooks/wait-storage-cleanup.sh, storage-startup-standard-azure-files]
+        when: afterCleanup
+    objects:
+      - objectTemplate: templates/storage-pvc.yml
+        replicas: 1
+        inputVars:
+          storageClass: azurefile-csi
+          accessMode: ReadWriteMany
+      - objectTemplate: templates/storage-pod-default-pvc.yml
+        replicas: 1
+        inputVars: {}

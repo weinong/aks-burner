@@ -2087,6 +2087,26 @@ func TestExecuteRunCopyAndReportKeepsOriginalFailureWhenPartialReportFails(t *te
 	}
 }
 
+func TestExecuteRunCopyAndReportWritesPartialStorageReportAfterFailure(t *testing.T) {
+	executeErr := errors.New("storage cleanup failed")
+	reportCalled := false
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, nil, "artifacts", "", "run", reporting.Config{Sources: reporting.Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}, reporting.RunInfo{}, io.Discard,
+		func(string, string, kubetarget.Target) error { return executeErr },
+		func(context.Context, kubetarget.Target, artifacts.Config) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return nil },
+		func(_ string, _ reporting.Config, info reporting.RunInfo, _ io.Writer) (reporting.Result, error) {
+			reportCalled = true
+			if !info.Partial {
+				t.Fatal("storage failure report was not marked partial")
+			}
+			return reporting.Result{}, nil
+		},
+	)
+	if !errors.Is(err, executeErr) || !reportCalled {
+		t.Fatalf("error/reportCalled = %v/%v, want original failure and partial report", err, reportCalled)
+	}
+}
+
 func TestExecuteRunCopyAndReportReturnsArtifactWaitFailureWithoutReporting(t *testing.T) {
 	waitErr := errors.New("artifact wait failed")
 	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard,

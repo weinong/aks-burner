@@ -151,6 +151,109 @@ func TestValidateConfigRejectsPodReadyReportingWithStandardSummaries(t *testing.
 	}
 }
 
+func TestValidateConfigAcceptsStorageStartupReporting(t *testing.T) {
+	workload := storageStartupTestWorkload()
+	cfg := Config{Sources: Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}
+	if err := ValidateConfig(&cfg, false, false, workload, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateConfigRejectsCombinedSpecializedReporting(t *testing.T) {
+	cfg := Config{Sources: Sources{KubeBurner: true}, ReportPodReadyMetrics: true, ReportStorageStartupMetrics: true}
+	err := ValidateConfig(&cfg, false, false, storageStartupTestWorkload(), nil)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("ValidateConfig() error = %v, want mutually exclusive reporting error", err)
+	}
+}
+
+func TestValidateConfigRejectsStorageStartupReportingWithoutKubeBurner(t *testing.T) {
+	cfg := Config{Sources: Sources{StandardSummary: true}, ReportStorageStartupMetrics: true}
+	err := ValidateConfig(&cfg, true, false, storageStartupTestWorkload(), nil)
+	if err == nil || !strings.Contains(err.Error(), "requires kubeBurner reporting") {
+		t.Fatalf("ValidateConfig() error = %v, want kubeBurner reporting error", err)
+	}
+}
+
+func TestValidateConfigRejectsInvalidStorageStartupWorkload(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{name: "missing job", mutate: func(workload map[string]any) {
+			jobs := workload["jobs"].([]any)
+			workload["jobs"] = jobs[:len(jobs)-1]
+		}, want: "exactly six jobs"},
+		{name: "wrong job", mutate: func(workload map[string]any) {
+			workload["jobs"].([]any)[0].(map[string]any)["name"] = "other"
+		}, want: "index 0"},
+		{name: "wrong job order", mutate: func(workload map[string]any) {
+			jobs := workload["jobs"].([]any)
+			jobs[0], jobs[1] = jobs[1], jobs[0]
+		}, want: "index 0"},
+		{name: "pvc latency on baseline", mutate: func(workload map[string]any) {
+			workload["jobs"].([]any)[0].(map[string]any)["measurements"] = []any{map[string]any{"name": "pvcLatency"}}
+		}, want: "no pvcLatency"},
+		{name: "missing pvc latency", mutate: func(workload map[string]any) {
+			delete(workload["jobs"].([]any)[2].(map[string]any), "measurements")
+		}, want: "requires pvcLatency"},
+		{name: "wrong storage class", mutate: func(workload map[string]any) {
+			objects := workload["jobs"].([]any)[2].(map[string]any)["objects"].([]any)
+			objects[0].(map[string]any)["inputVars"].(map[string]any)["storageClass"] = "wrong"
+		}, want: "storageClass"},
+		{name: "malformed baseline object", mutate: func(workload map[string]any) {
+			workload["jobs"].([]any)[0].(map[string]any)["objects"] = []any{"bad"}
+		}, want: "exactly one pod"},
+		{name: "malformed PVC object", mutate: func(workload map[string]any) {
+			workload["jobs"].([]any)[2].(map[string]any)["objects"] = []any{"bad", map[string]any{"replicas": 1}}
+		}, want: "one PVC and one pod"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workload := storageStartupTestWorkload()
+			tc.mutate(workload)
+			cfg := Config{Sources: Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}
+			err := ValidateConfig(&cfg, false, false, workload, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateConfig() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func storageStartupTestWorkload() map[string]any {
+	job := func(name string, storageClass string) map[string]any {
+		objects := []any{map[string]any{"replicas": 1}}
+		result := map[string]any{
+			"name":                 name,
+			"jobType":              "create",
+			"gc":                   true,
+			"podWait":              true,
+			"namespacedIterations": true,
+			"objects":              objects,
+		}
+		if storageClass != "" {
+			result["measurements"] = []any{map[string]any{"name": "pvcLatency"}}
+			result["objects"] = []any{
+				map[string]any{"replicas": 1, "inputVars": map[string]any{"storageClass": storageClass}},
+				map[string]any{"replicas": 1},
+			}
+		}
+		return result
+	}
+	return map[string]any{
+		"global": map[string]any{"measurements": []any{map[string]any{"name": "podLatency"}}},
+		"jobs": []any{
+			job("storage-startup-kata-none", ""),
+			job("storage-startup-standard-none", ""),
+			job("storage-startup-kata-azure-disk", "managed-csi"),
+			job("storage-startup-standard-azure-disk", "managed-csi"),
+			job("storage-startup-kata-azure-files", "azurefile-csi"),
+			job("storage-startup-standard-azure-files", "azurefile-csi"),
+		},
+	}
+}
+
 func TestValidateConfigRejectsPrometheusMetricWithoutUnit(t *testing.T) {
 	cfg := Config{Sources: Sources{KubeBurner: true}}
 	err := ValidateConfig(&cfg, false, true, map[string]any{"jobs": []any{}}, []string{"podCPUUsage"})

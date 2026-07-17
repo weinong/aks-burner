@@ -15,6 +15,7 @@
     "metricsClosing": { "enum": ["afterJob", "afterJobPause", "afterMeasurements"] },
     "workloadFile": { "type": "string", "minLength": 1 },
     "reportPodReadyMetrics": { "type": "boolean" },
+    "reportStorageStartupMetrics": { "type": "boolean" },
     "templateVars": { "type": "object", "additionalProperties": true },
     "imageVars": {
       "type": "object",

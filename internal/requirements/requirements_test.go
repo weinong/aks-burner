@@ -32,6 +32,7 @@ func TestLoad(t *testing.T) {
 		{name: "standard summary reporting", got: doc.Requires.Reporting.Sources.StandardSummary, want: true},
 		{name: "kube-burner reporting", got: doc.Requires.Reporting.Sources.KubeBurner, want: true},
 		{name: "Prometheus metric units", got: doc.Requires.Reporting.PrometheusMetricUnits, want: map[string]string{"podCPUUsage": "cores", "podMemoryWorkingSet": "bytes"}},
+		{name: "storage class", got: doc.Requires.StorageClasses[0].Provisioner, want: "disk.csi.azure.com"},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
@@ -88,6 +89,9 @@ requires:
       minNodes: 1
       labels:
         perf.azure.com/node-role: workload
+  storageClasses:
+    - name: managed-csi
+      provisioner: disk.csi.azure.com
   images:
     builds:
       - key: benchmark

@@ -549,6 +549,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 		return err
 	}
 	req.Requires.Reporting.ReportPodReadyMetrics = mode.ReportPodReadyMetrics
+	req.Requires.Reporting.ReportStorageStartupMetrics = mode.ReportStorageStartupMetrics
 	if err := reporting.ValidateConfig(&req.Requires.Reporting, req.Requires.Artifacts.Enabled, req.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
 		return err
 	}
@@ -589,6 +590,13 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := runpkg.ValidateRequirements(ctx, runpkg.Requirements{Kubernetes: req.Requires.Kubernetes, NodeSelectors: req.Requires.NodeSelectors}, target.Output); err != nil {
 		return err
 	}
+	var storageClasses []runpkg.StorageClassMetadata
+	if mode.ReportStorageStartupMetrics {
+		storageClasses, err = runpkg.ValidateStorageClasses(ctx, req.Requires.StorageClasses, target.Output)
+		if err != nil {
+			return err
+		}
+	}
 	runDir, err := runpkg.CreateRunDir(*suiteName, *modeName, runTimestamp)
 	if err != nil {
 		return err
@@ -618,7 +626,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if *kubeContext != "" {
 		metadataClusterName = ""
 	}
-	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: names.ResourceGroup, ClusterName: metadataClusterName, KubeContext: *kubeContext, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup}); err != nil {
+	if err := runpkg.WriteMetadata(runDir, runpkg.Metadata{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339), ResourceGroup: names.ResourceGroup, ClusterName: metadataClusterName, KubeContext: *kubeContext, Images: images, BuiltImages: builtImages, Setup: suiteCfg.Setup, StorageClasses: storageClasses}); err != nil {
 		return err
 	}
 	if req.Requires.Observability.KubeStateMetrics.Required && req.Requires.Observability.KubeStateMetrics.Install {
@@ -672,24 +680,26 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := config.WriteYAML(workloadPath, rendered); err != nil {
 		return err
 	}
-	return executeRunCopyAndReport(
-		ctx,
-		target,
-		workloadPath,
-		filepath.Join(runDir, "logs", "kube-burner.log"),
-		req.Requires.Artifacts,
-		images,
-		filepath.Join(runDir, "artifacts"),
-		artifactSubpathFromRenderedWorkload(rendered),
-		runDir,
-		req.Requires.Reporting,
-		reporting.RunInfo{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339Nano), WorkspaceRoot: root},
-		os.Stdout,
-		runpkg.ExecuteKubeBurner,
-		waitArtifactJobsComplete,
-		copyArtifacts,
-		reporting.Generate,
-	)
+	return runpkg.WithStorageRunLock(ctx, mode.ReportStorageStartupMetrics, filepath.Base(runDir), target.Output, func() error {
+		return executeRunCopyAndReport(
+			ctx,
+			target,
+			workloadPath,
+			filepath.Join(runDir, "logs", "kube-burner.log"),
+			req.Requires.Artifacts,
+			images,
+			filepath.Join(runDir, "artifacts"),
+			artifactSubpathFromRenderedWorkload(rendered),
+			runDir,
+			req.Requires.Reporting,
+			reporting.RunInfo{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339Nano), WorkspaceRoot: root},
+			os.Stdout,
+			runpkg.ExecuteKubeBurner,
+			waitArtifactJobsComplete,
+			copyArtifacts,
+			reporting.Generate,
+		)
+	})
 }
 
 func kubeStateMetricsScrapeTarget(cfg kubestatemetrics.Config) string {
@@ -748,7 +758,7 @@ func executeRunCopyAndReport(
 	}
 	if workloadErr != nil {
 		var reportErr error
-		if reportingCfg.ReportPodReadyMetrics {
+		if reportingCfg.ReportPodReadyMetrics || reportingCfg.ReportStorageStartupMetrics {
 			runInfo.Partial = true
 			_, reportErr = report(runDir, reportingCfg, runInfo, out)
 		}

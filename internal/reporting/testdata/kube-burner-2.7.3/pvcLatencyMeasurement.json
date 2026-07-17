@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": "2026-07-16T00:00:00Z",
+    "pendingLatency": 0,
+    "bindingLatency": 1523,
+    "lostLatency": 0,
+    "resizeLatency": 0,
+    "uuid": "fixture-uuid",
+    "pvcName": "storage-0-1",
+    "jobName": "storage-startup-kata-azure-disk",
+    "namespace": "kata-perf-storage-kata-disk-0",
+    "metricName": "pvcLatencyMeasurement",
+    "size": "1Gi",
+    "storageClass": "managed-csi",
+    "jobIteration": 0,
+    "replica": 1
+  }
+]

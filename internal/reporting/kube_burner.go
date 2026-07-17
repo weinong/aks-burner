@@ -17,10 +17,13 @@ import (
 )
 
 func ReadKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []string, metricUnits map[string]string) ([]Row, int, error) {
-	return readKubeBurnerMetrics(metricsDir, runDir, prometheusMetricNames, metricUnits, false)
+	return readKubeBurnerMetrics(metricsDir, runDir, prometheusMetricNames, metricUnits, false, false)
 }
 
-func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []string, metricUnits map[string]string, reportPodReadyMetrics bool) ([]Row, int, error) {
+func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []string, metricUnits map[string]string, reportPodReadyMetrics, reportStorageStartupMetrics bool) ([]Row, int, error) {
+	if reportPodReadyMetrics && reportStorageStartupMetrics {
+		return nil, 0, fmt.Errorf("pod Ready and storage startup reporting are mutually exclusive")
+	}
 	if _, err := os.Stat(metricsDir); errors.Is(err, fs.ErrNotExist) {
 		return nil, 0, nil
 	} else if err != nil {
@@ -55,6 +58,9 @@ func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 	podReadyJobs := map[string]podReadyJob{}
 	podReadySamples := map[string]map[string]podReadySample{}
 	podReadyUUID := ""
+	storageJobs := map[string]podReadyJob{}
+	storagePods := map[string]map[string]storagePodSample{}
+	storagePVCs := map[string]map[string]storagePVCSample{}
 	for _, path := range paths {
 		source, err := filepath.Rel(runDir, path)
 		if err != nil {
@@ -69,13 +75,14 @@ func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 		launchSamplesBeforeFile := launchSampleCount(launchLatencies)
 		fileHasSandboxCounters := false
 		fileHasPodReadyData := false
+		fileHasStorageData := false
 		for index, document := range documents {
 			metricName, err := requiredString(document, "metricName")
 			if err != nil {
 				return nil, 0, fmt.Errorf("%s: documents[%d].%w", source, index, err)
 			}
 			_, declaredPrometheusMetric := declaredPrometheusUnits[metricName]
-			if reportPodReadyMetrics && (metricName == "jobSummary" || metricName == "podLatencyQuantilesMeasurement" || metricName == "podLatencyMeasurement" || isSandboxCounterMetric(metricName) || declaredPrometheusMetric) {
+			if (reportPodReadyMetrics || reportStorageStartupMetrics) && (metricName == "jobSummary" || metricName == "podLatencyQuantilesMeasurement" || metricName == "podLatencyMeasurement" || metricName == "pvcLatencyMeasurement" || metricName == "pvcLatencyQuantilesMeasurement" || isSandboxCounterMetric(metricName) || declaredPrometheusMetric) {
 				uuid, uuidErr := requiredString(document, "uuid")
 				if uuidErr != nil {
 					return nil, 0, fmt.Errorf("%s: documents[%d]: %w", source, index, uuidErr)
@@ -110,6 +117,23 @@ func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 					podReadySamples[sample.JobName][identity] = sample
 					fileHasPodReadyData = true
 				}
+				if reportStorageStartupMetrics {
+					sample, sampleErr := storagePodSampleDocument(document)
+					if sampleErr != nil {
+						err = sampleErr
+						break
+					}
+					if storagePods[sample.JobName] == nil {
+						storagePods[sample.JobName] = map[string]storagePodSample{}
+					}
+					identity := storageSampleIdentity(sample.Iteration, sample.Replica)
+					if _, duplicate := storagePods[sample.JobName][identity]; duplicate {
+						err = fmt.Errorf("duplicate storage pod sample for job %s iteration %d replica %d", sample.JobName, sample.Iteration, sample.Replica)
+						break
+					}
+					storagePods[sample.JobName][identity] = sample
+					fileHasStorageData = true
+				}
 				jobName, jobErr := requiredString(document, "jobName")
 				if jobErr != nil {
 					err = jobErr
@@ -142,7 +166,7 @@ func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 				}
 				launchLatencies[jobName] = append(launchLatencies[jobName], latency)
 			case "jobSummary":
-				if !reportPodReadyMetrics {
+				if !reportPodReadyMetrics && !reportStorageStartupMetrics {
 					continue
 				}
 				job, summaryErr := podReadyJobDocument(document)
@@ -150,12 +174,59 @@ func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 					err = summaryErr
 					break
 				}
-				if _, duplicate := podReadyJobs[job.Name]; duplicate {
-					err = fmt.Errorf("duplicate jobSummary for job %s", job.Name)
+				if reportPodReadyMetrics {
+					if _, duplicate := podReadyJobs[job.Name]; duplicate {
+						err = fmt.Errorf("duplicate jobSummary for job %s", job.Name)
+						break
+					}
+					podReadyJobs[job.Name] = job
+					fileHasPodReadyData = true
+				}
+				if reportStorageStartupMetrics {
+					if _, expected := storageStartupSpecs[job.Name]; !expected {
+						err = fmt.Errorf("storage startup reporting has unexpected jobSummary for job %s", job.Name)
+						break
+					}
+					if _, duplicate := storageJobs[job.Name]; duplicate {
+						err = fmt.Errorf("duplicate jobSummary for job %s", job.Name)
+						break
+					}
+					storageJobs[job.Name] = job
+					fileHasStorageData = true
+				}
+			case "pvcLatencyMeasurement":
+				if !reportStorageStartupMetrics {
+					continue
+				}
+				namespace, namespaceErr := requiredNonEmptyString(document, "namespace")
+				if namespaceErr != nil {
+					err = namespaceErr
 					break
 				}
-				podReadyJobs[job.Name] = job
-				fileHasPodReadyData = true
+				jobName, jobErr := requiredNonEmptyString(document, "jobName")
+				if jobErr != nil {
+					err = jobErr
+					break
+				}
+				spec, expected := storageStartupSpecs[jobName]
+				if !expected || !strings.HasPrefix(namespace, spec.NamespacePrefix+"-") {
+					continue
+				}
+				sample, sampleErr := storagePVCSampleDocument(document)
+				if sampleErr != nil {
+					err = sampleErr
+					break
+				}
+				if storagePVCs[sample.JobName] == nil {
+					storagePVCs[sample.JobName] = map[string]storagePVCSample{}
+				}
+				identity := storageSampleIdentity(sample.Iteration, sample.Replica)
+				if _, duplicate := storagePVCs[sample.JobName][identity]; duplicate {
+					err = fmt.Errorf("duplicate storage PVC sample for job %s iteration %d replica %d", sample.JobName, sample.Iteration, sample.Replica)
+					break
+				}
+				storagePVCs[sample.JobName][identity] = sample
+				fileHasStorageData = true
 			default:
 				if isSandboxCounterMetric(metricName) {
 					jobName, value, handler, sandboxErr := sandboxCounterDocument(document)
@@ -185,7 +256,7 @@ func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 				return nil, 0, fmt.Errorf("%s: documents[%d]: %w", source, index, err)
 			}
 		}
-		if len(rows) > rowsBeforeFile || launchSampleCount(launchLatencies) > launchSamplesBeforeFile || fileHasSandboxCounters || fileHasPodReadyData {
+		if len(rows) > rowsBeforeFile || launchSampleCount(launchLatencies) > launchSamplesBeforeFile || fileHasSandboxCounters || fileHasPodReadyData || fileHasStorageData {
 			contributingFiles++
 		}
 	}
@@ -210,6 +281,12 @@ func readKubeBurnerMetrics(metricsDir, runDir string, prometheusMetricNames []st
 			return nil, 0, err
 		}
 	}
+	if reportStorageStartupMetrics {
+		rows, err = appendStorageStartupRows(rows, storageJobs, storagePods, storagePVCs)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
 	if err := ValidateRows(rows); err != nil {
 		return nil, 0, err
 	}
@@ -229,6 +306,236 @@ type podReadySample struct {
 	PodName   string
 	Created   time.Time
 	Ready     time.Time
+}
+
+type storageStartupSpec struct {
+	Order           int
+	NamespacePrefix string
+	PodPrefix       string
+	StorageClass    string
+}
+
+var storageStartupSpecs = map[string]storageStartupSpec{
+	"storage-startup-kata-none":            {Order: 0, NamespacePrefix: "kata-perf-storage-kata-none", PodPrefix: "storage-kata-none"},
+	"storage-startup-standard-none":        {Order: 1, NamespacePrefix: "kata-perf-storage-default-none", PodPrefix: "storage-default-none"},
+	"storage-startup-kata-azure-disk":      {Order: 2, NamespacePrefix: "kata-perf-storage-kata-disk", PodPrefix: "storage-kata-pvc", StorageClass: "managed-csi"},
+	"storage-startup-standard-azure-disk":  {Order: 3, NamespacePrefix: "kata-perf-storage-default-disk", PodPrefix: "storage-default-pvc", StorageClass: "managed-csi"},
+	"storage-startup-kata-azure-files":     {Order: 4, NamespacePrefix: "kata-perf-storage-kata-files", PodPrefix: "storage-kata-pvc", StorageClass: "azurefile-csi"},
+	"storage-startup-standard-azure-files": {Order: 5, NamespacePrefix: "kata-perf-storage-default-files", PodPrefix: "storage-default-pvc", StorageClass: "azurefile-csi"},
+}
+
+type storagePodSample struct {
+	JobName    string
+	Iteration  int
+	Replica    int
+	ReadyDelta int
+}
+
+type storagePVCSample struct {
+	JobName   string
+	Iteration int
+	Replica   int
+	Binding   int
+}
+
+func storagePodSampleDocument(document map[string]json.RawMessage) (storagePodSample, error) {
+	jobName, err := requiredNonEmptyString(document, "jobName")
+	if err != nil {
+		return storagePodSample{}, err
+	}
+	spec, expected := storageStartupSpecs[jobName]
+	if !expected {
+		return storagePodSample{}, fmt.Errorf("storage startup reporting has unexpected pod job %s", jobName)
+	}
+	iteration, err := requiredNonNegativeInteger(document, "jobIteration")
+	if err != nil {
+		return storagePodSample{}, err
+	}
+	replica, err := requiredPositiveInteger(document, "replica")
+	if err != nil {
+		return storagePodSample{}, err
+	}
+	namespace, err := requiredNonEmptyString(document, "namespace")
+	if err != nil {
+		return storagePodSample{}, err
+	}
+	podName, err := requiredNonEmptyString(document, "podName")
+	if err != nil {
+		return storagePodSample{}, err
+	}
+	if want := fmt.Sprintf("%s-%d", spec.NamespacePrefix, iteration); namespace != want {
+		return storagePodSample{}, fmt.Errorf("namespace = %q, want %q for job %s", namespace, want, jobName)
+	}
+	if want := fmt.Sprintf("%s-%d-%d", spec.PodPrefix, iteration, replica); podName != want {
+		return storagePodSample{}, fmt.Errorf("podName = %q, want %q for job %s", podName, want, jobName)
+	}
+	scheduled, err := requiredNonNegativeInteger(document, "schedulingLatency")
+	if err != nil {
+		return storagePodSample{}, err
+	}
+	ready, err := requiredNonNegativeInteger(document, "readyToStartContainersLatency")
+	if err != nil {
+		return storagePodSample{}, err
+	}
+	return storagePodSample{JobName: jobName, Iteration: iteration, Replica: replica, ReadyDelta: ready - scheduled}, nil
+}
+
+func storagePVCSampleDocument(document map[string]json.RawMessage) (storagePVCSample, error) {
+	jobName, err := requiredNonEmptyString(document, "jobName")
+	if err != nil {
+		return storagePVCSample{}, err
+	}
+	spec, expected := storageStartupSpecs[jobName]
+	if !expected {
+		return storagePVCSample{}, fmt.Errorf("storage startup reporting has unexpected PVC job %s", jobName)
+	}
+	if spec.StorageClass == "" {
+		return storagePVCSample{}, fmt.Errorf("storage startup job %s does not use PVCs", jobName)
+	}
+	storageClass, err := requiredNonEmptyString(document, "storageClass")
+	if err != nil {
+		return storagePVCSample{}, err
+	}
+	if storageClass != spec.StorageClass {
+		return storagePVCSample{}, fmt.Errorf("storageClass = %q, want %q for job %s", storageClass, spec.StorageClass, jobName)
+	}
+	iteration, err := requiredNonNegativeInteger(document, "jobIteration")
+	if err != nil {
+		return storagePVCSample{}, err
+	}
+	replica, err := requiredPositiveInteger(document, "replica")
+	if err != nil {
+		return storagePVCSample{}, err
+	}
+	namespace, err := requiredNonEmptyString(document, "namespace")
+	if err != nil {
+		return storagePVCSample{}, err
+	}
+	pvcName, err := requiredNonEmptyString(document, "pvcName")
+	if err != nil {
+		return storagePVCSample{}, err
+	}
+	if want := fmt.Sprintf("%s-%d", spec.NamespacePrefix, iteration); namespace != want {
+		return storagePVCSample{}, fmt.Errorf("namespace = %q, want %q for job %s", namespace, want, jobName)
+	}
+	if want := fmt.Sprintf("storage-%d-%d", iteration, replica); pvcName != want {
+		return storagePVCSample{}, fmt.Errorf("pvcName = %q, want %q for job %s", pvcName, want, jobName)
+	}
+	binding, err := requiredNonNegativeInteger(document, "bindingLatency")
+	if err != nil {
+		return storagePVCSample{}, err
+	}
+	return storagePVCSample{JobName: jobName, Iteration: iteration, Replica: replica, Binding: binding}, nil
+}
+
+func storageSampleIdentity(iteration, replica int) string {
+	return strconv.Itoa(iteration) + "\x00" + strconv.Itoa(replica)
+}
+
+func appendStorageStartupRows(rows []Row, jobs map[string]podReadyJob, pods map[string]map[string]storagePodSample, pvcs map[string]map[string]storagePVCSample) ([]Row, error) {
+	if len(jobs) != len(storageStartupSpecs) {
+		return nil, fmt.Errorf("storage startup reporting requires all six jobSummary documents")
+	}
+	jobNames := make([]string, 0, len(storageStartupSpecs))
+	for jobName := range storageStartupSpecs {
+		jobNames = append(jobNames, jobName)
+	}
+	sort.Strings(jobNames)
+	expectedIterations := 0
+	for _, jobName := range jobNames {
+		job, exists := jobs[jobName]
+		if !exists {
+			return nil, fmt.Errorf("storage startup reporting requires jobSummary for job %s", jobName)
+		}
+		if job.Iterations <= 0 {
+			return nil, fmt.Errorf("storage startup job %s has invalid expected sample count", jobName)
+		}
+		if expectedIterations == 0 {
+			expectedIterations = job.Iterations
+		} else if job.Iterations != expectedIterations {
+			return nil, fmt.Errorf("storage startup jobs must have the same jobIterations: job %s has %d, want %d", jobName, job.Iterations, expectedIterations)
+		}
+		podValues := make([]float64, 0, len(pods[jobName]))
+		ambiguous := 0
+		for _, sample := range pods[jobName] {
+			if sample.Iteration >= job.Iterations {
+				return nil, fmt.Errorf("jobIteration %d exceeds expected iterations %d for job %s", sample.Iteration, job.Iterations, jobName)
+			}
+			if sample.Replica != 1 {
+				return nil, fmt.Errorf("replica %d must be 1 for job %s", sample.Replica, jobName)
+			}
+			if sample.ReadyDelta <= 0 {
+				ambiguous++
+				continue
+			}
+			podValues = append(podValues, float64(sample.ReadyDelta))
+		}
+		if len(pods[jobName]) > job.Iterations {
+			return nil, fmt.Errorf("pod sample count exceeds expected count for job %s", jobName)
+		}
+		dimensions := map[string]string{"jobName": jobName}
+		rows = appendLifecycleSummaryRows(rows, "derived/scheduled-to-ready-to-start-containers", dimensions, "scheduled_to_ready_to_start_containers_latency", podValues, job.Iterations, len(pods[jobName]), ambiguous)
+
+		spec := storageStartupSpecs[jobName]
+		if spec.StorageClass == "" {
+			if len(pvcs[jobName]) != 0 {
+				return nil, fmt.Errorf("storage startup job %s does not use PVCs", jobName)
+			}
+			continue
+		}
+		pvcValues := make([]float64, 0, len(pvcs[jobName]))
+		for identity, sample := range pvcs[jobName] {
+			if sample.Iteration >= job.Iterations {
+				return nil, fmt.Errorf("jobIteration %d exceeds expected iterations %d for job %s", sample.Iteration, job.Iterations, jobName)
+			}
+			if sample.Replica != 1 {
+				return nil, fmt.Errorf("replica %d must be 1 for job %s", sample.Replica, jobName)
+			}
+			if _, paired := pods[jobName][identity]; !paired {
+				return nil, fmt.Errorf("PVC sample for job %s iteration %d has no matching pod sample", jobName, sample.Iteration)
+			}
+			pvcValues = append(pvcValues, float64(sample.Binding))
+		}
+		if len(pvcs[jobName]) > job.Iterations {
+			return nil, fmt.Errorf("PVC sample count exceeds expected count for job %s", jobName)
+		}
+		pvcDimensions := map[string]string{"jobName": jobName, "storageClass": spec.StorageClass}
+		rows = appendLifecycleSummaryRows(rows, "derived/pvc-binding", pvcDimensions, "pvc_binding_latency", pvcValues, job.Iterations, len(pvcs[jobName]), 0)
+	}
+	return rows, nil
+}
+
+func appendLifecycleSummaryRows(rows []Row, source string, dimensions map[string]string, prefix string, values []float64, expected, observed, ambiguous int) []Row {
+	if len(values) > 0 {
+		sort.Float64s(values)
+		total := 0.0
+		for _, value := range values {
+			total += value
+		}
+		for _, metric := range []struct {
+			name  string
+			value float64
+		}{
+			{name: prefix + "_p50", value: percentile(values, 50)},
+			{name: prefix + "_p95", value: percentile(values, 95)},
+			{name: prefix + "_max", value: values[len(values)-1]},
+			{name: prefix + "_avg", value: total / float64(len(values))},
+		} {
+			rows = append(rows, Row{Source: source, Dimensions: dimensions, Metric: metric.name, Value: Number{Text: strconv.Itoa(int(metric.value))}, Unit: "milliseconds"})
+		}
+	}
+	for _, count := range []struct {
+		name  string
+		value int
+	}{
+		{name: prefix + "_expected_count", value: expected},
+		{name: prefix + "_valid_count", value: len(values)},
+		{name: prefix + "_missing_count", value: expected - observed},
+		{name: prefix + "_ambiguous_count", value: ambiguous},
+	} {
+		rows = append(rows, Row{Source: source, Dimensions: dimensions, Metric: count.name, Value: Number{Text: strconv.Itoa(count.value)}, Unit: "samples"})
+	}
+	return rows
 }
 
 func enrichPodReadyDimensions(rows []Row, jobs map[string]podReadyJob) error {
@@ -450,20 +757,6 @@ func launchSampleCount(valuesByJob map[string][]float64) int {
 
 func appendPostSandboxLaunchRows(rows []Row, source, jobName string, values []float64) []Row {
 	sort.Float64s(values)
-	percentile := func(percent float64) float64 {
-		if len(values) == 1 {
-			return values[0]
-		}
-		index := percent / 100 * float64(len(values))
-		if index == float64(int64(index)) {
-			return values[int(index)-1]
-		}
-		if index > 1 {
-			i := int(index)
-			return (values[i-1] + values[i]) / 2
-		}
-		return values[0]
-	}
 	total := 0.0
 	for _, value := range values {
 		total += value
@@ -474,9 +767,9 @@ func appendPostSandboxLaunchRows(rows []Row, source, jobName string, values []fl
 		value float64
 		unit  string
 	}{
-		{name: "post_sandbox_container_launch_latency_p50", value: percentile(50), unit: "milliseconds"},
-		{name: "post_sandbox_container_launch_latency_p95", value: percentile(95), unit: "milliseconds"},
-		{name: "post_sandbox_container_launch_latency_p99", value: percentile(99), unit: "milliseconds"},
+		{name: "post_sandbox_container_launch_latency_p50", value: percentile(values, 50), unit: "milliseconds"},
+		{name: "post_sandbox_container_launch_latency_p95", value: percentile(values, 95), unit: "milliseconds"},
+		{name: "post_sandbox_container_launch_latency_p99", value: percentile(values, 99), unit: "milliseconds"},
 		{name: "post_sandbox_container_launch_latency_max", value: values[len(values)-1], unit: "milliseconds"},
 		{name: "post_sandbox_container_launch_latency_avg", value: total / float64(len(values)), unit: "milliseconds"},
 		{name: "post_sandbox_container_launch_latency_sample_count", value: float64(len(values)), unit: "samples"},
@@ -485,6 +778,21 @@ func appendPostSandboxLaunchRows(rows []Row, source, jobName string, values []fl
 		rows = append(rows, Row{Source: source, Dimensions: dimensions, Metric: metric.name, Value: Number{Text: strconv.Itoa(int(metric.value))}, Unit: metric.unit})
 	}
 	return rows
+}
+
+func percentile(sortedValues []float64, percent float64) float64 {
+	if len(sortedValues) == 1 {
+		return sortedValues[0]
+	}
+	index := percent / 100 * float64(len(sortedValues))
+	if index == float64(int64(index)) {
+		return sortedValues[int(index)-1]
+	}
+	if index > 1 {
+		i := int(index)
+		return (sortedValues[i-1] + sortedValues[i]) / 2
+	}
+	return sortedValues[0]
 }
 
 func readKubeBurnerDocuments(path, source string) ([]map[string]json.RawMessage, error) {
@@ -597,6 +905,17 @@ func requiredString(document map[string]json.RawMessage, field string) (string, 
 	var value string
 	if err := json.Unmarshal(encoded, &value); err != nil {
 		return "", fmt.Errorf("%s must be a string: %w", field, err)
+	}
+	return value, nil
+}
+
+func requiredNonEmptyString(document map[string]json.RawMessage, field string) (string, error) {
+	value, err := requiredString(document, field)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", fmt.Errorf("%s must not be empty", field)
 	}
 	return value, nil
 }

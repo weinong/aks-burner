@@ -5,3 +5,9 @@ tests:
   - startup-default-runtime
   - startup-load-kata
   - startup-load-default-runtime
+  - storage-startup-kata-none
+  - storage-startup-standard-none
+  - storage-startup-kata-azure-disk
+  - storage-startup-standard-azure-disk
+  - storage-startup-kata-azure-files
+  - storage-startup-standard-azure-files

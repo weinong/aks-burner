@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Sources               Sources           `yaml:"sources"`
-	PrometheusMetricUnits map[string]string `yaml:"prometheusMetricUnits"`
-	PrometheusMetricNames []string          `yaml:"-"`
-	ReportPodReadyMetrics bool              `yaml:"-"`
+	Sources                     Sources           `yaml:"sources"`
+	PrometheusMetricUnits       map[string]string `yaml:"prometheusMetricUnits"`
+	PrometheusMetricNames       []string          `yaml:"-"`
+	ReportPodReadyMetrics       bool              `yaml:"-"`
+	ReportStorageStartupMetrics bool              `yaml:"-"`
 }
 
 type Sources struct {
@@ -46,6 +47,12 @@ func ValidateConfig(cfg *Config, artifactsEnabled, prometheusEnabled bool, workl
 	if cfg.ReportPodReadyMetrics && !cfg.Sources.KubeBurner {
 		return fmt.Errorf("pod Ready reporting requires kubeBurner reporting")
 	}
+	if cfg.ReportStorageStartupMetrics && !cfg.Sources.KubeBurner {
+		return fmt.Errorf("storage startup reporting requires kubeBurner reporting")
+	}
+	if cfg.ReportPodReadyMetrics && cfg.ReportStorageStartupMetrics {
+		return fmt.Errorf("pod Ready and storage startup reporting are mutually exclusive")
+	}
 	if cfg.ReportPodReadyMetrics && cfg.Sources.StandardSummary {
 		return fmt.Errorf("pod Ready reporting does not support standardSummary reporting")
 	}
@@ -61,6 +68,14 @@ func ValidateConfig(cfg *Config, artifactsEnabled, prometheusEnabled bool, workl
 			return fmt.Errorf("pod Ready reporting requires podLatency")
 		}
 		if err := validatePodReadyWorkload(workload); err != nil {
+			return err
+		}
+	}
+	if cfg.ReportStorageStartupMetrics {
+		if !supportedMeasurement {
+			return fmt.Errorf("storage startup reporting requires podLatency")
+		}
+		if err := validateStorageStartupWorkload(workload); err != nil {
 			return err
 		}
 	}
@@ -85,6 +100,48 @@ func ValidateConfig(cfg *Config, artifactsEnabled, prometheusEnabled bool, workl
 	}
 	cfg.PrometheusMetricNames = append([]string(nil), prometheusMetricNames...)
 	return nil
+}
+
+func validateStorageStartupWorkload(workload map[string]any) error {
+	jobs, _ := workload["jobs"].([]any)
+	if len(jobs) != len(storageStartupSpecs) {
+		return fmt.Errorf("storage startup reporting requires exactly six jobs")
+	}
+	for index, item := range jobs {
+		job, _ := item.(map[string]any)
+		name, _ := job["name"].(string)
+		expected, exists := storageStartupSpecs[name]
+		if !exists || expected.Order != index {
+			return fmt.Errorf("storage startup reporting has unexpected job %q at index %d", name, index)
+		}
+		if job["jobType"] != "create" || job["gc"] != true || job["podWait"] != true || job["namespacedIterations"] != true {
+			return fmt.Errorf("storage startup reporting job %q requires serialized create lifecycle", name)
+		}
+		objects, _ := job["objects"].([]any)
+		if expected.StorageClass == "" {
+			if hasJobMeasurement(job, "pvcLatency") || len(objects) != 1 || objectReplicas(objects[0]) != 1 {
+				return fmt.Errorf("storage startup reporting job %q requires exactly one pod and no pvcLatency measurement", name)
+			}
+			continue
+		}
+		if !hasJobMeasurement(job, "pvcLatency") {
+			return fmt.Errorf("storage startup reporting job %q requires pvcLatency", name)
+		}
+		if len(objects) != 2 || objectReplicas(objects[0]) != 1 || objectReplicas(objects[1]) != 1 {
+			return fmt.Errorf("storage startup reporting job %q requires one PVC and one pod", name)
+		}
+		pvcObject, _ := objects[0].(map[string]any)
+		inputVars, _ := pvcObject["inputVars"].(map[string]any)
+		if inputVars["storageClass"] != expected.StorageClass {
+			return fmt.Errorf("storage startup reporting job %q storageClass = %#v, want %q", name, inputVars["storageClass"], expected.StorageClass)
+		}
+	}
+	return nil
+}
+
+func objectReplicas(value any) any {
+	object, _ := value.(map[string]any)
+	return object["replicas"]
 }
 
 func validatePodReadyWorkload(workload map[string]any) error {

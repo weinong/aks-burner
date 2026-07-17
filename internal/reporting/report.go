@@ -43,6 +43,7 @@ func Generate(runDir string, cfg Config, info RunInfo, out io.Writer) (Result, e
 			PrometheusMetricNamesFromConfig(cfg),
 			cfg.PrometheusMetricUnits,
 			cfg.ReportPodReadyMetrics,
+			cfg.ReportStorageStartupMetrics,
 		)
 		if err != nil {
 			return Result{}, err

@@ -82,6 +82,23 @@ func TestGenerateCountsOnlyKubeBurnerFilesContributingRows(t *testing.T) {
 	}
 }
 
+func TestGeneratePassesStorageStartupReportingMode(t *testing.T) {
+	workspace := t.TempDir()
+	runDir := filepath.Join(workspace, "results", "run-1")
+	writeStorageJobSummaries(t, runDir, 1)
+	writeKubeBurnerMetric(t, runDir, "podLatencyMeasurement.json", `[
+  {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-none","namespace":"kata-perf-storage-kata-none-0","podName":"storage-kata-none-0-1","jobIteration":0,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":1100,"containersStartedLatency":1200}
+]`)
+	var out bytes.Buffer
+	result, err := Generate(runDir, Config{Sources: Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}, RunInfo{WorkspaceRoot: workspace}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Rows == 0 {
+		t.Fatal("storage report produced no rows")
+	}
+}
+
 func TestGeneratePreviewRowLimit(t *testing.T) {
 	for _, test := range []struct {
 		rows        int
