@@ -31,8 +31,7 @@ requires:
         workloadRuntime: KataMshvVmIsolation
         labels:
           perf.azure.com/node-role: patchpool
-        taints:
-          - perf.azure.com/kata-shim-patch=pending:NoSchedule
+        taints: []
   kubernetes:
     minVersion: "1.36"
   nodeSelectors:

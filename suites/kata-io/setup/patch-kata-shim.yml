@@ -21,11 +21,6 @@ spec:
           type: RuntimeDefault
       nodeSelector:
         perf.azure.com/node-role: patchpool
-      tolerations:
-        - key: perf.azure.com/kata-shim-patch
-          operator: Equal
-          value: pending
-          effect: NoSchedule
       initContainers:
         - name: patch
           image: curlimages/curl@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922
@@ -42,6 +37,16 @@ spec:
               expected_sha="d78b0c859c25f795dee201f8ae1b28c987fd6b0537efd0430b5fd6ad47a93ec1"
               target="/host-bin/containerd-shim-kata-v2"
               tmp="/host-bin/.containerd-shim-kata-v2.${HOSTNAME}.tmp"
+              token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+              ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              node_api="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/nodes/${NODE_NAME}"
+
+              curl -fsS --cacert "$ca" \
+                -H "Authorization: Bearer $token" \
+                -H "Content-Type: application/merge-patch+json" \
+                -X PATCH \
+                --data '{"metadata":{"labels":{"perf.azure.com/kata-shim-revision":null}}}' \
+                "$node_api" >/dev/null
 
               if [ ! -f "$target" ]; then
                 echo "Kata shim target does not exist: $target" >&2
@@ -81,41 +86,21 @@ spec:
               fi
 
               installed_sha="$(sha256sum "$target" | awk '{print $1}')"
+              installed_size="$(wc -c < "$target" | tr -d ' ')"
               installed_mode="$(stat -c %a "$target")"
               installed_uid="$(stat -c %u "$target")"
               installed_gid="$(stat -c %g "$target")"
-              if [ "$installed_sha" != "$expected_sha" ] || [ "$installed_mode" != "$target_mode" ] || [ "$installed_uid" != "$target_uid" ] || [ "$installed_gid" != "$target_gid" ]; then
-                echo "installed shim verification failed: sha=$installed_sha mode=$installed_mode uid=$installed_uid gid=$installed_gid" >&2
+              if [ "$installed_sha" != "$expected_sha" ] || [ "$installed_size" != "$expected_size" ] || [ "$installed_mode" != "$target_mode" ] || [ "$installed_uid" != "$target_uid" ] || [ "$installed_gid" != "$target_gid" ]; then
+                echo "installed shim verification failed: sha=$installed_sha size=$installed_size mode=$installed_mode uid=$installed_uid gid=$installed_gid" >&2
                 exit 1
               fi
 
-              token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-              ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-              node_api="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/nodes/${NODE_NAME}"
-              node_json="$(curl -fsS --cacert "$ca" -H "Authorization: Bearer $token" "$node_api")"
-              taint_removed=false
-              taint_present=false
-              if printf '%s' "$node_json" | grep -Eq '\{[^{}]*"key"[[:space:]]*:[[:space:]]*"perf.azure.com/kata-shim-patch"[^{}]*"value"[[:space:]]*:[[:space:]]*"pending"[^{}]*"effect"[[:space:]]*:[[:space:]]*"NoSchedule"[^{}]*\}'; then
-                taint_present=true
-                index=0
-                while [ "$index" -lt 64 ]; do
-                  patch="$(printf '[{"op":"test","path":"/spec/taints/%s","value":{"key":"perf.azure.com/kata-shim-patch","value":"pending","effect":"NoSchedule"}},{"op":"remove","path":"/spec/taints/%s"}]' "$index" "$index")"
-                  if curl -fsS --cacert "$ca" \
-                    -H "Authorization: Bearer $token" \
-                    -H "Content-Type: application/json-patch+json" \
-                    -X PATCH --data "$patch" "$node_api" >/dev/null 2>&1; then
-                    taint_removed=true
-                    break
-                  fi
-                  index=$((index + 1))
-                done
-                if [ "$taint_removed" != true ]; then
-                  echo "exact pending shim-patch taint could not be removed from node $NODE_NAME" >&2
-                  exit 1
-                fi
-              else
-                echo "pending shim-patch taint already absent"
-              fi
+              curl -fsS --cacert "$ca" \
+                -H "Authorization: Bearer $token" \
+                -H "Content-Type: application/merge-patch+json" \
+                -X PATCH \
+                --data '{"metadata":{"labels":{"perf.azure.com/kata-shim-revision":"r1-d78b0c859c25f795"}}}' \
+                "$node_api" >/dev/null
               echo "Kata shim patched successfully"
           env:
             - name: NODE_NAME

@@ -337,11 +337,8 @@ func suiteRequirements(opts addSuiteOptions) map[string]any {
 			"kubernetes":    map[string]any{"minVersion": opts.KubernetesVersion},
 			"nodeSelectors": []map[string]any{{"name": "workload", "pool": "userpool", "required": true, "minNodes": 1, "labels": map[string]string{"perf.azure.com/node-role": "workload"}}},
 			"reporting": map[string]any{
-				"sources": map[string]any{"standardSummary": false, "kubeBurner": true},
-				"prometheusMetricUnits": map[string]string{
-					"podCPUUsage":         "cores",
-					"podMemoryWorkingSet": "bytes",
-				},
+				"sources":               map[string]any{"standardSummary": false, "kubeBurner": true},
+				"prometheusMetricUnits": map[string]string{"prometheusTargetsUp": "count"},
 			},
 			"observability": map[string]any{
 				"prometheus": map[string]any{
@@ -352,7 +349,7 @@ func suiteRequirements(opts addSuiteOptions) map[string]any {
 					"serviceName":     "prometheus",
 					"servicePort":     9090,
 					"localPort":       9090,
-					"requiredMetrics": []string{"container_cpu_usage_seconds_total", "container_memory_working_set_bytes"},
+					"requiredMetrics": []string{"up"},
 				},
 			},
 		},
@@ -387,7 +384,7 @@ func suiteMode(app string, iterations int, iterationsPerNamespace int, qps int) 
 }
 
 func metricsYAML() string {
-	return "- query: sum(rate(container_cpu_usage_seconds_total[2m])) by (pod, namespace)\n  metricName: podCPUUsage\n- query: sum(container_memory_working_set_bytes) by (pod, namespace)\n  metricName: podMemoryWorkingSet\n"
+	return "- query: sum(up)\n  metricName: prometheusTargetsUp\n  instant: true\n"
 }
 
 func podTemplateYAML(opts addSuiteOptions) string {
