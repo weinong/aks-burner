@@ -1,14 +1,17 @@
 # Kata Performance Suite
 
-`kata-perf` compares serialized Kata and default-runtime pod startup latency on
-AKS. It creates pause pods through kube-burner and separates end-to-end sandbox
-readiness, the CRI `RunPodSandbox` call, and post-sandbox container launch.
+`kata-perf` compares Kata and default-runtime pod startup on AKS. Serialized
+modes isolate baseline startup latency, while offered-load modes show how
+latency and achieved Ready throughput change as pod creation QPS rises. The
+suite separates end-to-end sandbox readiness, the CRI `RunPodSandbox` call,
+and post-sandbox container launch.
 
 ## What It Tests
 
 - Runs Kata first with `runtimeClassName: kata-vm-isolation`, then the default
   runtime without a runtime class.
-- Creates one pod and waits for it to become ready before creating the next.
+- Serialized modes wait for each pod; offered-load modes create at a fixed QPS
+  and wait only after all 20 pods have been submitted.
 - Uses `mcr.microsoft.com/oss/v2/kubernetes/pause:3.10.2`, preloaded before the
   jobs start.
 - Schedules workload pods only on Azure Linux nodes labeled
@@ -22,12 +25,20 @@ readiness, the CRI `RunPodSandbox` call, and post-sandbox container launch.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `smoke` | 5 | 1 | 5 | 5 | 1 minute |
 | `full` | 20 | 1 | 5 | 5 | 1 minute |
+| `load-qps-1` | 20 | 20 | 1 | 1 | 1 minute |
+| `load-qps-2` | 20 | 20 | 2 | 1 | 1 minute |
+| `load-qps-5` | 20 | 20 | 5 | 1 | 1 minute |
 
-Both jobs use `podWait: true` and `waitWhenFinished: false`. In kube-burner
+The serialized jobs use `podWait: true` and `waitWhenFinished: false`. In kube-burner
 2.7.3 this combination waits after every iteration. One namespace per
 iteration prevents a previously waited namespace from allowing later pods to
 queue. QPS and burst limit Kubernetes API traffic; they do not provide the
 serialization.
+
+The offered-load jobs use `podWait: false`, `waitWhenFinished: true`, and one
+shared namespace per runtime. `burst: 1` avoids an initial token-bucket spike,
+so QPS is the intended pod submission rate. A final readiness barrier keeps the
+measurement open until submitted pods are Ready. Kata remains first.
 
 Prometheus closes each job's metric window after the one-minute event-drain
 pause. This guarantees multiple 15-second Prometheus scrapes even when five
@@ -68,6 +79,27 @@ job. Kube-burner condition timestamps have one-second precision, so a valid
 subsecond sandbox-ready transition can appear as zero and is excluded as
 ambiguous. The sample-count row makes this visible. Missing container-start
 events, malformed fields, and negative differences fail reporting.
+
+### Offered-Load Readiness
+
+Only `load-qps-*` modes derive `pod_ready_throughput` and
+`pod_ready_missing_count`. Throughput is Ready pod samples divided by the
+interval from the first pod's creation to the final sampled Ready timestamp, so
+the one-minute Prometheus drain pause is excluded. The missing count is the
+configured 20 pods minus Ready samples. It cannot distinguish pod creation
+failure, timeout, or a missing measurement, so it is intentionally not labeled
+as a failure count. If kube-burner fails after writing usable load data, the
+runner still writes the available rows with `runStatus=partial` and returns the
+original kube-burner error; jobs without local-indexer data are not invented.
+
+Run each QPS point three to five times on comparable cluster capacity before
+comparing the latency-versus-load curve:
+
+```sh
+TEST_SUITE=kata-perf TEST_MODE=load-qps-1 make run-suite
+TEST_SUITE=kata-perf TEST_MODE=load-qps-2 make run-suite
+TEST_SUITE=kata-perf TEST_MODE=load-qps-5 make run-suite
+```
 
 ## Serialized Full Result: 2026-07-14T18:58:30Z
 

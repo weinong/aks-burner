@@ -1,5 +1,7 @@
 name: kata-perf
-description: Example Kata performance suite for validating kube-burner framework provisioning, Prometheus setup, and suite execution.
+description: Kata and default-runtime pod startup latency and offered-load comparison on AKS.
 tests:
   - startup-smoke
   - startup-default-runtime
+  - startup-load-kata
+  - startup-load-default-runtime

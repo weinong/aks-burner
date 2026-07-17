@@ -160,7 +160,7 @@ reporting:
 
 `kubeBurner` reads the local indexer output under `raw/metrics`. `prometheusMetricUnits` supplies the unit for every Prometheus metric declared in `metrics.yml`; kube-burner's pod-latency measurements have built-in units. The runner requires kube-burner `2.7.3` because the parser is tied to that version's local-indexer document shapes.
 
-The CSV normally preserves producer-calculated rows. The runner sorts and normalizes them, derives RunPodSandbox count/mean from captured start/end counters, and derives post-sandbox container-launch p50/p95/p99/max/average and sample count from per-pod measurements. Benchmark scripts and kube-burner remain responsible for all other summaries and quantiles. A run fails if its declared sources contain no valid measurements, if a result document is invalid, or if the CSV or terminal preview cannot be written.
+The CSV normally preserves producer-calculated rows. The runner sorts and normalizes them, derives RunPodSandbox count/mean from captured start/end counters, and derives post-sandbox container-launch p50/p95/p99/max/average and sample count from per-pod measurements. Modes that explicitly enable offered-load reporting also derive Ready throughput and missing Ready sample count by joining kube-burner job summaries with per-pod latency documents. When such a run fails after producing usable data, available rows are written with `runStatus=partial` while the original workload error is returned. Benchmark scripts and kube-burner remain responsible for all other summaries and quantiles. A run fails if its declared sources contain no valid measurements, if a result document is invalid, or if the CSV or terminal preview cannot be written.
 
 ## Suite Images
 

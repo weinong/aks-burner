@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -746,6 +747,59 @@ func TestRunSuiteKubeBurnerFailureDoesNotPrintReport(t *testing.T) {
 	}
 	if strings.Contains(output, "Test results:") || strings.Contains(output, "Results CSV:") {
 		t.Fatalf("run-suite printed a report after kube-burner failure:\n%s", output)
+	}
+}
+
+func TestRunSuiteLoadModeWritesPartialReportAfterKubeBurnerFailure(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	modePath := filepath.Join(root, "suites", "existing", "vars", "smoke.yml")
+	replaceFileText(t, modePath, "templateVars: {}", "reportPodReadyMetrics: true\ntemplateVars: {}")
+	workloadPath := filepath.Join(root, "suites", "existing", "workload.yml")
+	replaceFileText(t, workloadPath, "jobs: []", "jobs:\n  - name: startup\n    jobType: create\n    objects:\n      - objectTemplate: templates/pod.yml\n        replicas: 1\n        inputVars: {}")
+	binDir := t.TempDir()
+	writeRecordingCommand(t, binDir, "az", filepath.Join(t.TempDir(), "az.log"), "")
+	writeRecordingCommand(t, binDir, "kubectl", filepath.Join(t.TempDir(), "kubectl.log"), `{"serverVersion":{"gitVersion":"v9.99.0"}}`)
+	writePartialFailingKubeBurner(t, binDir)
+	t.Setenv("PATH", binDir)
+	withWorkingDir(t, root)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"run-suite", "--suite", "existing", "--mode", "smoke", "--kube-context", "preview"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "exit status 23") {
+		t.Fatalf("run-suite error = %v, want kube-burner failure", err)
+	}
+	if !strings.Contains(output, "pod_ready_throughput") || !strings.Contains(output, "pod_ready_missing_count") || !strings.Contains(output, "Results CSV:") {
+		t.Fatalf("run-suite output missing partial report:\n%s", output)
+	}
+	resultsPath := filepath.Join(singleRunDir(t, filepath.Join(root, "results")), "summary", "results.csv")
+	resultsFile, err := os.Open(resultsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resultsFile.Close()
+	records, err := csv.NewReader(resultsFile).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) < 2 {
+		t.Fatalf("partial CSV has no data rows: %#v", records)
+	}
+	statusIndex := -1
+	for index, value := range records[0] {
+		if value == "runStatus" {
+			statusIndex = index
+			break
+		}
+	}
+	if statusIndex < 0 {
+		t.Fatalf("partial CSV has no runStatus column: %#v", records[0])
+	}
+	for _, record := range records[1:] {
+		if record[statusIndex] != "partial" {
+			t.Fatalf("partial CSV row has runStatus %q: %#v", record[statusIndex], record)
+		}
 	}
 }
 
@@ -1992,7 +2046,8 @@ func TestExecuteRunCopyAndReportPrefersKubeBurnerFailureOverArtifactCopy(t *test
 	executeErr := errors.New("kube-burner failed")
 	copyErr := errors.New("artifact copy failed")
 	target := kubetarget.Target{Context: "preview"}
-	err := executeRunCopyAndReport(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
+	reportCalled := false
+	err := executeRunCopyAndReport(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{Sources: reporting.Sources{KubeBurner: true}, ReportPodReadyMetrics: true}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
 		if gotTarget != target {
 			t.Fatalf("executor target = %#v", gotTarget)
 		}
@@ -2005,11 +2060,30 @@ func TestExecuteRunCopyAndReportPrefersKubeBurnerFailureOverArtifactCopy(t *test
 		}
 		return copyErr
 	}, func(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
-		t.Fatal("report called after kube-burner failure")
+		reportCalled = true
 		return reporting.Result{}, nil
 	})
 	if !errors.Is(err, executeErr) || !strings.Contains(err.Error(), "artifact copy also failed") {
 		t.Fatalf("executeRunCopyAndReport() error = %v, want kube-burner error with artifact copy context", err)
+	}
+	if !reportCalled {
+		t.Fatal("report was not called after kube-burner failure")
+	}
+}
+
+func TestExecuteRunCopyAndReportKeepsOriginalFailureWhenPartialReportFails(t *testing.T) {
+	executeErr := errors.New("kube-burner failed")
+	reportErr := errors.New("partial report failed")
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, nil, "artifacts", "", "run", reporting.Config{Sources: reporting.Sources{KubeBurner: true}, ReportPodReadyMetrics: true}, reporting.RunInfo{}, io.Discard,
+		func(string, string, kubetarget.Target) error { return executeErr },
+		func(context.Context, kubetarget.Target, artifacts.Config) error { return nil },
+		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return nil },
+		func(string, reporting.Config, reporting.RunInfo, io.Writer) (reporting.Result, error) {
+			return reporting.Result{}, reportErr
+		},
+	)
+	if !errors.Is(err, executeErr) || errors.Is(err, reportErr) || !strings.Contains(err.Error(), "reporting also failed") {
+		t.Fatalf("executeRunCopyAndReport() error = %v, want workload identity with reporting context", err)
 	}
 }
 
@@ -2365,6 +2439,18 @@ func writeStandardSummaryCopyKubectl(t *testing.T, dir, marker string) {
 func writeFailingKubeBurner(t *testing.T, dir string) {
 	t.Helper()
 	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: 2.7.3\\n'; exit 0; fi\nexit 23\n"
+	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writePartialFailingKubeBurner(t *testing.T, dir string) {
+	t.Helper()
+	content := "#!/bin/sh\nif [ \"$1\" = version ]; then printf 'Version: 2.7.3\\n'; exit 0; fi\n" +
+		"/bin/mkdir -p ../raw/metrics\n" +
+		"printf '%s' " + strconv.Quote(`[{"metricName":"jobSummary","uuid":"run-1","jobConfig":{"name":"startup","jobIterations":2,"qps":1,"burst":1}}]`) + " > ../raw/metrics/jobSummary.json\n" +
+		"printf '%s' " + strconv.Quote(`[{"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"startup","namespace":"load","podName":"pod-1","timestamp":"2026-07-15T00:00:00Z","podReadyLatency":1000,"readyToStartContainersLatency":500,"containersStartedLatency":700}]`) + " > ../raw/metrics/podLatencyMeasurement.json\n" +
+		"exit 23\n"
 	if err := os.WriteFile(filepath.Join(dir, "kube-burner"), []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}

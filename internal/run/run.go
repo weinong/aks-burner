@@ -30,6 +30,7 @@ type Mode struct {
 	JobPause               string            `yaml:"jobPause,omitempty"`
 	MetricsClosing         string            `yaml:"metricsClosing,omitempty"`
 	WorkloadFile           string            `yaml:"workloadFile,omitempty"`
+	ReportPodReadyMetrics  bool              `yaml:"reportPodReadyMetrics,omitempty"`
 	RunTimestamp           time.Time         `yaml:"-"`
 	TemplateVars           map[string]any    `yaml:"templateVars"`
 	ImageVars              map[string]string `yaml:"imageVars"`

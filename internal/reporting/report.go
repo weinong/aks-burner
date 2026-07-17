@@ -16,6 +16,7 @@ type RunInfo struct {
 	Mode          string
 	Timestamp     string
 	WorkspaceRoot string
+	Partial       bool
 }
 
 type Result struct {
@@ -36,11 +37,12 @@ func Generate(runDir string, cfg Config, info RunInfo, out io.Writer) (Result, e
 		sourceFiles += files
 	}
 	if cfg.Sources.KubeBurner {
-		kubeRows, files, err := ReadKubeBurnerMetrics(
+		kubeRows, files, err := readKubeBurnerMetrics(
 			filepath.Join(runDir, "raw", "metrics"),
 			runDir,
 			PrometheusMetricNamesFromConfig(cfg),
 			cfg.PrometheusMetricUnits,
+			cfg.ReportPodReadyMetrics,
 		)
 		if err != nil {
 			return Result{}, err
@@ -50,6 +52,11 @@ func Generate(runDir string, cfg Config, info RunInfo, out io.Writer) (Result, e
 	}
 	if len(rows) == 0 {
 		return Result{}, fmt.Errorf("no valid measurements found under %s/artifacts or %s/raw/metrics", runDir, runDir)
+	}
+	if info.Partial {
+		for index := range rows {
+			rows[index].Dimensions["runStatus"] = "partial"
+		}
 	}
 	SortRows(rows)
 	if err := ValidateRows(rows); err != nil {
