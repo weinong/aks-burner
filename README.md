@@ -111,8 +111,6 @@ Existing AKS patchpools whose desired configuration still contains `perf.azure.c
 
 Every `kata-io` mode disables kube-burner result reporting, Prometheus, and kube-state-metrics. Its `summary/results.csv` files contain only FIO or Git benchmark rows read from artifact `summary.json` files.
 
-Every `kata-io` mode disables kube-burner result reporting, Prometheus, and kube-state-metrics. Its `summary/results.csv` files contain only FIO or Git benchmark rows read from artifact `summary.json` files.
-
 The benchmark image pins the Ubuntu 24.04 base image digest. Apt package versions remain unpinned because no repository snapshot is configured; each fio and Git sample records `fio`, `git`, `mkfs.ext4`, and `mount` versions in `tool-versions.txt` beside its summary and raw artifacts.
 
 The default infrastructure uses one `Standard_D4s_v5` system node, four `Standard_D8s_v5` baseline Kata nodes, and four `Standard_D8s_v5` patched Kata nodes. Ensure the target region has sufficient DSv5-family quota before provisioning; any quota increase is an external prerequisite.
