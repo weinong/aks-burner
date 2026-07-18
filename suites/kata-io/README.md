@@ -103,6 +103,14 @@ capability, not to isolate runtime, patch, or storage overhead. Each range shows
 pod-to-pod behavior within one shared-load job, not variation across independent
 benchmark runs.
 
+The separate IOPS and completion-latency charts use logarithmic axes to keep all
+five profiles readable. Higher IOPS is better; lower completion latency is
+better. The table below remains authoritative.
+
+![Fio concurrency-10 IOPS comparison. Median dots and observed min-max ranges are shown on logarithmic axes for each workload profile.](charts/fio-iops.svg)
+
+![Fio concurrency-10 completion latency p99 comparison. Median dots and observed min-max ranges are shown on logarithmic axes for each workload profile.](charts/fio-clat-p99.svg)
+
 | Profile | Runtime and storage | IOPS median (range) | Bandwidth median | Read/write clat p99 median (range) |
 | --- | --- | ---: | ---: | ---: |
 | `randread-4k` | Default runtime, `emptyDir` | 13,123 (12,862-19,424) read | 53.75 MB/s read | 47.45 (30.28-49.55) ms read |
@@ -299,6 +307,11 @@ Azure Disk raw-block PVC on a separate, identically configured node pool, while
 the other configurations use `emptyDir` or an Azure Disk filesystem PVC on the
 baseline pool. Each range shows pod-to-pod behavior within one shared-load job,
 not variation across independent benchmark runs.
+
+The chart uses separate linear scales for its two clone-mode panels so the
+blobless differences remain visible. The table below remains authoritative.
+
+![Git concurrency-10 clone duration comparison. Median bars and observed min-max ranges are shown for blobless and full clones.](charts/git-clone-duration.svg)
 
 | Runtime and storage | Blobless clone median (range) | Full clone median (range) |
 | --- | ---: | ---: |

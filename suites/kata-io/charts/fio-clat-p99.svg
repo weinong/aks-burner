@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1050" viewBox="0 0 1000 1050" role="img" aria-labelledby="title desc">
+  <title id="title">Fio concurrency-10 completion latency p99 comparison</title>
+  <desc id="desc">Five horizontal dot-and-whisker panels compare median read or write completion latency p99 and observed minimum to maximum for five runtime and storage paths. The horizontal scale is logarithmic and lower values are better.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #24292f; }
+    .title { font-size: 24px; font-weight: 600; }
+    .subtitle, .axis, .legend { font-size: 13px; }
+    .profile { font-size: 17px; font-weight: 600; }
+    .label { font-size: 12px; }
+    .grid { stroke: #d8dee4; stroke-width: 1; }
+    .range { stroke-width: 3; stroke-linecap: round; }
+    .cap { stroke-width: 1.5; }
+    .dot { stroke: #ffffff; stroke-width: 1.5; }
+    .panel { fill: #f6f8fa; }
+  </style>
+  <rect width="1000" height="1050" fill="#ffffff"/>
+  <text class="title" x="40" y="42">Fio concurrency-10 completion latency p99</text>
+  <text class="subtitle" x="40" y="66">Median dot with observed min-max range; logarithmic scale; lower is better</text>
+
+  <g class="legend">
+    <circle cx="55" cy="94" r="6" fill="#0072b2"/><text x="68" y="99">Default / emptyDir</text>
+    <circle cx="225" cy="94" r="6" fill="#9a6700"/><text x="238" y="99">Kata / emptyDir</text>
+    <circle cx="375" cy="94" r="6" fill="#8250df"/><text x="388" y="99">Default / Disk FS</text>
+    <circle cx="545" cy="94" r="6" fill="#d55e00"/><text x="558" y="99">Kata / Disk FS</text>
+    <circle cx="690" cy="94" r="6" fill="#009e73"/><text x="703" y="99">Patched Kata / Disk raw block</text>
+  </g>
+
+  <g id="randread">
+    <rect class="panel" x="40" y="120" width="920" height="164" rx="6"/>
+    <text class="profile" x="55" y="145">randread-4k (read)</text>
+    <g class="grid"><path d="M300 154V270 M428 154V270 M556 154V270 M684 154V270 M812 154V270 M940 154V270"/></g>
+    <g class="axis"><text x="289" y="279">0.1</text><text x="424" y="279">1</text><text x="549" y="279">10</text><text x="674" y="279">100</text><text x="798" y="279">1k</text><text x="923" y="279">10k</text></g>
+    <g class="label"><text x="55" y="169">Default / emptyDir</text><text x="55" y="190">Kata / emptyDir</text><text x="55" y="211">Default / Disk FS</text><text x="55" y="232">Kata / Disk FS</text><text x="55" y="253">Patched Kata / Disk raw block</text></g>
+    <g stroke="#0072b2"><path class="range" d="M618 165H645"/><path class="cap" d="M618 160V170M645 160V170"/></g><circle class="dot" cx="643" cy="165" r="6" fill="#0072b2"/>
+    <g stroke="#9a6700"><path class="range" d="M604 186H615"/><path class="cap" d="M604 181V191M615 181V191"/></g><circle class="dot" cx="612" cy="186" r="6" fill="#9a6700"/>
+    <g stroke="#8250df"><path class="range" d="M650 207H654"/><path class="cap" d="M650 202V212M654 202V212"/></g><circle class="dot" cx="653" cy="207" r="6" fill="#8250df"/>
+    <g stroke="#d55e00"><path class="range" d="M579 228H683"/><path class="cap" d="M579 223V233M683 223V233"/></g><circle class="dot" cx="604" cy="228" r="6" fill="#d55e00"/>
+    <g stroke="#009e73"><path class="range" d="M460 249H473"/><path class="cap" d="M460 244V254M473 244V254"/></g><circle class="dot" cx="467" cy="249" r="6" fill="#009e73"/>
+  </g>
+
+  <g id="randwrite">
+    <rect class="panel" x="40" y="296" width="920" height="164" rx="6"/>
+    <text class="profile" x="55" y="321">randwrite-4k (write)</text>
+    <g class="grid"><path d="M300 330V446 M428 330V446 M556 330V446 M684 330V446 M812 330V446 M940 330V446"/></g>
+    <g class="axis"><text x="289" y="455">0.1</text><text x="424" y="455">1</text><text x="549" y="455">10</text><text x="674" y="455">100</text><text x="798" y="455">1k</text><text x="923" y="455">10k</text></g>
+    <g class="label"><text x="55" y="345">Default / emptyDir</text><text x="55" y="366">Kata / emptyDir</text><text x="55" y="387">Default / Disk FS</text><text x="55" y="408">Kata / Disk FS</text><text x="55" y="429">Patched Kata / Disk raw block</text></g>
+    <g stroke="#0072b2"><path class="range" d="M799 341H833"/><path class="cap" d="M799 336V346M833 336V346"/></g><circle class="dot" cx="826" cy="341" r="6" fill="#0072b2"/>
+    <g stroke="#9a6700"><path class="range" d="M647 362H781"/><path class="cap" d="M647 357V367M781 357V367"/></g><circle class="dot" cx="748" cy="362" r="6" fill="#9a6700"/>
+    <g stroke="#8250df"><path class="range" d="M761 383H763"/><path class="cap" d="M761 378V388M763 378V388"/></g><circle class="dot" cx="762" cy="383" r="6" fill="#8250df"/>
+    <g stroke="#d55e00"><path class="range" d="M756 404H814"/><path class="cap" d="M756 399V409M814 399V409"/></g><circle class="dot" cx="779" cy="404" r="6" fill="#d55e00"/>
+    <g stroke="#009e73"><path class="range" d="M641 425H753"/><path class="cap" d="M641 420V430M753 420V430"/></g><circle class="dot" cx="646" cy="425" r="6" fill="#009e73"/>
+  </g>
+
+  <g id="seqread">
+    <rect class="panel" x="40" y="472" width="920" height="164" rx="6"/>
+    <text class="profile" x="55" y="497">seqread (read)</text>
+    <g class="grid"><path d="M300 506V622 M428 506V622 M556 506V622 M684 506V622 M812 506V622 M940 506V622"/></g>
+    <g class="axis"><text x="289" y="631">0.1</text><text x="424" y="631">1</text><text x="549" y="631">10</text><text x="674" y="631">100</text><text x="798" y="631">1k</text><text x="923" y="631">10k</text></g>
+    <g class="label"><text x="55" y="521">Default / emptyDir</text><text x="55" y="542">Kata / emptyDir</text><text x="55" y="563">Default / Disk FS</text><text x="55" y="584">Kata / Disk FS</text><text x="55" y="605">Patched Kata / Disk raw block</text></g>
+    <g stroke="#0072b2"><path class="range" d="M690 517H710"/><path class="cap" d="M690 512V522M710 512V522"/></g><circle class="dot" cx="710" cy="517" r="6" fill="#0072b2"/>
+    <g stroke="#9a6700"><path class="range" d="M597 538H648"/><path class="cap" d="M597 533V543M648 533V543"/></g><circle class="dot" cx="606" cy="538" r="6" fill="#9a6700"/>
+    <g stroke="#8250df"><path class="range" d="M690 559H710"/><path class="cap" d="M690 554V564M710 554V564"/></g><circle class="dot" cx="710" cy="559" r="6" fill="#8250df"/>
+    <g stroke="#d55e00"><path class="range" d="M595 580H649"/><path class="cap" d="M595 575V585M649 575V585"/></g><circle class="dot" cx="616" cy="580" r="6" fill="#d55e00"/>
+    <g stroke="#009e73"><path class="range" d="M588 601H599"/><path class="cap" d="M588 596V606M599 596V606"/></g><circle class="dot" cx="596" cy="601" r="6" fill="#009e73"/>
+  </g>
+
+  <g id="seqwrite">
+    <rect class="panel" x="40" y="648" width="920" height="164" rx="6"/>
+    <text class="profile" x="55" y="673">seqwrite (write)</text>
+    <g class="grid"><path d="M300 682V798 M428 682V798 M556 682V798 M684 682V798 M812 682V798 M940 682V798"/></g>
+    <g class="axis"><text x="289" y="807">0.1</text><text x="424" y="807">1</text><text x="549" y="807">10</text><text x="674" y="807">100</text><text x="798" y="807">1k</text><text x="923" y="807">10k</text></g>
+    <g class="label"><text x="55" y="697">Default / emptyDir</text><text x="55" y="718">Kata / emptyDir</text><text x="55" y="739">Default / Disk FS</text><text x="55" y="760">Kata / Disk FS</text><text x="55" y="781">Patched Kata / Disk raw block</text></g>
+    <g stroke="#0072b2"><path class="range" d="M807 693H835"/><path class="cap" d="M807 688V698M835 688V698"/></g><circle class="dot" cx="833" cy="693" r="6" fill="#0072b2"/>
+    <g stroke="#9a6700"><path class="range" d="M818 714H874"/><path class="cap" d="M818 709V719M874 709V719"/></g><circle class="dot" cx="861" cy="714" r="6" fill="#9a6700"/>
+    <g stroke="#8250df"><path class="range" d="M768 735H782"/><path class="cap" d="M768 730V740M782 730V740"/></g><circle class="dot" cx="781" cy="735" r="6" fill="#8250df"/>
+    <g stroke="#d55e00"><path class="range" d="M801 756H930"/><path class="cap" d="M801 751V761M930 751V761"/></g><circle class="dot" cx="911" cy="756" r="6" fill="#d55e00"/>
+    <g stroke="#009e73"><path class="range" d="M789 777H856"/><path class="cap" d="M789 772V782M856 772V782"/></g><circle class="dot" cx="827" cy="777" r="6" fill="#009e73"/>
+  </g>
+
+  <g id="fsync-heavy">
+    <rect class="panel" x="40" y="824" width="920" height="164" rx="6"/>
+    <text class="profile" x="55" y="849">fsync-heavy (write)</text>
+    <g class="grid"><path d="M300 858V974 M428 858V974 M556 858V974 M684 858V974 M812 858V974 M940 858V974"/></g>
+    <g class="axis"><text x="289" y="983">0.1</text><text x="424" y="983">1</text><text x="549" y="983">10</text><text x="674" y="983">100</text><text x="798" y="983">1k</text><text x="923" y="983">10k</text></g>
+    <g class="label"><text x="55" y="873">Default / emptyDir</text><text x="55" y="894">Kata / emptyDir</text><text x="55" y="915">Default / Disk FS</text><text x="55" y="936">Kata / Disk FS</text><text x="55" y="957">Patched Kata / Disk raw block</text></g>
+    <g stroke="#0072b2"><path class="range" d="M465 869H510"/><path class="cap" d="M465 864V874M510 864V874"/></g><circle class="dot" cx="486" cy="869" r="6" fill="#0072b2"/>
+    <g stroke="#9a6700"><path class="range" d="M595 890H609"/><path class="cap" d="M595 885V895M609 885V895"/></g><circle class="dot" cx="602" cy="890" r="6" fill="#9a6700"/>
+    <g stroke="#8250df"><path class="range" d="M617 911H625"/><path class="cap" d="M617 906V916M625 906V916"/></g><circle class="dot" cx="622" cy="911" r="6" fill="#8250df"/>
+    <g stroke="#d55e00"><path class="range" d="M617 932H637"/><path class="cap" d="M617 927V937M637 927V937"/></g><circle class="dot" cx="631" cy="932" r="6" fill="#d55e00"/>
+    <g stroke="#009e73"><path class="range" d="M374 953H385"/><path class="cap" d="M374 948V958M385 948V958"/></g><circle class="dot" cx="377" cy="953" r="6" fill="#009e73"/>
+  </g>
+
+  <text class="axis" x="620" y="1023" text-anchor="middle">Read/write completion latency p99 (ms, log scale)</text>
+</svg>

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="660" viewBox="0 0 1000 660" role="img" aria-labelledby="title desc">
+  <title id="title">Git concurrency-10 clone duration comparison</title>
+  <desc id="desc">Two horizontal bar panels compare blobless and full clone median duration with observed minimum to maximum for five runtime and storage paths. Lower values are better. The two panels use different linear scales.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #24292f; }
+    .title { font-size: 24px; font-weight: 600; }
+    .subtitle, .axis { font-size: 13px; }
+    .profile { font-size: 17px; font-weight: 600; }
+    .label { font-size: 12px; }
+    .value { font-size: 12px; font-weight: 600; fill: #ffffff; }
+    .value-dark { fill: #000000; }
+    .grid { stroke: #d8dee4; stroke-width: 1; }
+    .range-in, .cap-in { stroke: #ffffff; }
+    .range-out, .cap-out { stroke: #24292f; }
+    .range-in, .range-out { stroke-width: 2; }
+    .cap-in, .cap-out { stroke-width: 1.5; }
+    .panel { fill: #f6f8fa; }
+  </style>
+  <rect width="1000" height="660" fill="#ffffff"/>
+  <text class="title" x="40" y="42">Git concurrency-10 clone duration</text>
+  <text class="subtitle" x="40" y="66">Median bar with observed min-max range; linear scales; lower is better</text>
+
+  <g id="blobless">
+    <rect class="panel" x="40" y="92" width="920" height="244" rx="6"/>
+    <text class="profile" x="55" y="120">Blobless clone</text>
+    <text class="subtitle" x="940" y="120" text-anchor="end">0-100 seconds</text>
+    <g class="grid"><path d="M320 134V308 M440 134V308 M560 134V308 M680 134V308 M800 134V308 M920 134V308"/></g>
+    <g class="axis"><text x="316" y="326">0</text><text x="432" y="326">20</text><text x="552" y="326">40</text><text x="672" y="326">60</text><text x="792" y="326">80</text><text x="908" y="326">100 s</text></g>
+    <g class="label"><text x="55" y="158">Default / emptyDir</text><text x="55" y="190">Default / Disk FS</text><text x="55" y="222">Kata / emptyDir</text><text x="55" y="254">Kata / Disk FS</text><text x="55" y="286">Patched Kata / Disk raw block</text></g>
+    <rect x="320" y="143" width="171" height="19" rx="3" fill="#0072b2"/><g><path class="range-in" d="M470 152H491"/><path class="range-out" d="M491 152H502"/><path class="cap-in" d="M470 146V158"/><path class="cap-out" d="M502 146V158"/></g><text class="value" x="330" y="158">28.42</text>
+    <rect x="320" y="175" width="171" height="19" rx="3" fill="#8250df"/><g><path class="range-in" d="M465 184H491"/><path class="range-out" d="M491 184H514"/><path class="cap-in" d="M465 178V190"/><path class="cap-out" d="M514 178V190"/></g><text class="value" x="330" y="190">28.54</text>
+    <rect x="320" y="207" width="531" height="19" rx="3" fill="#9a6700"/><g><path class="range-in" d="M794 216H851"/><path class="range-out" d="M851 216H900"/><path class="cap-in" d="M794 210V222"/><path class="cap-out" d="M900 210V222"/></g><text class="value" x="330" y="222">88.54</text>
+    <rect x="320" y="239" width="526" height="19" rx="3" fill="#d55e00"/><g><path class="range-in" d="M788 248H846"/><path class="range-out" d="M846 248H881"/><path class="cap-in" d="M788 242V254"/><path class="cap-out" d="M881 242V254"/></g><text class="value value-dark" x="330" y="254">87.64</text>
+    <rect x="320" y="271" width="183" height="19" rx="3" fill="#009e73"/><g><path class="range-in" d="M496 280H503"/><path class="range-out" d="M503 280H507"/><path class="cap-in" d="M496 274V286"/><path class="cap-out" d="M507 274V286"/></g><text class="value value-dark" x="330" y="286">30.46</text>
+  </g>
+
+  <g id="full">
+    <rect class="panel" x="40" y="352" width="920" height="244" rx="6"/>
+    <text class="profile" x="55" y="380">Full clone</text>
+    <text class="subtitle" x="940" y="380" text-anchor="end">0-300 seconds</text>
+    <g class="grid"><path d="M320 394V568 M440 394V568 M560 394V568 M680 394V568 M800 394V568 M920 394V568"/></g>
+    <g class="axis"><text x="316" y="586">0</text><text x="428" y="586">60</text><text x="544" y="586">120</text><text x="664" y="586">180</text><text x="784" y="586">240</text><text x="908" y="586">300 s</text></g>
+    <g class="label"><text x="55" y="418">Default / emptyDir</text><text x="55" y="450">Default / Disk FS</text><text x="55" y="482">Kata / emptyDir</text><text x="55" y="514">Kata / Disk FS</text><text x="55" y="546">Patched Kata / Disk raw block</text></g>
+    <rect x="320" y="403" width="274" height="19" rx="3" fill="#0072b2"/><g><path class="range-in" d="M556 412H594"/><path class="range-out" d="M594 412H622"/><path class="cap-in" d="M556 406V418"/><path class="cap-out" d="M622 406V418"/></g><text class="value" x="330" y="418">137.12</text>
+    <rect x="320" y="435" width="282" height="19" rx="3" fill="#8250df"/><g><path class="range-in" d="M549 444H602"/><path class="range-out" d="M602 444H632"/><path class="cap-in" d="M549 438V450"/><path class="cap-out" d="M632 438V450"/></g><text class="value" x="330" y="450">140.84</text>
+    <rect x="320" y="467" width="539" height="19" rx="3" fill="#9a6700"/><g><path class="range-in" d="M812 476H859"/><path class="range-out" d="M859 476H882"/><path class="cap-in" d="M812 470V482"/><path class="cap-out" d="M882 470V482"/></g><text class="value" x="330" y="482">269.61</text>
+    <rect x="320" y="499" width="528" height="19" rx="3" fill="#d55e00"/><g><path class="range-in" d="M812 508H848"/><path class="range-out" d="M848 508H880"/><path class="cap-in" d="M812 502V514"/><path class="cap-out" d="M880 502V514"/></g><text class="value value-dark" x="330" y="514">264.03</text>
+    <rect x="320" y="531" width="243" height="19" rx="3" fill="#009e73"/><g><path class="range-in" d="M551 540H563"/><path class="range-out" d="M563 540H579"/><path class="cap-in" d="M551 534V546"/><path class="cap-out" d="M579 534V546"/></g><text class="value value-dark" x="330" y="546">121.44</text>
+  </g>
+
+  <text class="subtitle" x="40" y="626">Panels use different scales. Bars show median seconds; whiskers show the observed range.</text>
+</svg>
