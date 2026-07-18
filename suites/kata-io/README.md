@@ -5,8 +5,8 @@ Kata Pod Sandboxing, and an experimental patched Kata raw-block path. Azure
 Files benchmark scenarios are disabled because they can hang Azure Linux nodes
 during CIFS unmount. The shared Azure Files results PVC remains enabled only to
 collect benchmark artifacts. This document covers the fio and Git workloads,
-the full `fio` and Git results from 2026-07-17, and the archived `fio-fast`
-result from 2026-07-16.
+the full `fio` and Git results and the `git-fast` result from 2026-07-17, and
+the archived `fio-fast` result from 2026-07-16.
 
 ## Fio Modes
 
@@ -251,6 +251,37 @@ metrics are:
 | `file_count` | Number of regular files in the resulting checkout, including files under `.git`. |
 | `block_setup_duration` | Time to create `/work`, format, mount, and sync the raw-block device before cloning. It is zero for non-block jobs and excluded from `clone_duration`. |
 | `exit_code` | Git's process exit status; zero means the clone completed successfully. |
+
+## Git-Fast Result: 2026-07-17T22:33:09Z
+
+Source:
+`results/2026-07-17T22-33-09.864282763Z_kata-io_git-fast/summary/results.csv`
+
+The run completed both requested concurrency-1 scenarios: one blobless clone
+of the Kubernetes repository to `emptyDir` on the default runtime and one on
+Kata. Both Git processes exited successfully.
+
+| Runtime | Clone duration | Repository size | File count |
+| --- | ---: | ---: | ---: |
+| Default runtime | 26.4458 s | 579,201,681 bytes | 30,880 |
+| Kata | 74.1657 s | 579,158,368 bytes | 30,880 |
+
+### Findings
+
+- Dividing Kata's 74.1657-second duration by the default runtime's 26.4458
+  seconds gives 2.8044, so Kata took 2.80 times as long, a difference of
+  47.7199 seconds.
+- The resulting checkout sizes differed by only 43,313 bytes (0.0075%), and
+  both contained 30,880 regular files, making their measured checkout shapes
+  effectively equivalent.
+- The direction is consistent with the full Git run: Kata's concurrency-10
+  `emptyDir` blobless-clone median was 3.12 times the default runtime's median.
+  That shared-load median and these sequential concurrency-1 samples are not
+  directly comparable.
+- This is a smoke result with one sequential sample per runtime. It provides no
+  variance estimate and can be affected by node placement, caching, GitHub
+  conditions, and transient network or cluster load. The repository's default
+  branch is unpinned, so the result should not be treated as a durable baseline.
 
 ## Full Git Result: 2026-07-17T21:10:34Z
 
