@@ -1330,6 +1330,29 @@ func TestKataIOExposesOnlyCurrentModes(t *testing.T) {
 	}
 }
 
+func TestKataIOWorkloadsAreSelectedByCurrentModes(t *testing.T) {
+	root := filepath.Join("..", "..", "suites", "kata-io")
+	modes, err := filepath.Glob(filepath.Join(root, "vars", "*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := make(map[string]bool, len(modes))
+	for _, mode := range modes {
+		var doc struct {
+			WorkloadFile string `yaml:"workloadFile"`
+		}
+		if err := config.LoadYAML(mode, &doc); err != nil {
+			t.Fatal(err)
+		}
+		selected[doc.WorkloadFile] = true
+	}
+	for _, workload := range kataIOWorkloadFiles(t) {
+		if !selected[workload] {
+			t.Errorf("%s is not selected by a current kata-io mode", workload)
+		}
+	}
+}
+
 func TestKataIOMergeReadyContracts(t *testing.T) {
 	root := filepath.Join("..", "..")
 	modes := []string{"fio-fast", "git-fast", "fio", "git"}
