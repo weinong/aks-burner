@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" role="img" aria-labelledby="title desc">
+  <title id="title">Storage-full container-start latency comparison</title>
+  <desc id="desc">Three horizontal bar panels compare average and p95 container-start latency for Kata and the default runtime with no PVC, Azure Files, and Azure Disk. Lower values are better.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #24292f; }
+    .title { font-size: 24px; font-weight: 600; }
+    .subtitle, .axis, .legend { font-size: 13px; }
+    .profile { font-size: 17px; font-weight: 600; }
+    .label, .value { font-size: 12px; }
+    .value { font-weight: 600; fill: #ffffff; }
+    .value-dark { fill: #000000; }
+    .grid { stroke: #d8dee4; stroke-width: 1; }
+    .panel { fill: #f6f8fa; }
+  </style>
+  <rect width="1000" height="620" fill="#ffffff"/>
+  <text class="title" x="40" y="42">Storage-full container-start latency</text>
+  <text class="subtitle" x="40" y="66">Average and p95 from pod creation to ContainersStarted; linear scale; lower is better</text>
+
+  <g class="legend">
+    <rect x="40" y="84" width="18" height="12" rx="2" fill="#d55e00"/><text x="66" y="95">Kata average</text>
+    <rect x="170" y="84" width="18" height="12" rx="2" fill="#e69f73"/><text x="196" y="95">Kata p95</text>
+    <rect x="282" y="84" width="18" height="12" rx="2" fill="#0072b2"/><text x="308" y="95">Default average</text>
+    <rect x="430" y="84" width="18" height="12" rx="2" fill="#78b7db"/><text x="456" y="95">Default p95</text>
+  </g>
+
+  <g id="no-pvc">
+    <rect class="panel" x="40" y="112" width="920" height="140" rx="6"/>
+    <text class="profile" x="55" y="140">No PVC</text>
+    <g class="grid"><path d="M300 148V228 M400 148V228 M500 148V228 M600 148V228 M700 148V228 M800 148V228 M900 148V228"/></g>
+    <g class="label"><text x="55" y="166">Kata average</text><text x="55" y="186">Kata p95</text><text x="55" y="206">Default average</text><text x="55" y="226">Default p95</text></g>
+    <rect x="300" y="153" width="49" height="16" rx="2" fill="#d55e00"/><text class="value-dark value" x="356" y="166">2.441 s</text>
+    <rect x="300" y="173" width="45" height="16" rx="2" fill="#e69f73"/><text class="value-dark value" x="352" y="186">2.255 s</text>
+    <rect x="300" y="193" width="20" height="16" rx="2" fill="#0072b2"/><text class="value-dark value" x="327" y="206">0.999 s</text>
+    <rect x="300" y="213" width="29" height="16" rx="2" fill="#78b7db"/><text class="value-dark value" x="336" y="226">1.465 s</text>
+  </g>
+
+  <g id="azure-files">
+    <rect class="panel" x="40" y="266" width="920" height="140" rx="6"/>
+    <text class="profile" x="55" y="294">Azure Files</text>
+    <g class="grid"><path d="M300 302V382 M400 302V382 M500 302V382 M600 302V382 M700 302V382 M800 302V382 M900 302V382"/></g>
+    <g class="label"><text x="55" y="320">Kata average</text><text x="55" y="340">Kata p95</text><text x="55" y="360">Default average</text><text x="55" y="380">Default p95</text></g>
+    <rect x="300" y="307" width="85" height="16" rx="2" fill="#d55e00"/><text class="value value-dark" x="310" y="320">4.236 s</text>
+    <rect x="300" y="327" width="71" height="16" rx="2" fill="#e69f73"/><text class="value-dark value" x="378" y="340">3.562 s</text>
+    <rect x="300" y="347" width="42" height="16" rx="2" fill="#0072b2"/><text class="value-dark value" x="349" y="360">2.079 s</text>
+    <rect x="300" y="367" width="51" height="16" rx="2" fill="#78b7db"/><text class="value-dark value" x="358" y="380">2.574 s</text>
+  </g>
+
+  <g id="azure-disk">
+    <rect class="panel" x="40" y="420" width="920" height="140" rx="6"/>
+    <text class="profile" x="55" y="448">Azure Disk</text>
+    <g class="grid"><path d="M300 456V536 M400 456V536 M500 456V536 M600 456V536 M700 456V536 M800 456V536 M900 456V536"/></g>
+    <g class="label"><text x="55" y="474">Kata average</text><text x="55" y="494">Kata p95</text><text x="55" y="514">Default average</text><text x="55" y="534">Default p95</text></g>
+    <rect x="300" y="461" width="352" height="16" rx="2" fill="#d55e00"/><text class="value value-dark" x="310" y="474">17.592 s</text>
+    <rect x="300" y="481" width="514" height="16" rx="2" fill="#e69f73"/><text class="value-dark value" x="824" y="494">25.691 s</text>
+    <rect x="300" y="501" width="338" height="16" rx="2" fill="#0072b2"/><text class="value" x="310" y="514">16.881 s</text>
+    <rect x="300" y="521" width="501" height="16" rx="2" fill="#78b7db"/><text class="value-dark value" x="811" y="534">25.062 s</text>
+  </g>
+
+  <g class="axis">
+    <text x="296" y="585">0</text><text x="394" y="585">5</text><text x="492" y="585">10</text><text x="592" y="585">15</text><text x="692" y="585">20</text><text x="792" y="585">25</text><text x="892" y="585">30 s</text>
+    <text x="600" y="608" text-anchor="middle">Container-start latency (seconds)</text>
+  </g>
+</svg>
