@@ -11,3 +11,18 @@ tests:
   - storage-startup-standard-azure-disk
   - storage-startup-kata-azure-files
   - storage-startup-standard-azure-files
+modeDefaults:
+  iterationsPerNamespace: 1
+  qps: 5
+  burst: 5
+  cleanup: true
+  waitWhenFinished: false
+  preLoadImages: true
+  jobPause: 1m
+  metricsClosing: afterMeasurements
+  reporting:
+    scheme: kube-burner
+  templateVars:
+    app: kata-perf
+  imageVars:
+    image: pause

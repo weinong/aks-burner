@@ -12,14 +12,13 @@ import (
 	"testing"
 )
 
-func TestGenerateCombinesDeclaredSourcesWithoutAggregation(t *testing.T) {
+func TestGenerateUsesConfiguredKubeBurnerScheme(t *testing.T) {
 	workspace := t.TempDir()
 	runDir := filepath.Join(workspace, "results", "run-1")
-	writeStandardMetrics(t, runDir, []string{"0.2500"})
 	writeKubeBurnerMetrics(t, runDir)
 	var out bytes.Buffer
 	cfg := Config{
-		Sources:               Sources{StandardSummary: true, KubeBurner: true},
+		Scheme:                SchemeKubeBurner,
 		PrometheusMetricNames: []string{"podCPUUsage"},
 		PrometheusMetricUnits: map[string]string{"podCPUUsage": "cores"},
 	}
@@ -28,19 +27,19 @@ func TestGenerateCombinesDeclaredSourcesWithoutAggregation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.SourceFiles != 2 || result.Rows != 2 {
-		t.Fatalf("result = %#v, want 2 source files and 2 rows", result)
+	if result.SourceFiles != 1 || result.Rows != 1 {
+		t.Fatalf("result = %#v, want 1 source file and 1 row", result)
 	}
 	if result.CSVPath != filepath.Join(runDir, "summary", "results.csv") {
 		t.Fatalf("CSVPath = %q", result.CSVPath)
 	}
 
 	records := readCSV(t, result.CSVPath)
-	if len(records) != 3 {
-		t.Fatalf("CSV has %d data rows, want 2: %#v", len(records)-1, records)
+	if len(records) != 2 {
+		t.Fatalf("CSV has %d data rows, want 1: %#v", len(records)-1, records)
 	}
 	joined := fmt.Sprint(records)
-	for _, want := range []string{"artifacts/bench/summary.json", "raw/metrics/result.json", "0.2500", "1.2000e-03", "podCPUUsage"} {
+	for _, want := range []string{"raw/metrics/result.json", "1.2000e-03", "podCPUUsage"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("CSV missing %q: %#v", want, records)
 		}
@@ -48,7 +47,7 @@ func TestGenerateCombinesDeclaredSourcesWithoutAggregation(t *testing.T) {
 	text := out.String()
 	for _, want := range []string{
 		"Test results: demo / smoke / 2026-07-11T00:00:00Z",
-		"Sources: 2", "Measurements: 2",
+		"Sources: 1", "Measurements: 1",
 		"Results CSV: results/run-1/summary/results.csv",
 	} {
 		if !strings.Contains(text, want) {
@@ -68,7 +67,7 @@ func TestGenerateCountsOnlyKubeBurnerFilesContributingRows(t *testing.T) {
 	writeKubeBurnerMetric(t, runDir, "mixed.json", `[{"metricName":"jobSummary"},`+strings.TrimPrefix(strings.TrimSpace(string(data)), "["))
 	var out bytes.Buffer
 	cfg := Config{
-		Sources:               Sources{KubeBurner: true},
+		Scheme:                SchemeKubeBurner,
 		PrometheusMetricNames: []string{"podStartTotalP95"},
 		PrometheusMetricUnits: map[string]string{"podStartTotalP95": "seconds"},
 	}
@@ -90,7 +89,7 @@ func TestGeneratePassesStorageStartupReportingMode(t *testing.T) {
   {"metricName":"podLatencyMeasurement","uuid":"run-1","jobName":"storage-startup-kata-none","namespace":"kata-perf-storage-kata-none-0","podName":"storage-kata-none-0-1","jobIteration":0,"replica":1,"schedulingLatency":100,"readyToStartContainersLatency":1100,"containersStartedLatency":1200}
 ]`)
 	var out bytes.Buffer
-	result, err := Generate(runDir, Config{Sources: Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}, RunInfo{WorkspaceRoot: workspace}, &out)
+	result, err := Generate(runDir, Config{Scheme: SchemeStorageStartup}, RunInfo{WorkspaceRoot: workspace}, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +119,7 @@ func TestGeneratePreviewRowLimit(t *testing.T) {
 			writeStandardMetrics(t, runDir, values)
 			var out bytes.Buffer
 
-			_, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: workspace}, &out)
+			_, err := Generate(runDir, Config{Scheme: SchemeStandardSummary}, RunInfo{WorkspaceRoot: workspace}, &out)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -198,7 +197,7 @@ func TestGeneratePropagatesPreviewErrorAndRetainsCSV(t *testing.T) {
 
 	result, err := Generate(
 		runDir,
-		Config{Sources: Sources{StandardSummary: true}},
+		Config{Scheme: SchemeStandardSummary},
 		RunInfo{WorkspaceRoot: workspace},
 		failingWriter{err: io.ErrClosedPipe},
 	)
@@ -253,7 +252,7 @@ func TestGenerateSortsRowsDeterministically(t *testing.T) {
 	runDir := filepath.Join(workspace, "run")
 	writeStandardMetrics(t, runDir, []string{"3", "2", "1"})
 	var first bytes.Buffer
-	result, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: workspace}, &first)
+	result, err := Generate(runDir, Config{Scheme: SchemeStandardSummary}, RunInfo{WorkspaceRoot: workspace}, &first)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +263,7 @@ func TestGenerateSortsRowsDeterministically(t *testing.T) {
 		t.Fatalf("metrics = %v, want %v", metrics, want)
 	}
 	var second bytes.Buffer
-	if _, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: workspace}, &second); err != nil {
+	if _, err := Generate(runDir, Config{Scheme: SchemeStandardSummary}, RunInfo{WorkspaceRoot: workspace}, &second); err != nil {
 		t.Fatal(err)
 	}
 	if second.String() != first.String() {
@@ -275,7 +274,7 @@ func TestGenerateSortsRowsDeterministically(t *testing.T) {
 func TestGenerateRejectsZeroRows(t *testing.T) {
 	runDir := t.TempDir()
 	var out bytes.Buffer
-	_, err := Generate(runDir, Config{Sources: Sources{StandardSummary: true}}, RunInfo{WorkspaceRoot: filepath.Dir(runDir)}, &out)
+	_, err := Generate(runDir, Config{Scheme: SchemeStandardSummary}, RunInfo{WorkspaceRoot: filepath.Dir(runDir)}, &out)
 	if err == nil || !strings.Contains(err.Error(), "no valid measurements") {
 		t.Fatalf("Generate() error = %v", err)
 	}

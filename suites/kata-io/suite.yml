@@ -5,6 +5,24 @@ tests:
   - kata-io-git-fast
   - kata-io-fio
   - kata-io-git
+modeDefaults:
+  iterations: 1
+  iterationsPerNamespace: 1
+  qps: 1
+  burst: 1
+  cleanup: false
+  waitWhenFinished: true
+  preLoadImages: false
+  reporting:
+    scheme: standard-summary
+  templateVars:
+    namespace: kata-io
+    repoURL: https://github.com/kubernetes/kubernetes
+    kataRuntimeClassName: kata-vm-isolation
+    azureDiskStorageClass: managed-csi
+    workVolumeSize: 128Gi
+  imageVars:
+    benchmarkImage: benchmark
 setup:
   resources:
     - name: namespace

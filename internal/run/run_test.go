@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Azure/aks-burner/internal/acr"
+	"github.com/Azure/aks-burner/internal/config"
 	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/suite"
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,62 @@ func TestModeSelectedWorkloadFileUsesConfiguredFile(t *testing.T) {
 	mode := Mode{WorkloadFile: "workload-smoke.yml"}
 	if got := mode.SelectedWorkloadFile(); got != "workload-smoke.yml" {
 		t.Fatalf("SelectedWorkloadFile() = %q, want workload-smoke.yml", got)
+	}
+}
+
+func TestModeRenderedArtifactSubpathReplacesTimestamp(t *testing.T) {
+	mode := Mode{
+		ArtifactSubpath: "kata-io-fio-{{.runTimestamp}}",
+		RunTimestamp:    time.Date(2026, 7, 9, 1, 2, 3, 4, time.UTC),
+	}
+	if got, want := mode.RenderedArtifactSubpath(), "kata-io-fio-20260709T010203.000000004Z"; got != want {
+		t.Fatalf("RenderedArtifactSubpath() = %q, want %q", got, want)
+	}
+}
+
+func TestModeSchemaRejectsUnsupportedArtifactPlaceholder(t *testing.T) {
+	root := filepath.Join("..", "..")
+	path := filepath.Join(t.TempDir(), "mode.yml")
+	if err := os.WriteFile(path, []byte(`iterations: 1
+iterationsPerNamespace: 1
+qps: 1
+burst: 1
+cleanup: true
+waitWhenFinished: true
+preLoadImages: false
+artifactSubpath: run-{{.runID}}
+reporting:
+  scheme: standard-summary
+templateVars: {}
+imageVars: {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), path); err == nil {
+		t.Fatal("mode schema accepted an unsupported artifact placeholder")
+	}
+}
+
+func TestModeSchemaRejectsStaticArtifactSubpath(t *testing.T) {
+	root := filepath.Join("..", "..")
+	path := filepath.Join(t.TempDir(), "mode.yml")
+	if err := os.WriteFile(path, []byte(`iterations: 1
+iterationsPerNamespace: 1
+qps: 1
+burst: 1
+cleanup: true
+waitWhenFinished: true
+preLoadImages: false
+artifactSubpath: reused-results
+reporting:
+  scheme: standard-summary
+templateVars: {}
+imageVars: {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), path); err == nil {
+		t.Fatal("mode schema accepted a static artifact subpath")
 	}
 }
 
@@ -292,13 +349,13 @@ func TestRenderWorkloadUsesDNSRunTimestampPlaceholder(t *testing.T) {
 	}
 }
 
-func TestModeCarriesStorageStartupReportingFlag(t *testing.T) {
+func TestModeCarriesReportingScheme(t *testing.T) {
 	var mode Mode
-	if err := yaml.Unmarshal([]byte("reportStorageStartupMetrics: true\n"), &mode); err != nil {
+	if err := yaml.Unmarshal([]byte("reporting:\n  scheme: storage-startup\n"), &mode); err != nil {
 		t.Fatal(err)
 	}
-	if !mode.ReportStorageStartupMetrics {
-		t.Fatal("reportStorageStartupMetrics was not decoded")
+	if !mode.Reporting.Scheme.ReportsStorageStartup() {
+		t.Fatal("storage-startup reporting scheme was not decoded")
 	}
 }
 

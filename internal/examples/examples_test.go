@@ -21,6 +21,7 @@ import (
 	"github.com/Azure/aks-burner/internal/reporting"
 	"github.com/Azure/aks-burner/internal/requirements"
 	"github.com/Azure/aks-burner/internal/run"
+	"github.com/Azure/aks-burner/internal/suite"
 	"gopkg.in/yaml.v3"
 )
 
@@ -32,13 +33,9 @@ func TestKataPerfContractsValidate(t *testing.T) {
 	}{
 		{"schemas/suite.schema.json", "suites/kata-perf/suite.yml"},
 		{"schemas/requirements.schema.json", "suites/kata-perf/requirements.yml"},
-		{"schemas/mode.schema.json", "suites/kata-perf/vars/smoke.yml"},
-		{"schemas/mode.schema.json", "suites/kata-perf/vars/full.yml"},
-		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-1.yml"},
-		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-2.yml"},
-		{"schemas/mode.schema.json", "suites/kata-perf/vars/load-qps-5.yml"},
-		{"schemas/mode.schema.json", "suites/kata-perf/vars/storage-smoke.yml"},
-		{"schemas/mode.schema.json", "suites/kata-perf/vars/storage-full.yml"},
+	}
+	for _, mode := range []string{"smoke", "full", "load-qps-1", "load-qps-2", "load-qps-5", "storage-smoke", "storage-full"} {
+		_ = loadExampleMode(t, root, "kata-perf", mode)
 	}
 	for _, tc := range cases {
 		if err := config.ValidateYAML(filepath.Join(root, tc.schema), filepath.Join(root, tc.file)); err != nil {
@@ -68,12 +65,7 @@ func TestKataPerfUsesStaticPauseImageWithoutBuilds(t *testing.T) {
 		t.Fatal("kata-perf requirements must omit images")
 	}
 	for _, mode := range []string{"smoke", "full", "load-qps-1", "load-qps-2", "load-qps-5", "storage-smoke", "storage-full"} {
-		var vars struct {
-			ImageVars map[string]string `yaml:"imageVars"`
-		}
-		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", mode+".yml"), &vars); err != nil {
-			t.Fatal(err)
-		}
+		vars := loadExampleMode(t, root, "kata-perf", mode)
 		if got := vars.ImageVars["image"]; got != "pause" {
 			t.Fatalf("kata-perf %s image key = %q, want pause", mode, got)
 		}
@@ -124,12 +116,9 @@ func TestKataPerfStorageModesRenderSerializedMatrix(t *testing.T) {
 	wantStorageClasses := []string{"", "", "managed-csi", "managed-csi", "azurefile-csi", "azurefile-csi"}
 	wantAccessModes := []string{"", "", "ReadWriteOnce", "ReadWriteOnce", "ReadWriteMany", "ReadWriteMany"}
 	for modeName, iterations := range map[string]int{"storage-smoke": 5, "storage-full": 20} {
-		var mode run.Mode
-		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", modeName+".yml"), &mode); err != nil {
-			t.Fatal(err)
-		}
-		if !mode.ReportStorageStartupMetrics || mode.SelectedWorkloadFile() != "workload-storage.yml" {
-			t.Fatalf("%s storage reporting/workload = %v/%q", modeName, mode.ReportStorageStartupMetrics, mode.SelectedWorkloadFile())
+		mode := loadExampleMode(t, root, "kata-perf", modeName)
+		if !mode.Reporting.Scheme.ReportsStorageStartup() || mode.SelectedWorkloadFile() != "workload-storage.yml" {
+			t.Fatalf("%s storage reporting/workload = %q/%q", modeName, mode.Reporting.Scheme, mode.SelectedWorkloadFile())
 		}
 		if !mode.Cleanup {
 			t.Fatalf("%s global cleanup must be true", modeName)
@@ -369,11 +358,8 @@ func TestKataPerfModesRenderOfferedLoadJobs(t *testing.T) {
 	}
 
 	for modeName, expectedQPS := range map[string]int{"load-qps-1": 1, "load-qps-2": 2, "load-qps-5": 5} {
-		var mode run.Mode
-		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", modeName+".yml"), &mode); err != nil {
-			t.Fatal(err)
-		}
-		if !mode.ReportPodReadyMetrics {
+		mode := loadExampleMode(t, root, "kata-perf", modeName)
+		if !mode.Reporting.Scheme.ReportsPodReady() {
 			t.Fatalf("kata-perf %s must report offered-load readiness metrics", modeName)
 		}
 		if got, want := mode.SelectedWorkloadFile(), "workload-load.yml"; got != want {
@@ -433,10 +419,7 @@ func TestKataPerfModesRenderSerializedLatencyJobs(t *testing.T) {
 	}
 
 	for modeName, expectedIterations := range map[string]int{"smoke": 5, "full": 20} {
-		var mode run.Mode
-		if err := config.LoadYAML(filepath.Join(root, "suites/kata-perf/vars", modeName+".yml"), &mode); err != nil {
-			t.Fatal(err)
-		}
+		mode := loadExampleMode(t, root, "kata-perf", modeName)
 		rendered, err := run.RenderWorkload(workload, mode, images, "", true)
 		if err != nil {
 			t.Fatal(err)
@@ -1198,7 +1181,7 @@ func TestRequirementsSchemaRejectsInvalidNodePools(t *testing.T) {
 	} {
 		t.Run(invalidPool[:12], func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "requirements.yml")
-			data := "suite: demo\nrequires:\n  infrastructure:\n    provider: aks\n    nodePools:\n      - " + invalidPool + "\n  kubernetes:\n    minVersion: \"1.36\"\n  nodeSelectors: []\n  reporting:\n    sources:\n      standardSummary: false\n      kubeBurner: true\n    prometheusMetricUnits: {}\n  observability:\n    prometheus:\n      required: false\n      install: false\n      namespace: monitoring\n      imageKey: prometheus\n      serviceName: prometheus\n      servicePort: 9090\n      localPort: 9090\n"
+			data := "suite: demo\nrequires:\n  infrastructure:\n    provider: aks\n    nodePools:\n      - " + invalidPool + "\n  kubernetes:\n    minVersion: \"1.36\"\n  nodeSelectors: []\n  reporting:\n    prometheusMetricUnits: {}\n  observability:\n    prometheus:\n      required: false\n      install: false\n      namespace: monitoring\n      imageKey: prometheus\n      serviceName: prometheus\n      servicePort: 9090\n      localPort: 9090\n"
 			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -1304,15 +1287,14 @@ func TestKataIOContractsValidate(t *testing.T) {
 	}{
 		{"schemas/suite.schema.json", "suites/kata-io/suite.yml"},
 		{"schemas/requirements.schema.json", "suites/kata-io/requirements.yml"},
-		{"schemas/mode.schema.json", "suites/kata-io/vars/fio-fast.yml"},
-		{"schemas/mode.schema.json", "suites/kata-io/vars/git-fast.yml"},
-		{"schemas/mode.schema.json", "suites/kata-io/vars/fio.yml"},
-		{"schemas/mode.schema.json", "suites/kata-io/vars/git.yml"},
 	}
 	for _, tc := range cases {
 		if err := config.ValidateYAML(filepath.Join(root, tc.schema), filepath.Join(root, tc.file)); err != nil {
 			t.Fatalf("%s failed validation against %s: %v", tc.file, tc.schema, err)
 		}
+	}
+	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
+		_ = loadExampleMode(t, root, "kata-io", mode)
 	}
 }
 
@@ -1357,18 +1339,12 @@ func TestKataIOMergeReadyContracts(t *testing.T) {
 	root := filepath.Join("..", "..")
 	modes := []string{"fio-fast", "git-fast", "fio", "git"}
 	for _, mode := range modes {
-		data, err := os.ReadFile(filepath.Join(root, "suites", "kata-io", "vars", mode+".yml"))
+		path := filepath.Join(root, "suites", "kata-io", "vars", mode+".yml")
+		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("missing mode %s: %v", mode, err)
 		}
-		var doc struct {
-			Cleanup      bool           `yaml:"cleanup"`
-			WorkloadFile string         `yaml:"workloadFile"`
-			TemplateVars map[string]any `yaml:"templateVars"`
-		}
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			t.Fatal(err)
-		}
+		doc := loadExampleMode(t, root, "kata-io", mode)
 		if doc.Cleanup {
 			t.Fatalf("%s cleanup must be false so results PVC survives artifact copy", mode)
 		}
@@ -1580,13 +1556,7 @@ func TestKataIOWorkloadsPreloadBenchmarkImageOnBothPools(t *testing.T) {
 	}
 
 	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
-		var vars struct {
-			PreLoadImages bool `yaml:"preLoadImages"`
-		}
-		if err := config.LoadYAML(filepath.Join(root, "suites", "kata-io", "vars", mode+".yml"), &vars); err != nil {
-			t.Fatal(err)
-		}
-		if vars.PreLoadImages {
+		if loadExampleMode(t, root, "kata-io", mode).PreLoadImages {
 			t.Fatalf("%s mode must default preLoadImages to false", mode)
 		}
 	}
@@ -2135,17 +2105,9 @@ func TestKataIOInfraPinsRequiredKubernetesVersion(t *testing.T) {
 }
 
 func TestKataIOModesUsePerRunIDPlaceholder(t *testing.T) {
+	root := filepath.Join("..", "..")
 	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
-		data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "vars", mode+".yml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var doc struct {
-			TemplateVars map[string]any `yaml:"templateVars"`
-		}
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			t.Fatal(err)
-		}
+		doc := loadExampleMode(t, root, "kata-io", mode)
 		runID := asString(doc.TemplateVars["runID"])
 		if !strings.Contains(runID, "{{.runTimestamp}}") {
 			t.Fatalf("%s mode runID = %q, want per-run {{.runTimestamp}} placeholder", mode, runID)
@@ -2153,21 +2115,16 @@ func TestKataIOModesUsePerRunIDPlaceholder(t *testing.T) {
 		if !strings.HasPrefix(runID, "kata-io-"+mode+"-") {
 			t.Fatalf("%s mode runID = %q, want kata-io-%s prefix", mode, runID, mode)
 		}
+		if doc.ArtifactSubpath != runID {
+			t.Fatalf("%s artifactSubpath = %q, want runID %q", mode, doc.ArtifactSubpath, runID)
+		}
 	}
 }
 
 func TestKataIOModesPreserveResultsForArtifactCopy(t *testing.T) {
+	root := filepath.Join("..", "..")
 	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
-		data, err := os.ReadFile(filepath.Join("..", "..", "suites", "kata-io", "vars", mode+".yml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var doc struct {
-			Cleanup bool `yaml:"cleanup"`
-		}
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			t.Fatal(err)
-		}
+		doc := loadExampleMode(t, root, "kata-io", mode)
 		if doc.Cleanup {
 			t.Fatalf("%s mode cleanup must be false so kube-burner does not delete the results PVC before artifact copy", mode)
 		}
@@ -2180,8 +2137,10 @@ func TestKataIOReportsArtifactSummariesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !doc.Requires.Reporting.Sources.StandardSummary || doc.Requires.Reporting.Sources.KubeBurner {
-		t.Fatalf("kata-io reporting sources = %#v, want artifact summaries only", doc.Requires.Reporting.Sources)
+	for _, mode := range []string{"fio-fast", "git-fast", "fio", "git"} {
+		if got := loadExampleMode(t, root, "kata-io", mode).Reporting.Scheme; got != reporting.SchemeStandardSummary {
+			t.Fatalf("kata-io %s reporting scheme = %q, want standard-summary", mode, got)
+		}
 	}
 	if len(doc.Requires.Reporting.PrometheusMetricUnits) != 0 {
 		t.Fatalf("kata-io Prometheus metric units = %#v, want none", doc.Requires.Reporting.PrometheusMetricUnits)
@@ -2199,6 +2158,24 @@ func TestKataIOReportsArtifactSummariesOnly(t *testing.T) {
 	if len(metricNames) != 0 {
 		t.Fatalf("kata-io Prometheus metrics = %v, want none", metricNames)
 	}
+}
+
+func loadExampleMode(t *testing.T, root, suiteName, modeName string) run.Mode {
+	t.Helper()
+	suiteConfig, err := suite.Load(root, suiteName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mode run.Mode
+	if err := config.LoadMergedYAML(
+		filepath.Join(root, "schemas", "mode.schema.json"),
+		suiteConfig.ModeDefaults,
+		filepath.Join(root, "suites", suiteName, "vars", modeName+".yml"),
+		&mode,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return mode
 }
 
 func TestKataIOBenchmarkImageFilesExist(t *testing.T) {

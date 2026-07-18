@@ -7,17 +7,39 @@ import (
 	"github.com/Azure/aks-burner/internal/config"
 )
 
-type Config struct {
-	Sources                     Sources           `yaml:"sources"`
-	PrometheusMetricUnits       map[string]string `yaml:"prometheusMetricUnits"`
-	PrometheusMetricNames       []string          `yaml:"-"`
-	ReportPodReadyMetrics       bool              `yaml:"-"`
-	ReportStorageStartupMetrics bool              `yaml:"-"`
+type Scheme string
+
+const (
+	SchemeStandardSummary Scheme = "standard-summary"
+	SchemeKubeBurner      Scheme = "kube-burner"
+	SchemePodReady        Scheme = "pod-ready"
+	SchemeStorageStartup  Scheme = "storage-startup"
+)
+
+func (scheme Scheme) UsesStandardSummary() bool {
+	return scheme == SchemeStandardSummary
 }
 
-type Sources struct {
-	StandardSummary bool `yaml:"standardSummary"`
-	KubeBurner      bool `yaml:"kubeBurner"`
+func (scheme Scheme) UsesKubeBurner() bool {
+	return scheme == SchemeKubeBurner || scheme == SchemePodReady || scheme == SchemeStorageStartup
+}
+
+func (scheme Scheme) ReportsPodReady() bool {
+	return scheme == SchemePodReady
+}
+
+func (scheme Scheme) ReportsStorageStartup() bool {
+	return scheme == SchemeStorageStartup
+}
+
+func (scheme Scheme) SupportsPartialResults() bool {
+	return scheme == SchemePodReady || scheme == SchemeStorageStartup
+}
+
+type Config struct {
+	Scheme                Scheme            `yaml:"-"`
+	PrometheusMetricUnits map[string]string `yaml:"prometheusMetricUnits"`
+	PrometheusMetricNames []string          `yaml:"-"`
 }
 
 type metricProfileEntry struct {
@@ -41,29 +63,20 @@ func PrometheusMetricNames(path string) ([]string, error) {
 }
 
 func ValidateConfig(cfg *Config, artifactsEnabled, prometheusEnabled bool, workload map[string]any, prometheusMetricNames []string) error {
-	if !cfg.Sources.StandardSummary && !cfg.Sources.KubeBurner {
-		return fmt.Errorf("at least one viable reporting source is required")
+	if cfg.Scheme == "" {
+		return fmt.Errorf("reporting scheme is required")
 	}
-	if cfg.ReportPodReadyMetrics && !cfg.Sources.KubeBurner {
-		return fmt.Errorf("pod Ready reporting requires kubeBurner reporting")
+	if !cfg.Scheme.UsesStandardSummary() && !cfg.Scheme.UsesKubeBurner() {
+		return fmt.Errorf("unsupported reporting scheme %q", cfg.Scheme)
 	}
-	if cfg.ReportStorageStartupMetrics && !cfg.Sources.KubeBurner {
-		return fmt.Errorf("storage startup reporting requires kubeBurner reporting")
-	}
-	if cfg.ReportPodReadyMetrics && cfg.ReportStorageStartupMetrics {
-		return fmt.Errorf("pod Ready and storage startup reporting are mutually exclusive")
-	}
-	if cfg.ReportPodReadyMetrics && cfg.Sources.StandardSummary {
-		return fmt.Errorf("pod Ready reporting does not support standardSummary reporting")
-	}
-	if cfg.Sources.StandardSummary && !artifactsEnabled {
+	if cfg.Scheme.UsesStandardSummary() && !artifactsEnabled {
 		return fmt.Errorf("standardSummary reporting requires enabled artifact collection")
 	}
-	if !cfg.Sources.KubeBurner {
+	if !cfg.Scheme.UsesKubeBurner() {
 		return nil
 	}
 	supportedMeasurement := hasMeasurement(workload, "podLatency")
-	if cfg.ReportPodReadyMetrics {
+	if cfg.Scheme.ReportsPodReady() {
 		if !supportedMeasurement {
 			return fmt.Errorf("pod Ready reporting requires podLatency")
 		}
@@ -71,7 +84,7 @@ func ValidateConfig(cfg *Config, artifactsEnabled, prometheusEnabled bool, workl
 			return err
 		}
 	}
-	if cfg.ReportStorageStartupMetrics {
+	if cfg.Scheme.ReportsStorageStartup() {
 		if !supportedMeasurement {
 			return fmt.Errorf("storage startup reporting requires podLatency")
 		}

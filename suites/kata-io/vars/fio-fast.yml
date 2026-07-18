@@ -1,18 +1,5 @@
-iterations: 1
-iterationsPerNamespace: 1
-qps: 1
-burst: 1
-cleanup: false
-waitWhenFinished: true
-preLoadImages: false
 workloadFile: workload-fio-fast.yml
+artifactSubpath: kata-io-fio-fast-{{.runTimestamp}}
 templateVars:
-  namespace: kata-io
   runID: kata-io-fio-fast-{{.runTimestamp}}
   k8sRunID: kio-fio-fast-{{.runTimestampDNS}}
-  repoURL: https://github.com/kubernetes/kubernetes
-  kataRuntimeClassName: kata-vm-isolation
-  azureDiskStorageClass: managed-csi
-  workVolumeSize: 128Gi
-imageVars:
-  benchmarkImage: benchmark

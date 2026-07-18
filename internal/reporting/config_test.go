@@ -7,8 +7,27 @@ import (
 	"testing"
 )
 
+func TestSchemeCapabilities(t *testing.T) {
+	for _, test := range []struct {
+		scheme     Scheme
+		kubeBurner bool
+		podReady   bool
+		storage    bool
+		partial    bool
+	}{
+		{scheme: SchemeStandardSummary},
+		{scheme: SchemeKubeBurner, kubeBurner: true},
+		{scheme: SchemePodReady, kubeBurner: true, podReady: true, partial: true},
+		{scheme: SchemeStorageStartup, kubeBurner: true, storage: true, partial: true},
+	} {
+		if test.scheme.UsesKubeBurner() != test.kubeBurner || test.scheme.ReportsPodReady() != test.podReady || test.scheme.ReportsStorageStartup() != test.storage || test.scheme.SupportsPartialResults() != test.partial {
+			t.Fatalf("capabilities for %q do not match expected values", test.scheme)
+		}
+	}
+}
+
 func TestValidateConfigAcceptsStandardSummaryWithArtifacts(t *testing.T) {
-	cfg := Config{Sources: Sources{StandardSummary: true}}
+	cfg := Config{Scheme: SchemeStandardSummary}
 	if err := ValidateConfig(&cfg, true, false, map[string]any{"jobs": []any{}}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +35,7 @@ func TestValidateConfigAcceptsStandardSummaryWithArtifacts(t *testing.T) {
 
 func TestValidateConfigAcceptsSupportedKubeBurnerMeasurement(t *testing.T) {
 	workload := map[string]any{"global": map[string]any{"measurements": []any{map[string]any{"name": "podLatency"}}}}
-	cfg := Config{Sources: Sources{KubeBurner: true}}
+	cfg := Config{Scheme: SchemeKubeBurner}
 	if err := ValidateConfig(&cfg, false, false, workload, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -25,29 +44,29 @@ func TestValidateConfigAcceptsSupportedKubeBurnerMeasurement(t *testing.T) {
 func TestValidateConfigRejectsNoViableSource(t *testing.T) {
 	cfg := Config{}
 	err := ValidateConfig(&cfg, false, false, map[string]any{"jobs": []any{}}, nil)
-	if err == nil || !strings.Contains(err.Error(), "viable reporting source") {
+	if err == nil || !strings.Contains(err.Error(), "reporting scheme is required") {
 		t.Fatalf("ValidateConfig() error = %v", err)
 	}
 }
 
 func TestValidateConfigRejectsStandardSummaryWithoutArtifacts(t *testing.T) {
-	cfg := Config{Sources: Sources{StandardSummary: true}}
+	cfg := Config{Scheme: SchemeStandardSummary}
 	err := ValidateConfig(&cfg, false, false, map[string]any{"jobs": []any{}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "artifact") {
 		t.Fatalf("ValidateConfig() error = %v", err)
 	}
 }
 
-func TestValidateConfigRejectsPodReadyReportingWithoutKubeBurner(t *testing.T) {
-	cfg := Config{Sources: Sources{StandardSummary: true}, ReportPodReadyMetrics: true}
+func TestValidateConfigRejectsUnsupportedScheme(t *testing.T) {
+	cfg := Config{Scheme: "custom"}
 	err := ValidateConfig(&cfg, true, false, map[string]any{"jobs": []any{}}, nil)
-	if err == nil || !strings.Contains(err.Error(), "requires kubeBurner reporting") {
+	if err == nil || !strings.Contains(err.Error(), "unsupported reporting scheme") {
 		t.Fatalf("ValidateConfig() error = %v", err)
 	}
 }
 
 func TestValidateConfigRejectsPodReadyReportingWithoutPodLatency(t *testing.T) {
-	cfg := Config{Sources: Sources{KubeBurner: true}, ReportPodReadyMetrics: true, PrometheusMetricUnits: map[string]string{"up": "count"}}
+	cfg := Config{Scheme: SchemePodReady, PrometheusMetricUnits: map[string]string{"up": "count"}}
 	err := ValidateConfig(&cfg, false, true, map[string]any{"jobs": []any{}}, []string{"up"})
 	if err == nil || !strings.Contains(err.Error(), "requires podLatency") {
 		t.Fatalf("ValidateConfig() error = %v", err)
@@ -68,7 +87,7 @@ func TestValidateConfigRejectsPodReadyReportingWhenAnyJobLacksPodLatency(t *test
 			},
 		},
 	}
-	cfg := Config{Sources: Sources{KubeBurner: true}, ReportPodReadyMetrics: true}
+	cfg := Config{Scheme: SchemePodReady}
 	err := ValidateConfig(&cfg, false, false, workload, nil)
 	if err == nil || !strings.Contains(err.Error(), `job "unmeasured" requires podLatency`) {
 		t.Fatalf("ValidateConfig() error = %v", err)
@@ -90,7 +109,7 @@ func TestValidateConfigAcceptsPodReadyReportingWithPodLatencyOnEveryJob(t *testi
 			},
 		},
 	}
-	cfg := Config{Sources: Sources{KubeBurner: true}, ReportPodReadyMetrics: true}
+	cfg := Config{Scheme: SchemePodReady}
 	if err := ValidateConfig(&cfg, false, false, workload, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +137,7 @@ func TestValidateConfigRejectsPodReadyReportingWithoutOnePodPerIteration(t *test
 				"global": map[string]any{"measurements": []any{map[string]any{"name": "podLatency"}}},
 				"jobs":   []any{job},
 			}
-			cfg := Config{Sources: Sources{KubeBurner: true}, ReportPodReadyMetrics: true}
+			cfg := Config{Scheme: SchemePodReady}
 			err := ValidateConfig(&cfg, false, false, workload, nil)
 			if err == nil || !strings.Contains(err.Error(), "exactly one object with one replica") {
 				t.Fatalf("ValidateConfig() error = %v", err)
@@ -132,46 +151,18 @@ func TestValidateConfigRejectsPodReadyReportingWithoutJobs(t *testing.T) {
 		"global": map[string]any{"measurements": []any{map[string]any{"name": "podLatency"}}},
 		"jobs":   []any{},
 	}
-	cfg := Config{Sources: Sources{KubeBurner: true}, ReportPodReadyMetrics: true}
+	cfg := Config{Scheme: SchemePodReady}
 	err := ValidateConfig(&cfg, false, false, workload, nil)
 	if err == nil || !strings.Contains(err.Error(), "requires at least one job") {
 		t.Fatalf("ValidateConfig() error = %v", err)
 	}
 }
 
-func TestValidateConfigRejectsPodReadyReportingWithStandardSummaries(t *testing.T) {
-	workload := map[string]any{
-		"global": map[string]any{"measurements": []any{map[string]any{"name": "podLatency"}}},
-		"jobs":   []any{map[string]any{"name": "load", "objects": []any{map[string]any{"replicas": 1}}}},
-	}
-	cfg := Config{Sources: Sources{StandardSummary: true, KubeBurner: true}, ReportPodReadyMetrics: true}
-	err := ValidateConfig(&cfg, true, false, workload, nil)
-	if err == nil || !strings.Contains(err.Error(), "does not support standardSummary") {
-		t.Fatalf("ValidateConfig() error = %v", err)
-	}
-}
-
 func TestValidateConfigAcceptsStorageStartupReporting(t *testing.T) {
 	workload := storageStartupTestWorkload()
-	cfg := Config{Sources: Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}
+	cfg := Config{Scheme: SchemeStorageStartup}
 	if err := ValidateConfig(&cfg, false, false, workload, nil); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestValidateConfigRejectsCombinedSpecializedReporting(t *testing.T) {
-	cfg := Config{Sources: Sources{KubeBurner: true}, ReportPodReadyMetrics: true, ReportStorageStartupMetrics: true}
-	err := ValidateConfig(&cfg, false, false, storageStartupTestWorkload(), nil)
-	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("ValidateConfig() error = %v, want mutually exclusive reporting error", err)
-	}
-}
-
-func TestValidateConfigRejectsStorageStartupReportingWithoutKubeBurner(t *testing.T) {
-	cfg := Config{Sources: Sources{StandardSummary: true}, ReportStorageStartupMetrics: true}
-	err := ValidateConfig(&cfg, true, false, storageStartupTestWorkload(), nil)
-	if err == nil || !strings.Contains(err.Error(), "requires kubeBurner reporting") {
-		t.Fatalf("ValidateConfig() error = %v, want kubeBurner reporting error", err)
 	}
 }
 
@@ -212,7 +203,7 @@ func TestValidateConfigRejectsInvalidStorageStartupWorkload(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			workload := storageStartupTestWorkload()
 			tc.mutate(workload)
-			cfg := Config{Sources: Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}
+			cfg := Config{Scheme: SchemeStorageStartup}
 			err := ValidateConfig(&cfg, false, false, workload, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ValidateConfig() error = %v, want %q", err, tc.want)
@@ -255,7 +246,7 @@ func storageStartupTestWorkload() map[string]any {
 }
 
 func TestValidateConfigRejectsPrometheusMetricWithoutUnit(t *testing.T) {
-	cfg := Config{Sources: Sources{KubeBurner: true}}
+	cfg := Config{Scheme: SchemeKubeBurner}
 	err := ValidateConfig(&cfg, false, true, map[string]any{"jobs": []any{}}, []string{"podCPUUsage"})
 	if err == nil || !strings.Contains(err.Error(), "podCPUUsage") {
 		t.Fatalf("ValidateConfig() error = %v", err)
@@ -263,7 +254,7 @@ func TestValidateConfigRejectsPrometheusMetricWithoutUnit(t *testing.T) {
 }
 
 func TestValidateConfigRejectsUnitForUndeclaredPrometheusMetric(t *testing.T) {
-	cfg := Config{Sources: Sources{KubeBurner: true}, PrometheusMetricUnits: map[string]string{"other": "cores"}}
+	cfg := Config{Scheme: SchemeKubeBurner, PrometheusMetricUnits: map[string]string{"other": "cores"}}
 	err := ValidateConfig(&cfg, false, true, map[string]any{"jobs": []any{}}, []string{"podCPUUsage"})
 	if err == nil || !strings.Contains(err.Error(), "other") {
 		t.Fatalf("ValidateConfig() error = %v", err)

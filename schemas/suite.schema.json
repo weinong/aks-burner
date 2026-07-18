@@ -11,6 +11,9 @@
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 }
     },
+    "modeDefaults": {
+      "$ref": "mode.schema.json#/$defs/fields"
+    },
     "setup": {
       "type": "object",
       "additionalProperties": false,

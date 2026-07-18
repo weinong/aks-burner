@@ -97,3 +97,68 @@ func TestValidateYAMLUsesJSONSchema(t *testing.T) {
 		t.Fatal("ValidateYAML accepted extra property")
 	}
 }
+
+func TestLoadMergedYAMLAppliesNestedOverrides(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "schema.json")
+	overridesPath := filepath.Join(dir, "overrides.yml")
+	if err := os.WriteFile(schemaPath, []byte(`{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["iterations", "cleanup", "vars"],
+  "properties": {
+    "iterations": {"type": "integer", "minimum": 1},
+    "cleanup": {"type": "boolean"},
+    "vars": {"type": "object", "additionalProperties": true}
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overridesPath, []byte("iterations: 20\ncleanup: false\nvars:\n  mode: full\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	defaults := map[string]any{
+		"iterations": 5,
+		"cleanup":    true,
+		"vars":       map[string]any{"app": "example", "mode": "smoke"},
+	}
+	var output struct {
+		Iterations int            `yaml:"iterations"`
+		Cleanup    bool           `yaml:"cleanup"`
+		Vars       map[string]any `yaml:"vars"`
+	}
+	if err := LoadMergedYAML(schemaPath, defaults, overridesPath, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Iterations != 20 || output.Cleanup {
+		t.Fatalf("merged scalar fields = %#v, want iterations 20 and cleanup false", output)
+	}
+	if output.Vars["app"] != "example" || output.Vars["mode"] != "full" {
+		t.Fatalf("merged vars = %#v, want inherited app and overridden mode", output.Vars)
+	}
+}
+
+func TestLoadMergedYAMLValidatesMergedDocument(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "schema.json")
+	overridesPath := filepath.Join(dir, "overrides.yml")
+	if err := os.WriteFile(schemaPath, []byte(`{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["iterations"],
+  "properties": {"iterations": {"type": "integer", "minimum": 1}}
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overridesPath, []byte("unexpected: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output any
+	if err := LoadMergedYAML(schemaPath, map[string]any{"iterations": 5}, overridesPath, &output); err == nil {
+		t.Fatal("LoadMergedYAML accepted an unknown override field")
+	}
+}

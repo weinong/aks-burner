@@ -51,16 +51,57 @@ func WriteYAML(path string, value any) error {
 }
 
 func ValidateYAML(schemaPath string, yamlPath string) error {
+	var value any
+	if err := LoadYAML(yamlPath, &value); err != nil {
+		return err
+	}
+	return ValidateValue(schemaPath, value)
+}
+
+func ValidateValue(schemaPath string, value any) error {
 	compiler := jsonschema.NewCompiler()
 	schema, err := compiler.Compile(schemaPath)
 	if err != nil {
 		return err
 	}
-	var value any
-	if err := LoadYAML(yamlPath, &value); err != nil {
+	return schema.Validate(toJSONValue(value))
+}
+
+func LoadMergedYAML(schemaPath string, defaults map[string]any, overridesPath string, out any) error {
+	var overrides map[string]any
+	if err := LoadYAML(overridesPath, &overrides); err != nil {
 		return err
 	}
-	return schema.Validate(toJSONValue(value))
+	merged := mergeMaps(defaults, overrides)
+	if err := ValidateValue(schemaPath, merged); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	return yaml.Unmarshal(data, out)
+}
+
+func mergeMaps(defaults, overrides map[string]any) map[string]any {
+	merged := make(map[string]any, len(defaults)+len(overrides))
+	for key, value := range defaults {
+		if nested, ok := value.(map[string]any); ok {
+			merged[key] = mergeMaps(nested, nil)
+		} else {
+			merged[key] = value
+		}
+	}
+	for key, value := range overrides {
+		nestedOverride, overrideIsMap := value.(map[string]any)
+		nestedDefault, defaultIsMap := merged[key].(map[string]any)
+		if overrideIsMap && defaultIsMap {
+			merged[key] = mergeMaps(nestedDefault, nestedOverride)
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
 }
 
 type ImageCatalog struct {

@@ -16,26 +16,35 @@ import (
 	"github.com/Azure/aks-burner/internal/acr"
 	"github.com/Azure/aks-burner/internal/kubetarget"
 	"github.com/Azure/aks-burner/internal/repo"
+	"github.com/Azure/aks-burner/internal/reporting"
 	"github.com/Azure/aks-burner/internal/suite"
 	"gopkg.in/yaml.v3"
 )
 
 type Mode struct {
-	Iterations                  int               `yaml:"iterations"`
-	IterationsPerNamespace      int               `yaml:"iterationsPerNamespace"`
-	QPS                         int               `yaml:"qps"`
-	Burst                       int               `yaml:"burst"`
-	Cleanup                     bool              `yaml:"cleanup"`
-	WaitWhenFinished            bool              `yaml:"waitWhenFinished"`
-	PreLoadImages               bool              `yaml:"preLoadImages"`
-	JobPause                    string            `yaml:"jobPause,omitempty"`
-	MetricsClosing              string            `yaml:"metricsClosing,omitempty"`
-	WorkloadFile                string            `yaml:"workloadFile,omitempty"`
-	ReportPodReadyMetrics       bool              `yaml:"reportPodReadyMetrics,omitempty"`
-	ReportStorageStartupMetrics bool              `yaml:"reportStorageStartupMetrics,omitempty"`
-	RunTimestamp                time.Time         `yaml:"-"`
-	TemplateVars                map[string]any    `yaml:"templateVars"`
-	ImageVars                   map[string]string `yaml:"imageVars"`
+	Iterations             int               `yaml:"iterations"`
+	IterationsPerNamespace int               `yaml:"iterationsPerNamespace"`
+	QPS                    int               `yaml:"qps"`
+	Burst                  int               `yaml:"burst"`
+	Cleanup                bool              `yaml:"cleanup"`
+	WaitWhenFinished       bool              `yaml:"waitWhenFinished"`
+	PreLoadImages          bool              `yaml:"preLoadImages"`
+	JobPause               string            `yaml:"jobPause,omitempty"`
+	MetricsClosing         string            `yaml:"metricsClosing,omitempty"`
+	WorkloadFile           string            `yaml:"workloadFile,omitempty"`
+	ArtifactSubpath        string            `yaml:"artifactSubpath,omitempty"`
+	Reporting              ModeReporting     `yaml:"reporting"`
+	RunTimestamp           time.Time         `yaml:"-"`
+	TemplateVars           map[string]any    `yaml:"templateVars"`
+	ImageVars              map[string]string `yaml:"imageVars"`
+}
+
+func (m Mode) RenderedArtifactSubpath() string {
+	return replaceTimestampPlaceholders(m.ArtifactSubpath, m.RunTimestamp)
+}
+
+type ModeReporting struct {
+	Scheme reporting.Scheme `yaml:"scheme"`
 }
 
 func (m Mode) SelectedWorkloadFile() string {

@@ -27,6 +27,7 @@ import (
 	"github.com/Azure/aks-burner/internal/reporting"
 	"github.com/Azure/aks-burner/internal/requirements"
 	runpkg "github.com/Azure/aks-burner/internal/run"
+	"github.com/Azure/aks-burner/internal/suite"
 )
 
 var testSourceRoot = mustTestSourceRoot()
@@ -212,9 +213,6 @@ requires:
     minVersion: "1.30"
   nodeSelectors: []
   reporting:
-    sources:
-      standardSummary: false
-      kubeBurner: true
     prometheusMetricUnits: {}
   observability:
     prometheus:
@@ -251,6 +249,8 @@ burst: 1
 cleanup: true
 waitWhenFinished: true
 preLoadImages: false
+reporting:
+  scheme: kube-burner
 templateVars: {}
 imageVars: {}
 `), 0o644); err != nil {
@@ -357,9 +357,6 @@ requires:
   kubernetes:
     minVersion: "1.36"
   reporting:
-    sources:
-      standardSummary: true
-      kubeBurner: true
     prometheusMetricUnits:
       podCPUUsage: cores
   observability:
@@ -432,7 +429,7 @@ requires:
 	}
 }
 
-func TestRequirementsSchemaRejectsUnknownReportingSource(t *testing.T) {
+func TestRequirementsSchemaRejectsReportingScheme(t *testing.T) {
 	root := testRepoRoot(t)
 	path := filepath.Join(root, "requirements.yml")
 	data := []byte(`suite: demo
@@ -452,10 +449,7 @@ requires:
   kubernetes:
     minVersion: "1.36"
   reporting:
-    sources:
-      standardSummary: false
-      kubeBurner: true
-      unknown: true
+    scheme: kube-burner
     prometheusMetricUnits: {}
   observability:
     prometheus:
@@ -471,7 +465,7 @@ requires:
 		t.Fatal(err)
 	}
 	if err := config.ValidateYAML(filepath.Join(root, "schemas", "requirements.schema.json"), path); err == nil {
-		t.Fatal("requirements schema accepted unknown reporting source")
+		t.Fatal("requirements schema accepted mode-owned reporting scheme")
 	}
 }
 
@@ -684,7 +678,8 @@ func TestRunSuiteStandardSummaryReportingCreatesCSVAndLimitsPreview(t *testing.T
 	root := testRepoRoot(t)
 	writeNoBuildContextSuite(t, root)
 	requirementsPath := filepath.Join(root, "suites", "existing", "requirements.yml")
-	replaceFileText(t, requirementsPath, "      standardSummary: false", "      standardSummary: true")
+	modePath := filepath.Join(root, "suites", "existing", "vars", "smoke.yml")
+	replaceFileText(t, modePath, "scheme: kube-burner", "scheme: standard-summary\nartifactSubpath: existing-smoke-{{.runTimestamp}}")
 	replaceFileText(t, requirementsPath, "  observability:\n", "  artifacts:\n    enabled: true\n    namespace: artifacts\n    pvcName: results\n    mountPath: /results\n    copyImage: artifact-copy\n  observability:\n")
 	replaceFileText(t, filepath.Join(root, "config", "images.yml"), "  prometheus: prometheus:test", "  prometheus: prometheus:test\n  artifact-copy: artifact-copy:test")
 	binDir := t.TempDir()
@@ -710,6 +705,19 @@ func TestRunSuiteStandardSummaryReportingCreatesCSVAndLimitsPreview(t *testing.T
 	}
 	if !strings.Contains(output, "2 additional rows omitted") || !strings.Contains(output, "Results CSV: results/") {
 		t.Fatalf("run-suite output missing omission or CSV path:\n%s", output)
+	}
+}
+
+func TestRunSuiteRejectsArtifactCollectionWithoutSubpath(t *testing.T) {
+	root := testRepoRoot(t)
+	writeNoBuildContextSuite(t, root)
+	requirementsPath := filepath.Join(root, "suites", "existing", "requirements.yml")
+	replaceFileText(t, requirementsPath, "  observability:\n", "  artifacts:\n    enabled: true\n    namespace: artifacts\n    pvcName: results\n    mountPath: /results\n    copyImage: artifact-copy\n  observability:\n")
+	withWorkingDir(t, root)
+
+	err := runSuiteWithDependencies([]string{"--suite", "existing", "--mode", "smoke", "--kube-context", "preview"}, runSuiteDependencies{})
+	if err == nil || !strings.Contains(err.Error(), "artifactSubpath") {
+		t.Fatalf("run-suite error = %v, want required artifactSubpath", err)
 	}
 }
 
@@ -754,7 +762,7 @@ func TestRunSuiteLoadModeWritesPartialReportAfterKubeBurnerFailure(t *testing.T)
 	root := testRepoRoot(t)
 	writeNoBuildContextSuite(t, root)
 	modePath := filepath.Join(root, "suites", "existing", "vars", "smoke.yml")
-	replaceFileText(t, modePath, "templateVars: {}", "reportPodReadyMetrics: true\ntemplateVars: {}")
+	replaceFileText(t, modePath, "scheme: kube-burner", "scheme: pod-ready")
 	workloadPath := filepath.Join(root, "suites", "existing", "workload.yml")
 	replaceFileText(t, workloadPath, "jobs: []", "jobs:\n  - name: startup\n    jobType: create\n    objects:\n      - objectTemplate: templates/pod.yml\n        replicas: 1\n        inputVars: {}")
 	binDir := t.TempDir()
@@ -837,7 +845,7 @@ func TestRunSuiteRejectsUnsupportedKubeBurnerVersionBeforeSideEffects(t *testing
 func TestRunSuiteReportingValidationFailsBeforeWorkloadSideEffects(t *testing.T) {
 	root := testRepoRoot(t)
 	writeBuildContextSuite(t, root)
-	replaceFileText(t, filepath.Join(root, "suites", "existing", "requirements.yml"), "      kubeBurner: true", "      kubeBurner: false")
+	replaceFileText(t, filepath.Join(root, "suites", "existing", "vars", "smoke.yml"), "scheme: kube-burner", "scheme: unsupported")
 	binDir := t.TempDir()
 	azMarker := filepath.Join(t.TempDir(), "az.log")
 	kubectlMarker := filepath.Join(t.TempDir(), "kubectl.log")
@@ -854,8 +862,8 @@ func TestRunSuiteReportingValidationFailsBeforeWorkloadSideEffects(t *testing.T)
 			return "", nil
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "reporting source") {
-		t.Fatalf("run-suite error = %v, want reporting source error", err)
+	if err == nil || !strings.Contains(err.Error(), "mode.schema.json") {
+		t.Fatalf("run-suite error = %v, want reporting scheme error", err)
 	}
 	for _, marker := range []string{azMarker, kubectlMarker, kubeBurnerMarker} {
 		if data, _ := os.ReadFile(marker); len(data) != 0 {
@@ -1135,6 +1143,7 @@ func TestRunSuiteRejectsUnknownEnabledImageKeysBeforeSideEffects(t *testing.T) {
 		{
 			name: "artifact copy image",
 			mutate: func(t *testing.T, root string) {
+				replaceFileText(t, filepath.Join(root, "suites", "existing", "vars", "smoke.yml"), "templateVars: {}", "artifactSubpath: existing-smoke-{{.runTimestamp}}\ntemplateVars: {}")
 				path := filepath.Join(root, "suites", "existing", "requirements.yml")
 				replaceFileText(t, path, "      requiredMetrics: []\n", `      requiredMetrics: []
   artifacts:
@@ -1197,6 +1206,7 @@ func TestRunSuiteRejectsEmptyEnabledStaticImagesBeforeSideEffects(t *testing.T) 
 		{
 			name: "artifact copy image",
 			mutate: func(t *testing.T, root string) {
+				replaceFileText(t, filepath.Join(root, "suites", "existing", "vars", "smoke.yml"), "templateVars: {}", "artifactSubpath: existing-smoke-{{.runTimestamp}}\ntemplateVars: {}")
 				path := filepath.Join(root, "suites", "existing", "requirements.yml")
 				replaceFileText(t, path, "      requiredMetrics: []\n", `      requiredMetrics: []
   artifacts:
@@ -1888,7 +1898,7 @@ func TestValidateModeImageVarsRejectsUnknownImageKeyBeforeBuild(t *testing.T) {
 func TestExecuteRunCopyAndReportOrdersArtifactStages(t *testing.T) {
 	order := []string{}
 	target := kubetarget.Target{Context: "preview"}
-	reportingCfg := reporting.Config{Sources: reporting.Sources{StandardSummary: true}}
+	reportingCfg := reporting.Config{Scheme: reporting.SchemeStandardSummary}
 	runInfo := reporting.RunInfo{Suite: "kata-io", Mode: "fio-fast", Timestamp: "2026-07-11T00:00:00.000000004Z", WorkspaceRoot: "/workspace"}
 	var reportOutput bytes.Buffer
 	execute := func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
@@ -2010,20 +2020,6 @@ func TestExecuteRunCopyAndReportRejectsUnsafeRunIDBeforeExecute(t *testing.T) {
 	}
 }
 
-func TestArtifactSubpathFromRenderedWorkloadUsesFirstRunID(t *testing.T) {
-	rendered := map[string]any{"jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{"runID": "kata-io-smoke-20260709T010203.000000004Z"}}}}}}
-	if got := artifactSubpathFromRenderedWorkload(rendered); got != "kata-io-smoke-20260709T010203.000000004Z" {
-		t.Fatalf("artifactSubpathFromRenderedWorkload() = %q, want runID", got)
-	}
-}
-
-func TestArtifactSubpathFromRenderedWorkloadAllowsMissingRunID(t *testing.T) {
-	rendered := map[string]any{"jobs": []any{map[string]any{"objects": []any{map[string]any{"inputVars": map[string]any{"app": "kata-perf"}}}}}}
-	if got := artifactSubpathFromRenderedWorkload(rendered); got != "" {
-		t.Fatalf("artifactSubpathFromRenderedWorkload() = %q, want empty legacy subpath", got)
-	}
-}
-
 func TestExecuteRunCopyAndReportReturnsResolveErrorBeforeExecute(t *testing.T) {
 	executed := false
 	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "missing"}, map[string]string{}, "artifacts", "", "run", reporting.Config{}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, target kubetarget.Target) error {
@@ -2047,7 +2043,7 @@ func TestExecuteRunCopyAndReportPrefersKubeBurnerFailureOverArtifactCopy(t *test
 	copyErr := errors.New("artifact copy failed")
 	target := kubetarget.Target{Context: "preview"}
 	reportCalled := false
-	err := executeRunCopyAndReport(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{Sources: reporting.Sources{KubeBurner: true}, ReportPodReadyMetrics: true}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
+	err := executeRunCopyAndReport(context.Background(), target, "workload.yml", "kube-burner.log", artifacts.Config{Enabled: true, CopyImage: "artifact-copy"}, map[string]string{"artifact-copy": "busybox:test"}, "artifacts", "", "run", reporting.Config{Scheme: reporting.SchemePodReady}, reporting.RunInfo{}, io.Discard, func(workloadPath string, logPath string, gotTarget kubetarget.Target) error {
 		if gotTarget != target {
 			t.Fatalf("executor target = %#v", gotTarget)
 		}
@@ -2074,7 +2070,7 @@ func TestExecuteRunCopyAndReportPrefersKubeBurnerFailureOverArtifactCopy(t *test
 func TestExecuteRunCopyAndReportKeepsOriginalFailureWhenPartialReportFails(t *testing.T) {
 	executeErr := errors.New("kube-burner failed")
 	reportErr := errors.New("partial report failed")
-	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, nil, "artifacts", "", "run", reporting.Config{Sources: reporting.Sources{KubeBurner: true}, ReportPodReadyMetrics: true}, reporting.RunInfo{}, io.Discard,
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, nil, "artifacts", "", "run", reporting.Config{Scheme: reporting.SchemePodReady}, reporting.RunInfo{}, io.Discard,
 		func(string, string, kubetarget.Target) error { return executeErr },
 		func(context.Context, kubetarget.Target, artifacts.Config) error { return nil },
 		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return nil },
@@ -2090,7 +2086,7 @@ func TestExecuteRunCopyAndReportKeepsOriginalFailureWhenPartialReportFails(t *te
 func TestExecuteRunCopyAndReportWritesPartialStorageReportAfterFailure(t *testing.T) {
 	executeErr := errors.New("storage cleanup failed")
 	reportCalled := false
-	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, nil, "artifacts", "", "run", reporting.Config{Sources: reporting.Sources{KubeBurner: true}, ReportStorageStartupMetrics: true}, reporting.RunInfo{}, io.Discard,
+	err := executeRunCopyAndReport(context.Background(), kubetarget.Target{}, "workload.yml", "kube-burner.log", artifacts.Config{}, nil, "artifacts", "", "run", reporting.Config{Scheme: reporting.SchemeStorageStartup}, reporting.RunInfo{}, io.Discard,
 		func(string, string, kubetarget.Target) error { return executeErr },
 		func(context.Context, kubetarget.Target, artifacts.Config) error { return nil },
 		func(context.Context, kubetarget.Target, artifacts.Config, string, string) error { return nil },
@@ -2221,9 +2217,6 @@ requires:
       labels:
         perf.azure.com/node-role: workload
   reporting:
-    sources:
-      standardSummary: false
-      kubeBurner: true
     prometheusMetricUnits: {}
   observability:
     prometheus:
@@ -2244,6 +2237,8 @@ burst: 1
 cleanup: true
 waitWhenFinished: true
 preLoadImages: false
+reporting:
+  scheme: kube-burner
 templateVars: {}
 imageVars: {}
 `,
@@ -2371,9 +2366,6 @@ requires:
   kubernetes:
     minVersion: "9.99"
 ` + nodeSelectors + images + `  reporting:
-    sources:
-      standardSummary: false
-      kubeBurner: true
     prometheusMetricUnits: {}
   observability:
     prometheus:
@@ -2395,6 +2387,8 @@ burst: 1
 cleanup: true
 waitWhenFinished: true
 preLoadImages: false
+reporting:
+  scheme: kube-burner
 templateVars: {}
 imageVars: {}
 `,
@@ -2756,12 +2750,25 @@ func assertGeneratedSuiteSchemas(t *testing.T, root string, name string) {
 	}{
 		{schema: "suite.schema.json", file: filepath.Join("suites", name, "suite.yml")},
 		{schema: "requirements.schema.json", file: filepath.Join("suites", name, "requirements.yml")},
-		{schema: "mode.schema.json", file: filepath.Join("suites", name, "vars", "smoke.yml")},
-		{schema: "mode.schema.json", file: filepath.Join("suites", name, "vars", "full.yml")},
 	}
 	for _, path := range paths {
 		if err := config.ValidateYAML(filepath.Join(root, "schemas", path.schema), filepath.Join(root, path.file)); err != nil {
 			t.Fatalf("ValidateYAML(%s) returned error: %v", path.file, err)
+		}
+	}
+	suiteConfig, err := suite.Load(root, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, modeName := range []string{"smoke", "full"} {
+		var mode runpkg.Mode
+		if err := config.LoadMergedYAML(
+			filepath.Join(root, "schemas", "mode.schema.json"),
+			suiteConfig.ModeDefaults,
+			filepath.Join(root, "suites", name, "vars", modeName+".yml"),
+			&mode,
+		); err != nil {
+			t.Fatalf("load generated mode %s: %v", modeName, err)
 		}
 	}
 }
@@ -2805,7 +2812,11 @@ func assertGeneratedSuiteReporting(t *testing.T, root string, name string, prome
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reporting.ValidateConfig(&doc.Requires.Reporting, doc.Requires.Artifacts.Enabled, doc.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
+	reportingCfg := reporting.Config{
+		Scheme:                reporting.SchemeKubeBurner,
+		PrometheusMetricUnits: doc.Requires.Reporting.PrometheusMetricUnits,
+	}
+	if err := reporting.ValidateConfig(&reportingCfg, doc.Requires.Artifacts.Enabled, doc.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
 		t.Fatalf("generated reporting configuration is invalid: %v", err)
 	}
 }

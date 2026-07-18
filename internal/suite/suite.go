@@ -14,11 +14,12 @@ import (
 var validNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 
 type Config struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Tests       []string `yaml:"tests"`
-	Setup       Setup    `yaml:"setup"`
-	Modes       []string `yaml:"-"`
+	Name         string         `yaml:"name"`
+	Description  string         `yaml:"description"`
+	Tests        []string       `yaml:"tests"`
+	ModeDefaults map[string]any `yaml:"modeDefaults"`
+	Setup        Setup          `yaml:"setup"`
+	Modes        []string       `yaml:"-"`
 }
 
 type Setup struct {

@@ -302,7 +302,7 @@ func writeSuite(root string, opts addSuiteOptions) error {
 	if err := os.MkdirAll(filepath.Join(suiteDir, "vars"), 0o755); err != nil {
 		return err
 	}
-	if err := config.WriteYAML(filepath.Join(suiteDir, "suite.yml"), map[string]any{"name": opts.SuiteName, "description": opts.Description, "tests": []string{"startup-smoke"}}); err != nil {
+	if err := config.WriteYAML(filepath.Join(suiteDir, "suite.yml"), map[string]any{"name": opts.SuiteName, "description": opts.Description, "tests": []string{"startup-smoke"}, "modeDefaults": suiteModeDefaults(opts.SuiteName)}); err != nil {
 		return err
 	}
 	if err := config.WriteYAML(filepath.Join(suiteDir, "requirements.yml"), suiteRequirements(opts)); err != nil {
@@ -317,10 +317,10 @@ func writeSuite(root string, opts addSuiteOptions) error {
 	if err := os.WriteFile(filepath.Join(suiteDir, "templates", "pod.yml"), []byte(podTemplateYAML(opts)), 0o644); err != nil {
 		return err
 	}
-	if err := config.WriteYAML(filepath.Join(suiteDir, "vars", "smoke.yml"), suiteMode(opts.SuiteName, opts.SmokeIterations, opts.SmokeIterations, 20)); err != nil {
+	if err := config.WriteYAML(filepath.Join(suiteDir, "vars", "smoke.yml"), suiteMode(opts.SmokeIterations, opts.SmokeIterations, 20)); err != nil {
 		return err
 	}
-	return config.WriteYAML(filepath.Join(suiteDir, "vars", "full.yml"), suiteMode(opts.SuiteName, opts.FullIterations, 50, 50))
+	return config.WriteYAML(filepath.Join(suiteDir, "vars", "full.yml"), suiteMode(opts.FullIterations, 50, 50))
 }
 
 func suiteRequirements(opts addSuiteOptions) map[string]any {
@@ -337,7 +337,6 @@ func suiteRequirements(opts addSuiteOptions) map[string]any {
 			"kubernetes":    map[string]any{"minVersion": opts.KubernetesVersion},
 			"nodeSelectors": []map[string]any{{"name": "workload", "pool": "userpool", "required": true, "minNodes": 1, "labels": map[string]string{"perf.azure.com/node-role": "workload"}}},
 			"reporting": map[string]any{
-				"sources":               map[string]any{"standardSummary": false, "kubeBurner": true},
 				"prometheusMetricUnits": map[string]string{"prometheusTargetsUp": "count"},
 			},
 			"observability": map[string]any{
@@ -369,17 +368,23 @@ func suiteWorkload(opts addSuiteOptions) map[string]any {
 	}
 }
 
-func suiteMode(app string, iterations int, iterationsPerNamespace int, qps int) map[string]any {
+func suiteModeDefaults(app string) map[string]any {
+	return map[string]any{
+		"cleanup":          true,
+		"waitWhenFinished": true,
+		"preLoadImages":    true,
+		"reporting":        map[string]any{"scheme": "kube-burner"},
+		"templateVars":     map[string]string{"app": app},
+		"imageVars":        map[string]string{"image": "pause"},
+	}
+}
+
+func suiteMode(iterations int, iterationsPerNamespace int, qps int) map[string]any {
 	return map[string]any{
 		"iterations":             iterations,
 		"iterationsPerNamespace": iterationsPerNamespace,
 		"qps":                    qps,
 		"burst":                  qps,
-		"cleanup":                true,
-		"waitWhenFinished":       true,
-		"preLoadImages":          true,
-		"templateVars":           map[string]string{"app": app},
-		"imageVars":              map[string]string{"image": "pause"},
 	}
 }
 
@@ -530,10 +535,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err != nil {
 		return err
 	}
-	if err := config.ValidateYAML(filepath.Join(root, "schemas", "mode.schema.json"), modePath); err != nil {
-		return err
-	}
-	if err := config.LoadYAML(modePath, &mode); err != nil {
+	if err := config.LoadMergedYAML(filepath.Join(root, "schemas", "mode.schema.json"), suiteCfg.ModeDefaults, modePath, &mode); err != nil {
 		return err
 	}
 	var workload map[string]any
@@ -548,9 +550,14 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err != nil {
 		return err
 	}
-	req.Requires.Reporting.ReportPodReadyMetrics = mode.ReportPodReadyMetrics
-	req.Requires.Reporting.ReportStorageStartupMetrics = mode.ReportStorageStartupMetrics
-	if err := reporting.ValidateConfig(&req.Requires.Reporting, req.Requires.Artifacts.Enabled, req.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
+	reportingCfg := reporting.Config{
+		Scheme:                mode.Reporting.Scheme,
+		PrometheusMetricUnits: req.Requires.Reporting.PrometheusMetricUnits,
+	}
+	if req.Requires.Artifacts.Enabled && mode.ArtifactSubpath == "" {
+		return fmt.Errorf("artifact collection requires mode artifactSubpath with {{.runTimestamp}}")
+	}
+	if err := reporting.ValidateConfig(&reportingCfg, req.Requires.Artifacts.Enabled, req.Requires.Observability.Prometheus.Required, workload, metricNames); err != nil {
 		return err
 	}
 	runTimestamp := time.Now().UTC()
@@ -591,7 +598,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 		return err
 	}
 	var storageClasses []runpkg.StorageClassMetadata
-	if mode.ReportStorageStartupMetrics {
+	if reportingCfg.Scheme.ReportsStorageStartup() {
 		storageClasses, err = runpkg.ValidateStorageClasses(ctx, req.Requires.StorageClasses, target.Output)
 		if err != nil {
 			return err
@@ -672,7 +679,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := runpkg.CopyRenderAssets(suiteDir, runDir); err != nil {
 		return err
 	}
-	rendered, err := runpkg.RenderWorkload(workload, mode, images, prometheusURL, req.Requires.Reporting.Sources.KubeBurner)
+	rendered, err := runpkg.RenderWorkload(workload, mode, images, prometheusURL, reportingCfg.Scheme.UsesKubeBurner())
 	if err != nil {
 		return err
 	}
@@ -680,7 +687,7 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 	if err := config.WriteYAML(workloadPath, rendered); err != nil {
 		return err
 	}
-	return runpkg.WithStorageRunLock(ctx, mode.ReportStorageStartupMetrics, filepath.Base(runDir), target.Output, func() error {
+	return runpkg.WithStorageRunLock(ctx, reportingCfg.Scheme.ReportsStorageStartup(), filepath.Base(runDir), target.Output, func() error {
 		return executeRunCopyAndReport(
 			ctx,
 			target,
@@ -689,9 +696,9 @@ func runSuiteWithDependencies(args []string, deps runSuiteDependencies) error {
 			req.Requires.Artifacts,
 			images,
 			filepath.Join(runDir, "artifacts"),
-			artifactSubpathFromRenderedWorkload(rendered),
+			mode.RenderedArtifactSubpath(),
 			runDir,
-			req.Requires.Reporting,
+			reportingCfg,
 			reporting.RunInfo{Suite: *suiteName, Mode: *modeName, Timestamp: runTimestamp.Format(time.RFC3339Nano), WorkspaceRoot: root},
 			os.Stdout,
 			runpkg.ExecuteKubeBurner,
@@ -758,7 +765,7 @@ func executeRunCopyAndReport(
 	}
 	if workloadErr != nil {
 		var reportErr error
-		if reportingCfg.ReportPodReadyMetrics || reportingCfg.ReportStorageStartupMetrics {
+		if reportingCfg.Scheme.SupportsPartialResults() {
 			runInfo.Partial = true
 			_, reportErr = report(runDir, reportingCfg, runInfo, out)
 		}
@@ -802,29 +809,6 @@ func copyArtifacts(ctx context.Context, target kubetarget.Target, cfg artifacts.
 		return artifacts.Copy(ctx, target, cfg, destination)
 	}
 	return artifacts.CopySubpath(ctx, target, cfg, destination, subpath)
-}
-
-func artifactSubpathFromRenderedWorkload(rendered map[string]any) string {
-	jobs, _ := rendered["jobs"].([]any)
-	for _, item := range jobs {
-		job, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		objects, _ := job["objects"].([]any)
-		for _, objectItem := range objects {
-			object, ok := objectItem.(map[string]any)
-			if !ok {
-				continue
-			}
-			inputVars, _ := object["inputVars"].(map[string]any)
-			runID, _ := inputVars["runID"].(string)
-			if runID != "" {
-				return runID
-			}
-		}
-	}
-	return ""
 }
 
 func shouldWaitPrometheusRollout(required bool, install bool) bool {

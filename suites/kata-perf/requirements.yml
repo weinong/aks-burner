@@ -38,9 +38,6 @@ requires:
     - name: azurefile-csi
       provisioner: file.csi.azure.com
   reporting:
-    sources:
-      standardSummary: false
-      kubeBurner: true
     prometheusMetricUnits:
       runPodSandboxCount: count
       runPodSandboxSum: seconds

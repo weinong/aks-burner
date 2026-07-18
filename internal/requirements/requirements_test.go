@@ -29,8 +29,6 @@ func TestLoad(t *testing.T) {
 		{name: "artifact PVC", got: doc.Requires.Artifacts.PVCName, want: "results"},
 		{name: "Prometheus port", got: doc.Requires.Observability.Prometheus.LocalPort, want: 9090},
 		{name: "kube-state-metrics service", got: doc.Requires.Observability.KubeStateMetrics.ServiceName, want: "kube-state-metrics"},
-		{name: "standard summary reporting", got: doc.Requires.Reporting.Sources.StandardSummary, want: true},
-		{name: "kube-burner reporting", got: doc.Requires.Reporting.Sources.KubeBurner, want: true},
 		{name: "Prometheus metric units", got: doc.Requires.Reporting.PrometheusMetricUnits, want: map[string]string{"podCPUUsage": "cores", "podMemoryWorkingSet": "bytes"}},
 		{name: "storage class", got: doc.Requires.StorageClasses[0].Provisioner, want: "disk.csi.azure.com"},
 	}
@@ -105,9 +103,6 @@ requires:
     mountPath: /results
     copyImage: artifact-copy
   reporting:
-    sources:
-      standardSummary: true
-      kubeBurner: true
     prometheusMetricUnits:
       podCPUUsage: cores
       podMemoryWorkingSet: bytes

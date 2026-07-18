@@ -28,7 +28,7 @@ type Result struct {
 func Generate(runDir string, cfg Config, info RunInfo, out io.Writer) (Result, error) {
 	var rows []Row
 	sourceFiles := 0
-	if cfg.Sources.StandardSummary {
+	if cfg.Scheme.UsesStandardSummary() {
 		standardRows, files, err := ReadStandardSummaries(filepath.Join(runDir, "artifacts"), runDir)
 		if err != nil {
 			return Result{}, err
@@ -36,14 +36,14 @@ func Generate(runDir string, cfg Config, info RunInfo, out io.Writer) (Result, e
 		rows = append(rows, standardRows...)
 		sourceFiles += files
 	}
-	if cfg.Sources.KubeBurner {
+	if cfg.Scheme.UsesKubeBurner() {
 		kubeRows, files, err := readKubeBurnerMetrics(
 			filepath.Join(runDir, "raw", "metrics"),
 			runDir,
 			PrometheusMetricNamesFromConfig(cfg),
 			cfg.PrometheusMetricUnits,
-			cfg.ReportPodReadyMetrics,
-			cfg.ReportStorageStartupMetrics,
+			cfg.Scheme.ReportsPodReady(),
+			cfg.Scheme.ReportsStorageStartup(),
 		)
 		if err != nil {
 			return Result{}, err

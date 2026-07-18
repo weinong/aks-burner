@@ -118,17 +118,8 @@
         "reporting": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["sources", "prometheusMetricUnits"],
+          "required": ["prometheusMetricUnits"],
           "properties": {
-            "sources": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["standardSummary", "kubeBurner"],
-              "properties": {
-                "standardSummary": { "type": "boolean" },
-                "kubeBurner": { "type": "boolean" }
-              }
-            },
             "prometheusMetricUnits": {
               "type": "object",
               "propertyNames": { "minLength": 1 },

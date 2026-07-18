@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Azure/aks-burner/internal/config"
 )
 
 func TestListSuites(t *testing.T) {
@@ -81,6 +83,48 @@ setup:
 	second := cfg.Setup.Resources[1]
 	if len(second.Wait) != 1 || second.Wait[0].Kind != "rollout" || second.Wait[0].Namespace != "kube-system" {
 		t.Fatalf("second wait rule = %#v", second.Wait)
+	}
+}
+
+func TestLoadParsesModeDefaults(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "suites", "demo", "suite.yml"), `name: demo
+description: Demo suite
+tests:
+  - startup-smoke
+modeDefaults:
+  iterations: 1
+  cleanup: true
+  templateVars:
+    app: demo
+`)
+
+	cfg, err := Load(root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ModeDefaults["iterations"] != 1 || cfg.ModeDefaults["cleanup"] != true {
+		t.Fatalf("ModeDefaults = %#v, want scalar defaults", cfg.ModeDefaults)
+	}
+	vars, ok := cfg.ModeDefaults["templateVars"].(map[string]any)
+	if !ok || vars["app"] != "demo" {
+		t.Fatalf("templateVars = %#v, want app default", cfg.ModeDefaults["templateVars"])
+	}
+}
+
+func TestModeDefaultsSchemaRejectsUnknownFields(t *testing.T) {
+	root := filepath.Join("..", "..")
+	path := filepath.Join(t.TempDir(), "suite.yml")
+	if err := os.WriteFile(path, []byte(`name: demo
+description: Demo suite
+tests: [smoke]
+modeDefaults:
+  cleenup: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateYAML(filepath.Join(root, "schemas", "suite.schema.json"), path); err == nil {
+		t.Fatal("suite schema accepted an unknown modeDefaults field")
 	}
 }
 

@@ -56,9 +56,6 @@ requires:
         platform: linux/amd64
         timeoutSeconds: 3600
   reporting:
-    sources:
-      standardSummary: true
-      kubeBurner: false
     prometheusMetricUnits: {}
   observability:
     prometheus:

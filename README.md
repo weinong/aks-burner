@@ -141,19 +141,17 @@ artifacts/fio/example/summary.json          kata     emptydir  fio       read_ba
 Results CSV: results/RUN_DIRECTORY/summary/results.csv
 ```
 
-Declare result inputs under `requires.reporting` in the suite's `requirements.yml`:
+Declare the reporting scheme in the mode or its suite-level `modeDefaults`. Keep
+Prometheus metric units under `requires.reporting`:
 
 ```yaml
 reporting:
-  sources:
-    standardSummary: true
-    kubeBurner: true
   prometheusMetricUnits:
     podCPUUsage: cores
     podMemoryWorkingSet: bytes
 ```
 
-`standardSummary` discovers artifact files named `summary.json`. Each file uses this format:
+The `standard-summary` scheme discovers artifact files named `summary.json`. Each file uses this format:
 
 ```json
 {
@@ -165,7 +163,20 @@ reporting:
 }
 ```
 
-`kubeBurner` reads the local indexer output under `raw/metrics`. `prometheusMetricUnits` supplies the unit for every Prometheus metric declared in `metrics.yml`; kube-burner's pod-latency measurements have built-in units. The runner requires kube-burner `2.7.3` because the parser is tied to that version's local-indexer document shapes.
+The `kube-burner`, `pod-ready`, and `storage-startup` schemes read the local
+indexer output under `raw/metrics`. `prometheusMetricUnits` supplies the unit for
+every Prometheus metric declared in `metrics.yml`; kube-burner's pod-latency
+measurements have built-in units. The runner requires kube-burner `2.7.3`
+because the parser is tied to that version's local-indexer document shapes.
+
+```yaml
+modeDefaults:
+  reporting:
+    scheme: kube-burner
+```
+
+Supported schemes are `standard-summary`, `kube-burner`, `pod-ready`, and
+`storage-startup`. A mode selects exactly one scheme.
 
 The CSV normally preserves producer-calculated rows. The runner sorts and normalizes them, derives RunPodSandbox count/mean from captured start/end counters, and derives post-sandbox container-launch p50/p95/p99/max/average and sample count from per-pod measurements. Modes that explicitly enable offered-load reporting also derive Ready throughput and missing Ready sample count by joining kube-burner job summaries with per-pod latency documents. When such a run fails after producing usable data, available rows are written with `runStatus=partial` while the original workload error is returned. Benchmark scripts and kube-burner remain responsible for all other summaries and quantiles. A run fails if its declared sources contain no valid measurements, if a result document is invalid, or if the CSV or terminal preview cannot be written.
 
@@ -197,6 +208,23 @@ workload matrices with functions such as `list`, `dict`, and `until` and control
 flow such as `range` and `if`. The resulting YAML then follows the normal
 mode-default, timestamp, and image-variable rendering path before kube-burner
 runs it.
+
+Common mode fields belong in `suite.yml` under `modeDefaults`; files under
+`vars/` contain only overrides. Nested `templateVars`, `imageVars`, and
+`reporting` maps are merged before the complete mode is validated. Artifact
+suites should declare `artifactSubpath` explicitly instead of relying on an
+object's `inputVars.runID`:
+
+```yaml
+workloadFile: workload-fio.yml
+artifactSubpath: kata-io-fio-{{.runTimestamp}}
+templateVars:
+  runID: kata-io-fio-{{.runTimestamp}}
+```
+
+Artifact-enabled modes require `artifactSubpath` to contain
+`{{.runTimestamp}}`, preventing a persistent PVC from mixing stale results into
+a later run.
 
 For example:
 
